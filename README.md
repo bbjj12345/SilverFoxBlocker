@@ -1,2 +1,96 @@
 # SilverFoxBlocker
-SilverFoxBlocker是一款拦截钓鱼网站的浏览器扩展，主要用于阻止用户访问银狐木马投放站点。基于https://github.com/yinbo345/silverfox-guard修改。
+
+Chrome / Edge 浏览器扩展（Manifest V3），实时检测并拦截「银狐木马（Silver Fox / 游蛇）」钓鱼与仿冒下载站点，保护你免受恶意软件下载与欺诈页面侵害。
+
+> 💡 **算法致敬**：本项目的检测引擎基于 [@Lolitide](https://github.com/Lolitide) 的开源作品
+> [VirusDetector](https://github.com/Lolitide/VirusDetector)（MIT License）的规则算法，
+> 在其基础上使用 AI 进行了大幅改良与扩展（加权评分、组合信号升级、自动下载竞速兜底、跳转链污染追踪等）。
+> 特此致谢原作者，本改良版同样以 MIT License 发布。
+
+> 🔁 二次修改说明：本仓库是 [@yinbo345](https://github.com/yinbo345) 未发布的开源作品
+> SilverFox Guard v1.6.3 预览版 (https://github.com/yinbo345/silverfox-guard) （MIT License）的二次修改版本，由 @bbjj12345 在作者同意下独立发布，修改了部分逻辑。
+> 特此致谢二位，本改良版同样以 MIT License 发布。
+> 原始版权归 Lolitide 与 yinbo345 所有。
+
+当前版本：**v1.0**
+
+---
+
+## ✨ 功能特性
+
+### 基础防护
+- **实时网页代码分析**：解析 DOM 结构、下载入口、话术特征，而非仅依赖域名黑名单。
+- **多维度加权评分**：官方域名早期退出、ICP 备案核查、域名仿冒检测（编辑距离 / 去连字符比对）、代码工程化与 AI 生成质量评估。
+- **拦截任意下载入口**：`<a>` / `<button>` / `<div>` 等任意元素，并覆盖 JS 程序化下载（`window.open` / `a.click` / `blob` / `location` 跳转）。
+- **自动下载竞速兜底**：`<meta refresh>`、服务端强制下载（`Content-Disposition: attachment`）等「点进即下」场景也能拦截。
+- **跳转链污染追踪**：危险站 → 跳转新站（银狐跳转链）时，仍能识别并拦截下游下载。
+- **智能免误拦**：官方 / 搜索引擎白名单；`file://` 本地文件、浏览器内部页、本地开发服务器自动跳过。
+
+---
+
+## 🛡️ 工作原理
+
+1. **采集**：页面域名、HTML、下载链接、代码特征。
+2. **评分**：加权评分引擎计算风险分（0–200+），命中组合信号直接升级为危险。
+3. **预警**：达到阈值触发 `warn`（提醒）或 `danger`（拦截 + 弹窗 + 禁用下载入口）。
+4. **兜底**：后台 `chrome.downloads` 监听，覆盖内容脚本判定前的自动下载。
+5. **AI 融合（可选）**：开启 Max 模式后，网页/文件的可疑信号可经本地提取后送 AI 服务商复核，结论回写拦截浮层与扫描卡片。
+
+## 📦 安装
+
+- **开发者模式加载**：克隆本仓库 → 打开 `chrome://extensions`（或 Edge 的 `edge://extensions`）→
+  开启「开发者模式」→ 「加载已解压的扩展程序」→ 选择仓库根目录。
+
+## 📁 目录结构
+
+```
+SilverFoxBlocker/
+├── manifest.json          # MV3 清单
+├── background.js          # Service Worker：下载兜底 / 跳转链追踪
+├── content/               # 内容脚本：页面分析 + 拦截浮层
+├── rules/                 # 检测规则（iocs.js）+ 评分引擎（analyzer.js）
+├── ui/                    # 弹窗 / 设置
+├── icons/                 # 扩展图标（16/48/128）
+└── icon-src/              # 图标矢量源（shield.svg）
+```
+
+## ⚠️ 可能误拦与免责
+
+本扩展采用**启发式特征评分**。虽已内置官方 / 搜索引擎白名单、本地文件（`file://`）与浏览器内部页自动跳过等免误拦措施，但**仍有可能把个别正常网站误判为风险**。
+
+**遇到误拦怎么办：**
+
+1. 在扩展设置里把该域名加入**白名单**，立即放行；
+2. 到 [Issues](https://github.com/yinbo345/silverfox-guard/issues) 反馈网址，我会针对性补特征；
+3. 临时想访问，可在弹窗里选择「我知道风险，继续访问 / 仍要下载」（需二次确认）。
+
+> 它只负责「在你被诱导下载前尝试阻止」，不能替代专业的安全软件；若发现钓鱼网站**漏报**，同样欢迎在 Issues 反馈。
+
+## ⚠️ 已知限制：第三方下载器（IDM / 迅雷 / EagleGet 等）
+
+浏览器扩展**只能在 Chrome / Edge 的下载与网络栈内拦截**。IDM 等下载器会安装一个**原生 companion 进程 + 浏览器插件**，在「点击 / 右键 / mousedown」阶段就把链接 URL 抢走、由它自己的进程下载——此时 `chrome.downloads.onCreated` **根本不会触发**，后台兜底层（L3）因此失效。这是浏览器扩展的固有限制，并非本扩展的 bug。
+
+本扩展采用**「在 URL 抵达下载器之前拦截」**的分层思路来弥补（对应原作 L0/L2）：
+
+- **页面级硬钩子**（`document_start` 即安装）：覆盖 `window.open`、`<a>.click` 原型、`location` 跳转，并在 **`mousedown` / `pointerdown` 捕获阶段**就拦截下载入口——抢在 IDM 于 mousedown 抢 URL 之前。
+- **元素禁用**：命中下载入口的按钮会被置灰、移除 `href`、`pointer-events:none` 并拦截 `contextmenu`，使「右键 → 用 IDM 下载 / 另存为」也失效。
+- **警示提醒**：风险页浮层会提示「临时关闭 IDM 的浏览器接管」。
+
+> 仍无法 100% 覆盖的情形：用户**手动复制 URL 粘贴进 IDM**、或把 IDM 设为**系统默认下载器**由 OS 层接管——这类下载完全不经过浏览器，任何扩展都无法拦截。解决方法是访问风险站时临时关闭下载器的浏览器接管功能。
+
+## 🔒 隐私
+
+本扩展核心防护全部在本地完成。可选的云端 AI 分析默认关闭，仅发送页面文本/URL/标题或本地提取的文件特征摘要（不含文件正文），经 HTTPS 发往您自选的 AI 服务商。我们不收集个人身份信息、不运营 AI 服务器。完整说明见[隐私政策](https://yinbo345.github.io/silverfox-guard/PRIVACY.md)。
+
+## 💖 支持作者（爱发电）
+
+如果这个扩展帮到了你，欢迎到 [爱发电](https://afdian.com/a/silverfox) 支持作者。
+赞助者将列入公开感谢名单，在扩展的更新日志与发布说明中获得署名鸣谢。
+你的支持让银狐防护这个免费开源工具能持续更新检测规则、修误报、补新平台适配。
+
+## 📜 许可证
+
+原算法与部分规则来自 [Lolitide/VirusDetector](https://github.com/Lolitide/VirusDetector)，以 MIT License 发布。
+改良版（SilverFox Guard）同样以 MIT License 发布，详见 [LICENSE](./LICENSE)。
+本仓库为其 v1.6.3 预览版的二次修改版本，同样以 MIT License 发布，详见 [LICENSE](./LICENSE)。
+版权声明：Copyright (c) Lolitide, yinbo345, bbjj12345。
