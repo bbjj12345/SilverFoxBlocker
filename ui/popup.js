@@ -1,4 +1,4 @@
-/* popup.js — 银狐防护弹出面板逻辑 */
+/* popup.js — SilverFoxBlocker 弹出面板逻辑 */
 'use strict';
 
 const DEFAULTS = {

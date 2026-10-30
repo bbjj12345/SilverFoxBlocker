@@ -789,7 +789,7 @@
   //   当成"页面上的下载入口"→ 灰化 + 拦截点击（neutralize 还会设 pointer-events:none）
   //   ⇒ 表现为「拦截弹窗的按钮点了没反应，甚至又弹出一个下载拦截窗」。
   // 改为自行沿 parentElement 上溯并直接比对 class，完全不依赖 closest/querySelector。
-  const _SF_UI_CLASSES = ['sf-overlay', 'sf-banner', 'sf-hint', 'sf-toast', 'sf-ai-card', 'sf-fallback'];
+  const _SF_UI_CLASSES = ['sf-overlay', 'sf-banner', 'sf-hint', 'sf-toast', 'sf-fallback'];
   function isSfUiElement(el) {
     let cur = el, guard = 0;
     while (cur && cur.nodeType === 1 && guard++ < 64) {
@@ -1144,25 +1144,19 @@
   }
 
   function renderWarning(card, result) {
-    const isAi = !!(result && result.aiBrand); // 本次为云端 AI 官网核验判出的仿冒
     // ⚠️ reasons 未必是数组（异常判定路径），必须兜底，否则 map 直接抛错 → 整屏只剩遮罩
     const reasons = Array.isArray(result && result.reasons) ? result.reasons : [];
     const reasonsHtml = reasons.map((r) =>
-      '<li' + (r && r.ai ? ' class="sf-reason-ai"' : '') + '><span class="sf-dot"></span><span><b>' + escapeHtml(r && r.label) + '</b><br>' + escapeHtml((r && r.detail) || '') + '</span></li>'
+      '<li><span class="sf-dot"></span><span><b>' + escapeHtml(r && r.label) + '</b><br>' + escapeHtml((r && r.detail) || '') + '</span></li>'
     ).join('');
 
-    const aiBadge = isAi
-      ? '<div class="sf-ai-badge"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 4 7v5c0 5 3.4 8.5 8 9 4-1.3 7-4.4 7-9V7l-7-4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>AI 判断 · 官网核验不符</div>'
-      : '';
-    const subText = isAi
-      ? '云端 AI 经官网核验判定：当前站点 <b>' + escapeHtml(location.hostname) + '</b> 仿冒品牌「<b>' + escapeHtml(result.aiBrand) + '</b>」官方域名「' + escapeHtml(result.aiOfficial || '') + '」。<br>为防止木马植入，已自动禁用本页所有下载入口。'
-      : '当前站点 <b>' + escapeHtml(location.hostname) + '</b> 命中 ' + reasons.length +
+    const subText =
+      '当前站点 <b>' + escapeHtml(location.hostname) + '</b> 命中 ' + reasons.length +
       ' 项风险特征（风险分 ' + (result.score || 0) + ' / 阈值 ' + (result.threshold || 0) + '）。<br>为防止木马植入，已自动禁用本页所有下载入口。';
 
     card.innerHTML =
       SHIELD_SVG +
       '<h2 class="sf-title">检测到银狐木马风险网站</h2>' +
-      aiBadge +
       '<p class="sf-sub">' + subText + '</p>' +
       '<ul class="sf-reasons">' + reasonsHtml + '</ul>' +
       '<div class="sf-actions">' +
@@ -1492,149 +1486,6 @@
     } catch (e) {}
   }
 
-  // ===== 后台自动 AI 网页分析（随页面加载触发，不进悬浮球）=====
-  // 触发机制类比现有本地规则引擎：run() 本地分析完成后异步发起，不阻塞本地判定。
-  // 仅当用户在设置中开启 Max 模式 + 「借助云端AI分析网页」子开关时生效。
-  let aiAnalyzed = false; // 本页仅分析一次，避免重复请求
-  let settingsRef = null;  // 缓存最近一次 settings，供 aiRaiseDanger 同步复用（避免重复读）
-  function maybeAiAnalyze() {
-    if (aiAnalyzed) return;
-    aiAnalyzed = true;
-    getSettings().then(function (settings) {
-      settingsRef = settings;
-      if (!settings.aiMaxMode || !settings.aiCloudWebAnalyse) return;
-      // 受限页面跳过（chrome://、本地文件等无正文可读）
-      const proto = (location.protocol || '').toLowerCase();
-      if (proto !== 'http:' && proto !== 'https:') return;
-      const host = (location.hostname || '').toLowerCase();
-      if (isAllowlisted(host, settings.allowlist) || isTrustedDispatch(host)) return; // 可信分发域名不分析
-      let bodyText = '';
-      try { bodyText = (document.body && document.body.innerText) || ''; } catch (e) {}
-      if (bodyText.length > 6000) bodyText = bodyText.slice(0, 6000);
-      if (!bodyText.trim()) return;
-      sendMsg({ type: 'sf-ai-analyze', page: { url: location.href, title: document.title || '', text: bodyText } })
-        .then(function (r) {
-          if (!r || !r.ok) {
-            // 仅当云端返回「需用户干预」类错误（额度耗尽/限流/Key 失效）才提示一次，
-            // 明确区分「本地检测正常」与「云端 AI 分析失败」，并建议关闭 Max 模式。
-            if (r && r.needAction) maybeShowAiCloudFailOnce(r.err);
-            return; // 其余失败（网络抖动/无返回）静默，不影响防护
-          }
-          if (r.level === '高') {
-            // B1 官网核验判定为仿冒：升级为正式危险处置——弹网页内警告浮层 + 锁定下载入口，
-            // 与本地 danger 流程一致（而非仅弹一个会自动消失的轻量 AI 卡片）。
-            aiRaiseDanger(r);
-          } else if (r.level === '中') {
-            // 安静模式（remindMode='quiet'）：仅危险告警，不弹软提示卡，避免打扰。
-            if (settings.remindMode !== 'quiet') showAiResult(r);
-          }
-        })
-        .catch(function () {});
-    });
-  }
-
-  // 云端 AI 分析失败「一次性」提示（低干扰）：
-  // 用 sessionStorage 锁整段冷却期（10 分钟）只弹一次，避免限流期间每个新页面都刷屏。
-  // 文案明确区分「本地检测正常」与「云端 AI 分析失败」，并建议关闭 Max 模式。
-  const AI_CLOUD_FAIL_KEY = 'sf_ai_cloud_fail_shown';
-  const AI_CLOUD_FAIL_TTL = 10 * 60 * 1000; // 10 分钟
-  function maybeShowAiCloudFailOnce(detail) {
-    let ts = 0;
-    try { ts = parseInt(sessionStorage.getItem(AI_CLOUD_FAIL_KEY) || '0', 10) || 0; } catch (e) {}
-    const now = Date.now();
-    if (now - ts < AI_CLOUD_FAIL_TTL) return; // 冷却期内已提示过，跳过
-    try { sessionStorage.setItem(AI_CLOUD_FAIL_KEY, String(now)); } catch (e) {}
-    showAiCloudFailToast(detail);
-  }
-  // 专用提示：明确区分「本地检测正常」与「云端 AI 分析失败」，建议关闭 Max 模式。
-  // 带换行 + 最大宽度 + 较长停留（5s），不刷屏（受 maybeShowAiCloudFailOnce 冷却锁约束）。
-  let aiFailEl = null, aiFailTimer = null;
-  function showAiCloudFailToast(detail) {
-    if (!document.body) return;
-    if (!aiFailEl || !document.body.contains(aiFailEl)) {
-      aiFailEl = document.createElement('div');
-      aiFailEl.className = 'sf-ai-fail-toast';
-      document.body.appendChild(aiFailEl);
-    }
-    aiFailEl.textContent = '本地检测正常 · 云端 AI 分析失败（' + (detail || '额度或密钥问题') + '）· 建议关闭 Max 模式';
-    aiFailEl.style.display = 'block';
-    clearTimeout(aiFailTimer);
-    aiFailTimer = setTimeout(function () { if (aiFailEl) aiFailEl.style.display = 'none'; }, 5000);
-  }
-
-  // B1 官网核验判定为仿冒（level=高）时，升级为正式危险处置：
-  // 与本地 danger 流程一致——弹网页内警告浮层、锁定本页全部下载入口、上报检测。
-  // 不重复弹 AI 轻量卡片（避免两套提示打架）；已确认放行（dangerAcknowledged）则只刷新 banner 计数。
-  function aiRaiseDanger(r) {
-    if (dangerAcknowledged) return;
-    const brandObj = (r && r.brand) || {};
-    const official = brandObj.official || '';
-    const brandName = brandObj.brand || '';
-    const detailTxt = (r && r.summary)
-      ? r.summary
-      : '当前域名与 AI 推断的官方域名不一致，疑似仿冒';
-    const reasons = [{
-      label: '官网核验不符（AI 判定仿冒）',
-      detail: '品牌「' + (brandName || '未知') + '」AI 推断官方域名「' + (official || '未知') + '」，与当前访问域名「' + location.hostname + '」不一致，疑似仿冒。' + (detailTxt ? ('\n' + detailTxt) : ''),
-      weight: 100,
-      ai: true
-    }];
-    const result = {
-      analyzed: true,
-      hostname: location.hostname,
-      score: 100,
-      threshold: 70,
-      level: 'danger',
-      detected: true,
-      aiBrand: brandName,
-      aiOfficial: official,
-      reasons: reasons,
-      features: { domainImpersonation: true }
-    };
-    lastResult = Object.assign({ blockedCount: 0 }, result);
-    dangerActive = true;
-    // 仿冒站属高置信信号 → 全面锁定（禁用下载入口 + 拦截程序化导航），与本地 danger 同源处理。
-    navBlock = true;
-    fullLockdown = true;
-    installHardGuards();
-    if (settingsRef && settingsRef.autoBlockDownloads) blockAllDownloadEntries();
-    updateBannerCount();
-    if (settingsRef && settingsRef.showWarning) showWarning(result);
-    if (!dangerReported) {
-      if (settingsRef && settingsRef.notify) sfNotify(result);
-      reportDetection(result);
-      dangerReported = true;
-    }
-  }
-
-  // 页面内 AI 分析结果卡片（独立、低干扰，与本地 danger 警告区分）
-  let aiCardEl = null;
-  function showAiResult(r) {
-    if (aiCardEl && document.body.contains(aiCardEl)) return;
-    if (!document.body) return;
-    let card = null;
-    try {
-      card = NATIVE.mk('div');
-      if (!card) return;
-      card.id = 'sf-ai-card';
-      card.className = 'sf-ai-card sf-ai-' + (r.level === '高' ? 'high' : 'mid');
-      const iconSvg = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 5 6v6c0 4.6 3 7.7 7 9 4-1.3 7-4.4 7-9V6l-7-3Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 8v4l3 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-      // 关闭按钮同样走事件委托，避免 querySelector 失效导致关不掉
-      sfBindUiActions(card, { 'ai-close': function () { closeEl(card); } });
-      NATIVE.put(document.body, card);
-      card.innerHTML =
-        '<div class="sf-ai-head">' + iconSvg +
-        '<span class="sf-ai-title">AI 网页分析</span>' +
-        '<span class="sf-ai-level">风险：' + escapeHtml(r.level) + '</span>' +
-        '<button class="sf-ai-close" data-sf-act="ai-close" aria-label="关闭" type="button">×</button></div>' +
-        '<div class="sf-ai-body">' + escapeHtml((r.summary || '').split('\n').slice(0, 4).join('\n')) + '</div>';
-      aiCardEl = card;
-      // 自动消失（中危 8s，高危 12s）
-      setTimeout(function () { closeEl(card); }, r.level === '高' ? 12000 : 8000);
-    } catch (e) {
-      try { if (card) NATIVE.rm(card); } catch (e2) {}
-    }
-  }
 
   // ===== 主流程 =====
   function recomputeLevel(result, sensitivity) {
@@ -1792,8 +1643,6 @@
     } catch (e) {
       reportVerdict('safe');
     }
-    // 后台自动 AI 网页分析：随页面加载异步触发，独立于本地规则判定，不进悬浮球
-    try { maybeAiAnalyze(); } catch (e) {}
   }
 
   // ===== 硬拦截钩子（document_start 即安装，抢在站点脚本之前） =====

@@ -2,7 +2,7 @@
 .hidden { display: none !important; }
 input[type="file"][hidden] { display: none !important; }
 
-/* options.css — 银狐防护设置（侧边栏分类 · Liquid Glass） */
+/* options.css — SilverFoxBlocker 设置（侧边栏分类 · Liquid Glass） */
 /* --sf-scale 由 JS 弹性弹簧(spring)逐帧驱动，实现拖动手感 + 松手/重置的弹性回弹。
    仍注册为 <number> 类型以备不时之需；实际动画不走 CSS transition，避免与 spring 叠加导致滞后。 */
 @property --sf-scale {
@@ -1624,6 +1624,8 @@ html.theme-light .upd-check-toast .uc-ghost:hover { color: #1b2333; }
 .upd-checking { margin-left: 10px; font-size: 12px; color: #8a90a0; }
 html.theme-light .about-row .btn-mini { background: rgba(47,111,237,.1); color: #2f6fed; border-color: rgba(47,111,237,.4); }
 html.theme-light .about-row .btn-mini:hover { background: rgba(47,111,237,.18); }
+/* 更新检查链接（<a class="btn-mini">）保持按钮外观，不被通用链接 hover 下划线干扰 */
+.about-row .av a.btn-mini, .about-row .av a.btn-mini:hover { text-decoration: none; }
 
 /* 盾牌图标（绿=正常 / 红=感染 / 灰=离线），由内联 SVG 的 currentColor 驱动 */
 .rescue-ico.shield-normal { color: #39d98a; }

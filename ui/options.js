@@ -1,4 +1,4 @@
-/* options.js — 银狐防护设置控制面板逻辑（侧边栏分类版） */
+/* options.js — SilverFoxBlocker 设置控制面板逻辑（侧边栏分类版） */
 'use strict';
 
 // 360 系统急救箱官方下载直链（绿色版，无需安装）。现为「备用直链」：点击按钮时会自动抓取
@@ -11,12 +11,6 @@ const RESCUE_DOWNLOAD_URL = 'https://dl.360safe.com/360c0mpkill_5.1.64.1289-0701
 const HRKILL_DOWNLOAD_URL = 'https://down7.huorong.cn/hrkill/hrkill_unsign-1.0.0.200.exe';
 
 // （银狐系统解锁工具已停止维护并下架，此处不再提供下载入口。）
-
-// 官网主站（免费域名，长期稳定、无需续费）。访问 / 下载官网统一入口，不再弹线路选择器。
-const OFFICIAL_SITE = 'https://silverfoxguard.dpdns.org';
-function visitOfficialSite(path) {
-  window.open(OFFICIAL_SITE + (path || '/'), '_blank', 'noopener');
-}
 
 const DEFAULTS = {
   enabledGlobal: true,
@@ -280,82 +274,6 @@ function setupPixelEgg() {
 }
 
 /* 扩展自动更新提示：仅「版本升级」时弹出；首次安装与降级均不弹（修复误弹 bug） */
-
-/* ===== 自动更新检查 =====
-   打开设置页自动拉官网 version.json 比对；有更新且未被「稍后提醒」忽略才弹底部小弹窗（无更新/网络失败一律安静）。
-   关于页「检查更新」按钮触发手动检查：带「检查中…」加载态，结果弹窗或「已是最新」提示。
-   数据来源：https://silverfoxguard.dpdns.org/version.json（含 version / releaseNotes / downloadUrl / releaseUrl） */
-function escHtml(s) {
-  return String(s).replace(/[&<>"']/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-  });
-}
-function checkUpdate(manual) {
-  var box = $('updateCheckToast');
-  if (!box) return;
-  var curVer = (chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '0';
-  var VER_URL = 'https://silverfoxguard.dpdns.org/version.json';
-
-  function hideBox() {
-    box.classList.add('is-hiding');
-    setTimeout(function () { box.hidden = true; box.classList.remove('is-hiding'); }, 280);
-  }
-  function finishSpin() {
-    var btn = $('manualCheckUpdate'), spin = $('updChecking');
-    if (btn) btn.disabled = false;
-    if (spin) spin.hidden = true;
-  }
-  function showUpdate(latest, data) {
-    box.classList.remove('is-latest');
-    $('uctTitle').innerHTML = '发现新版本 <b id="uctVer">v' + latest + '</b>';
-    var notes = $('uctNotes');
-    var arr = Array.isArray(data.releaseNotes) ? data.releaseNotes
-      : (data.releaseNotes ? String(data.releaseNotes).split('\n').filter(Boolean) : []);
-    if (arr.length) { notes.innerHTML = arr.slice(0, 4).map(function (h) { return '<div>· ' + escHtml(h) + '</div>'; }).join(''); notes.hidden = false; }
-    else { notes.innerHTML = ''; notes.hidden = true; }
-    var acts = box.querySelector('.uc-actions'); if (acts) acts.hidden = false;
-    var dl = $('uctDownload'); if (dl) {
-      dl.href = data.downloadUrl || 'https://silverfoxguard.dpdns.org/';
-      dl.onclick = function (e) { e.preventDefault(); visitOfficialSite('/'); };
-    }
-    var rel = $('uctRelease'); if (rel) rel.href = data.releaseUrl || ('https://github.com/yinbo345/silverfox-guard/releases/tag/v' + latest);
-    box.hidden = false;
-  }
-  function showLatest() {
-    box.classList.add('is-latest');
-    $('uctTitle').innerHTML = '已是最新版本 <b>✓</b>';
-    var notes = $('uctNotes'); if (notes) { notes.innerHTML = ''; notes.hidden = true; }
-    var acts = box.querySelector('.uc-actions'); if (acts) acts.hidden = true;
-    box.hidden = false;
-    setTimeout(hideBox, 2200);
-  }
-
-  if (manual) {
-    var btn = $('manualCheckUpdate'), spin = $('updChecking');
-    if (btn) btn.disabled = true;
-    if (spin) spin.hidden = false;
-  }
-
-  fetch(VER_URL, { cache: 'no-store' })
-    .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('http ' + r.status)); })
-    .then(function (data) {
-      var latest = data.version || '0';
-      if (cmpVer(latest, curVer) > 0) {
-        if (!manual) {
-          chrome.storage.local.get({ sfUpdateDismissed: '' }, function (r) {
-            if (r.sfUpdateDismissed === latest) { finishSpin(); return; }
-            showUpdate(latest, data); finishSpin();
-          });
-        } else {
-          showUpdate(latest, data); finishSpin();
-        }
-      } else {
-        if (manual) showLatest();
-        finishSpin();
-      }
-    })
-    .catch(function () { finishSpin(); });
-}
 
 function setupUpdateToast() {
   const box = $('updToast');
@@ -1062,7 +980,7 @@ function bindRulesIO() {
             showToast();
           });
         } catch (e) {
-          alert('文件解析失败，请确认是银狐防护导出的 JSON 配置。');
+          alert('文件解析失败，请确认是 SilverFoxBlocker 导出的 JSON 配置。');
         } finally {
           impFile.value = '';
         }
@@ -1236,33 +1154,10 @@ async function init() {
   setupPixelEgg();
   setupUpdateToast();
 
-  // 自动更新检查：打开设置页自动查官网版本（有更新才提示）；关于页「检查更新」手动触发
-  (function bindUpdateCheck() {
-    var mcu = $('manualCheckUpdate');
-    if (mcu) mcu.addEventListener('click', function () { checkUpdate(true); });
-    var close = $('uctClose');
-    if (close) close.addEventListener('click', function () {
-      var b = $('updateCheckToast'); if (!b) return;
-      b.classList.add('is-hiding'); setTimeout(function () { b.hidden = true; b.classList.remove('is-hiding'); }, 280);
-    });
-    var later = $('uctLater');
-    if (later) later.addEventListener('click', function () {
-      var b = $('updateCheckToast'); if (!b) return;
-      b.classList.add('is-hiding'); setTimeout(function () { b.hidden = true; b.classList.remove('is-hiding'); }, 280);
-      var vEl = $('uctVer'); var v = vEl ? vEl.textContent.replace(/^v/, '') : '';
-      if (v && hasStorageLocal()) chrome.storage.local.set({ sfUpdateDismissed: v });
-    });
-    if (hasStorage()) checkUpdate(false);
-  })();
-
-  // 关于页：反馈与建议 —— 经官网 Worker 转发到作者邮箱（Cloudflare Email Routing + send_email
-  // 绑定，免费、零第三方、无需任何 Key）。★ 收件地址不在扩展里，开源代码也看不到它。
-  // 两条铁律：① 失败**绝不假装成功**（按服务端真实回包说话）；② 发送失败必留「一键复制」退路，
-  // 不让用户卡在一个走不通的按钮上。
+  // 关于页：反馈与建议 —— 点击「发送反馈」打开项目 GitHub Issues 新建页并预填内容。
+  // 零第三方表单、无邮箱暴露；失败绝不假装成功，短文本有最小长度校验。
   (function bindFeedback() {
     var btn = $('fbSend'), spin = $('fbSpin'), msg = $('fbMsg');
-    var FEEDBACK_URL = 'https://silverfoxguard.dpdns.org/api/feedback';
-    var MAIL_TO = 'feedback@silverfoxguard.dpdns.org';
 
     // 分段控件：与项目其它 .seg 完全同款（glider 定位 + .active 切换），不用原生 select。
     // ★ 「关于」是子页面，初始很可能是 display:none ⇒ 量出来的宽度是 0；除了 rAF + resize，
@@ -1311,35 +1206,31 @@ async function init() {
       var ta = $('fbText');
       var text = ((ta && ta.value) || '').trim();
       if (text.length < 5) { show('请把问题描述写清楚一点（至少 5 个字），否则没法定位。', 'warn'); if (ta) ta.focus(); cb(null); return; }
-      cb({
-        type: fbType(),
-        message: text.slice(0, 4000),
-        hp: '',     // 蜜罐：正常用户永远留空；被脚本填了就丢弃（见 Worker）
-      });
+      cb({ type: fbType(), message: text.slice(0, 4000) });
     }
-    // 纯文本渲染：复制出来的东西要能直接贴进任何邮箱 / GitHub Issue
 
     if (btn) btn.addEventListener('click', function () {
       btn.disabled = true; if (spin) spin.hidden = false; show('');
       prepare(function (p) {
         if (!p) { btn.disabled = false; if (spin) spin.hidden = true; return; }
-        fetch(FEEDBACK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) })
-          .then(function (r) {
-            // ★ 服务端可能因未配置发信通道而回 503 —— 如实转达，不粉饰
-            return r.json().then(function (j) { return { status: r.status, j: j }; },
-              function () { return { status: r.status, j: null }; });
-          })
-          .then(function (o) {
-            if (o.j && o.j.ok) { show('已发送，谢谢！作者会看到这条反馈。', 'ok'); if ($('fbText')) $('fbText').value = ''; }
-            else {
-              var why = (o.j && o.j.error) ? o.j.error : ('HTTP ' + o.status);
-              show('发送失败：' + why + '。可改用邮箱发到 ' + MAIL_TO + '。', 'warn');
-            }
-          })
-          .catch(function (e) {
-            show('发送失败（网络不可达）：' + ((e && e.message) || e) + '。可改用邮箱发到 ' + MAIL_TO + '。', 'warn');
-          })
-          .then(function () { btn.disabled = false; if (spin) spin.hidden = true; });
+        var title = '[反馈] ' + p.type + '：' + p.message.slice(0, 40);
+        var body = '问题类型：' + p.type + '\n\n' + p.message + '\n\n（以上反馈来自扩展内置「反馈与建议」）';
+        var url = 'https://github.com/bbjj12345/SilverFoxBlocker/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
+        var opened = false;
+        try {
+          var a = document.createElement('a');
+          a.href = url; a.target = '_blank'; a.rel = 'noreferrer'; a.style.display = 'none';
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          opened = true;
+        } catch (e) {}
+        if (!opened) { try { window.open(url, '_blank'); opened = true; } catch (e) {} }
+        if (opened) {
+          show('已打开 GitHub 反馈页面，请登录后提交。谢谢你的反馈！', 'ok');
+          if ($('fbText')) $('fbText').value = '';
+        } else {
+          show('未能打开 GitHub，请手动访问 https://github.com/bbjj12345/SilverFoxBlocker/issues 提交。', 'warn');
+        }
+        btn.disabled = false; if (spin) spin.hidden = true;
       });
     });
   })();
