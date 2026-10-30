@@ -61,7 +61,7 @@ SilverFoxBlocker/
 **遇到误拦怎么办：**
 
 1. 在扩展设置里把该域名加入**白名单**，立即放行；
-2. 到 [Issues](https://github.com/yinbo345/silverfox-guard/issues) 反馈网址，我会针对性补特征；
+2. 在浏览器扩展**关于**内，选择**误报**；
 3. 临时想访问，可在弹窗里选择「我知道风险，继续访问 / 仍要下载」（需二次确认）。
 
 > 它只负责「在你被诱导下载前尝试阻止」，不能替代专业的安全软件；若发现钓鱼网站**漏报**，同样欢迎在 Issues 反馈。
@@ -80,17 +80,17 @@ SilverFoxBlocker/
 
 ## 🔒 隐私
 
-本扩展核心防护全部在本地完成。可选的云端 AI 分析默认关闭，仅发送页面文本/URL/标题或本地提取的文件特征摘要（不含文件正文），经 HTTPS 发往您自选的 AI 服务商。我们不收集个人身份信息、不运营 AI 服务器。完整说明见[隐私政策](https://yinbo345.github.io/silverfox-guard/PRIVACY.md)。
+本扩展核心防护全部在本地完成。可选的云端 AI 分析默认关闭，仅发送页面文本/URL/标题或本地提取的文件特征摘要（不含文件正文），经 HTTPS 发往您自选的 AI 服务商。我们不收集个人身份信息、不运营 AI 服务器。完整说明见[隐私政策](https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md)。
 
 ## 💖 支持作者（爱发电）
 
-如果这个扩展帮到了你，欢迎到 [爱发电](https://afdian.com/a/silverfox) 支持作者。
+如果这个扩展帮到了你，欢迎到 [爱发电](……) 支持作者。
 赞助者将列入公开感谢名单，在扩展的更新日志与发布说明中获得署名鸣谢。
 你的支持让银狐防护这个免费开源工具能持续更新检测规则、修误报、补新平台适配。
 
 ## 📜 许可证
 
 原算法与部分规则来自 [Lolitide/VirusDetector](https://github.com/Lolitide/VirusDetector)，以 MIT License 发布。
-改良版（SilverFox Guard）同样以 MIT License 发布，详见 [LICENSE](./LICENSE)。
-本仓库为其 v1.6.3 预览版的二次修改版本，同样以 MIT License 发布，详见 [LICENSE](./LICENSE)。
+改良版（SilverFox Guard）同样以 MIT License 发布，详见 [LICENSE](https://github.com/yinbo345/silverfox-guard/blob/main/LICENSE)。
+本仓库为其 v1.6.3 预览版的二次修改版本，同样以 MIT License 发布，详见 [LICENSE](https://github.com/bbjj12345/SilverFoxBlocker/blob/main/LICENSE)。
 版权声明：Copyright (c) Lolitide, yinbo345, bbjj12345。
