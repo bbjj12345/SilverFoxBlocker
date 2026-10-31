@@ -53,7 +53,7 @@ The extension **does not use any remotely hosted executable scripts**. All detec
 
 ---
 
-## 五、第三方共享 / Third parties
+## 四、第三方共享 / Third parties
 
 我们不与任何第三方共享、出售或交易您的个人数据。除上文所述的公共 RDAP 查询、资源解析请求（仅本地读取响应以判定真实地址，不构成数据共享）、后台按需拉取的云端官方域名库（仅取回一份公开官方域名清单、不向该云端回传任何信息）、「银狐急救」中用户主动触发的 急救工具 下载外，本扩展不调用任何第三方服务、广告或分析平台。
 
@@ -61,7 +61,7 @@ We do not share, sell, or trade your personal data with any third party. Apart f
 
 ---
 
-## 六、用户控制 / Your controls
+## 五、用户控制 / Your controls
 
 - 可随时关闭扩展；
 - 可将信任的网站加入白名单；
@@ -70,7 +70,7 @@ We do not share, sell, or trade your personal data with any third party. Apart f
 You may disable protection globally at any time, add trusted sites to the allowlist, and clear local statistics.
 ---
 
-## 七、儿童 / Children
+## 六、儿童 / Children
 
 本扩展不面向 儿童，也不故意收集儿童信息。
 
