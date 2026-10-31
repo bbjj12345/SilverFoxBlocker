@@ -12,7 +12,7 @@ Chrome / Edge 浏览器扩展（Manifest V3），实时检测并拦截「银狐�
 > 特此致谢二位，本改良版同样以 MIT License 发布。
 > 原始版权归 Lolitide 与 yinbo345 所有。
 
-当前版本：**v1.0**
+当前版本：**v1.0.0**
 
 ---
 
