@@ -19,6 +19,38 @@ function getSettings() {
   });
 }
 
+const LEVEL_COLOR = { danger: '#ff6b6b', warn: '#ffb454', safe: '#6ee7b7' };
+function formatAbsTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+         p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function loadPopupStats() {
+  chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, (r) => {
+    const st = r.stats || { warnings: 0, blocks: 0, recent: [] };
+    const w = $('ppWarn'), b = $('ppBlock');
+    if (w) w.textContent = st.warnings || 0;
+    if (b) b.textContent = st.blocks || 0;
+    const recent = Array.isArray(st.recent) ? st.recent : [];
+    const list = $('ppRecent'), empty = $('ppRecentEmpty');
+    if (!list) return;
+    if (!recent.length) { list.innerHTML = ''; if (empty) empty.hidden = false; return; }
+    if (empty) empty.hidden = true;
+    list.innerHTML = '';
+    recent.slice(0, 5).forEach((x) => {
+      const lv = x.level || 'safe';
+      const li = document.createElement('li');
+      const dot = document.createElement('span'); dot.className = 'rdot'; dot.style.background = LEVEL_COLOR[lv] || '#888';
+      const h = document.createElement('span'); h.className = 'h'; h.textContent = x.hostname || '未记录域名';
+      const t = document.createElement('span'); t.className = 's'; t.textContent = formatAbsTime(x.time);
+      li.append(dot, h, t);
+      list.appendChild(li);
+    });
+  });
+}
+
 async function init() {
   const settings = await getSettings();
 
@@ -53,6 +85,7 @@ async function init() {
   }
   const appEl = document.querySelector('.app');
   if (appEl) appEl.classList.toggle('guarding', !!settings.enabledGlobal);
+  loadPopupStats();
 
   // 两个入口：直接打开设置页对应子页面（#sec=<id> 由 options.js 接管跳转）
   const base = chrome.runtime.getURL('ui/options.html');
@@ -60,6 +93,9 @@ async function init() {
   if (openSettings) openSettings.addEventListener('click', () => chrome.tabs.create({ url: base + '#sec=detect' }));
   const openReport = $('openReport');
   if (openReport) openReport.addEventListener('click', () => chrome.tabs.create({ url: base + '#sec=about' }));
+
+  const ppMore = $('ppMore');
+  if (ppMore) ppMore.addEventListener('click', () => chrome.tabs.create({ url: base + '#sec=stats' }));
 }
 
 init();

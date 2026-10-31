@@ -10,11 +10,7 @@
   <div class="app">
     <header class="head sf-rise" style="--d:0">
       <div class="brand">
-        <svg class="logo" viewBox="0 0 24 24" fill="none">
-          <path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z" fill="rgba(120,180,255,.18)" stroke="#7db4ff" stroke-width="1.4"/>
-          <path d="M12 7.5 6 9.5v3.2c0 3.4 2.3 5.8 6 7.6 3.7-1.8 6-4.2 6-7.6V9.5l-6-2Z" fill="rgba(120,180,255,.0)"/>
-          <path d="M9 11.5l2 2 4-4" stroke="#9fe0c0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
+        <img class="logo" src="../icons/icon128.png" alt="SilverFoxBlocker">
         <div>
           <div class="name">SilverFoxBlocker</div>
           <div class="sub">拦截银狐木马投放站点</div>
@@ -23,8 +19,20 @@
       <span class="pill" id="globalPill">防护中</span>
     </header>
 
-    <button class="settings-btn sf-rise" id="openSettings" style="--d:1">打开控制面板</button>
-    <button class="report-btn sf-rise" id="openReport" style="--d:2">一键上报网站</button>
+    <div class="card sf-rise" id="statCard" style="--d:1">
+      <div class="stats">
+        <div class="stat"><div class="num" id="ppWarn">0</div><div class="cap">拦截风险网站</div></div>
+        <div class="stat"><div class="num" id="ppBlock">0</div><div class="cap">拦截下载</div></div>
+      </div>
+      <div class="recent">
+        <div class="sec-title">最近拦截的 5 个风险域名</div>
+        <ul class="recent-list" id="ppRecent"></ul>
+        <div class="recent-empty" id="ppRecentEmpty">暂无拦截记录</div>
+      </div>
+      <a class="recent-more" id="ppMore">查看完整防护统计 →</a>
+    </div>
+    <button class="settings-btn sf-rise" id="openSettings" style="--d:2">打开控制面板</button>
+    <button class="report-btn sf-rise" id="openReport" style="--d:3">一键上报网站</button>
   </div>
   <script src="popup.js"></script>
 </body>

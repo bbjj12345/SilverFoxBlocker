@@ -600,14 +600,56 @@ function setupNav() {
 function renderCategories(settings) {
   const list = $('catList');
   const cats = (window.SF_ANALYZER && window.SF_ANALYZER.CATEGORIES) || [];
+  const weights = settings.weights || {};
   list.innerHTML = cats.map((c) => {
     const on = settings.enabled[c.id] !== false;
-    return '<div class="row">' +
-      '<div class="rl"><div class="rt">' + c.label + '<span class="weight">权重 ' + c.weight + '</span></div>' +
+    // 用户自定义权重优先；否则用内置默认权重
+    const w = (typeof weights[c.id] === 'number') ? weights[c.id] : c.weight;
+    // 当前加载出来的权重即视为该项「默认」，供「恢复默认」按钮回退（data-default）
+    const defW = w;
+    return '<div class="row cat-row">' +
+      '<div class="rl"><div class="rt">' + c.label + '<span class="weight">权重 ' + w + '</span></div>' +
       '<div class="rd">' + (c.desc || '') + '</div></div>' +
-      '<label class="switch"><input type="checkbox" data-cat="' + c.id + '"' + (on ? ' checked' : '') + '><span class="slider"></span></label>' +
+      '<div class="cat-ctl">' +
+        '<div class="wedit" title="调整权重：保存设置后该维度的评分权重即按此值生效">' +
+          '<span class="wlabel">调整权重</span>' +
+          '<div class="wstepper">' +
+            '<button type="button" class="wstep" data-d="-1" aria-label="减少权重">−</button>' +
+            '<input type="number" class="winput" data-weight="' + c.id + '" data-default="' + defW + '" value="' + w + '" min="0" max="200" step="1" aria-label="' + c.label + ' 权重">' +
+            '<button type="button" class="wstep" data-d="1" aria-label="增加权重">+</button>' +
+          '</div>' +
+        '</div>' +
+        '<button type="button" class="wreset" data-reset="' + c.id + '" title="恢复为本项当前权重默认值">恢复默认</button>' +
+        '<label class="switch"><input type="checkbox" data-cat="' + c.id + '"' + (on ? ' checked' : '') + '><span class="slider"></span></label>' +
+      '</div>' +
       '</div>';
   }).join('');
+
+  // 权重编辑：步进按钮(±1) + 输入框实时联动，并同步更新同一行的「权重 XX」标签；「恢复默认」回退到加载值
+  list.querySelectorAll('.cat-row').forEach((row) => {
+    const inp = row.querySelector('.winput');
+    const pill = row.querySelector('.weight');
+    const stepper = row.querySelector('.wstepper');
+    const resetBtn = row.querySelector('.wreset');
+    if (!inp || !pill) return;
+    const clamp = (v) => Math.max(0, Math.min(200, isNaN(v) ? 0 : v));
+    const sync = () => { pill.textContent = '权重 ' + clamp(parseInt(inp.value, 10)); };
+    inp.addEventListener('input', sync);
+    stepper.querySelectorAll('.wstep').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const d = parseInt(btn.dataset.d, 10) || 0;
+        inp.value = clamp(parseInt(inp.value, 10) + d);
+        sync();
+      });
+    });
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        const def = parseInt(inp.dataset.default, 10) || 0;
+        inp.value = def;
+        sync();
+      });
+    }
+  });
 }
 
 function bindControls(settings) {
@@ -833,6 +875,17 @@ function bindRescue() {
 function collectSettings() {
   const enabled = {};
   document.querySelectorAll('input[data-cat]').forEach((cb) => { enabled[cb.dataset.cat] = cb.checked; });
+  // 权重：仅保存与默认不同的覆盖值（避免锁死后续默认权重变更）；无覆盖则不留 key
+  const defW = {};
+  (window.SF_ANALYZER && window.SF_ANALYZER.CATEGORIES || []).forEach((c) => { defW[c.id] = c.weight; });
+  const weights = {};
+  document.querySelectorAll('input[data-weight]').forEach((inp) => {
+    const id = inp.dataset.weight;
+    let v = parseInt(inp.value, 10);
+    if (isNaN(v)) v = (defW[id] != null) ? defW[id] : 0;
+    v = Math.max(0, Math.min(200, v));
+    if (defW[id] == null || v !== defW[id]) weights[id] = v;
+  });
   const sensSeg = $('sensitivity');
   const sensBtn = sensSeg ? sensSeg.querySelector('button.active') : null;
   const activeFont = (document.querySelector('.font-opt.active') || { dataset: {} }).dataset;
@@ -856,6 +909,7 @@ function collectSettings() {
     reduceMotion: ($('reduceMotion') ? $('reduceMotion').checked : false),
     layout: ((window.__sfSettings && window.__sfSettings.layout) || 'new'),   // 双布局：new(新版默认)/old(旧版)
     enabled,
+    weights,
     allowlist: splitLines($('allowlist').value),
     customKeywords: splitLines($('customKeywords').value),
     customBadDomains: splitLines($('customBadDomains').value)
@@ -872,14 +926,12 @@ function showToast() {
   setTimeout(() => t.classList.remove('show'), 1600);
 }
 
-function timeAgo(ts) {
+function formatAbsTime(ts) {
   if (!ts) return '';
-  const d = (Date.now() - ts) / 1000;
-  if (d < 60) return '刚刚';
-  if (d < 3600) return Math.floor(d / 60) + ' 分钟前';
-  if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
-  if (d < 86400 * 30) return Math.floor(d / 86400) + ' 天前';
-  try { return new Date(ts).toLocaleDateString(); } catch (e) { return ''; }
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+         p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
 const LEVEL_LABEL = { danger: '高危', warn: '警告', safe: '放行' };
 const LEVEL_COLOR = { danger: '#ff4d6d', warn: '#ffae42', safe: '#4be38b' };
@@ -929,7 +981,7 @@ function loadStats() {
           //   updateStats 的说明）⇒ 如实显示「未记录域名」，而不是一个看着像数据的占位词。
           const host = document.createElement('span'); host.className = 'dl-host'; host.textContent = x.hostname || '未记录域名';
           const lev = document.createElement('span'); lev.className = 'dl-lev'; lev.textContent = LEVEL_LABEL[lv] || lv;
-          const time = document.createElement('span'); time.className = 'dl-time'; time.textContent = timeAgo(x.time);
+          const time = document.createElement('span'); time.className = 'dl-time'; time.textContent = formatAbsTime(x.time);
           item.append(dot, host, lev, time);
           rl.appendChild(item);
         });

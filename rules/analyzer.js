@@ -1,5 +1,5 @@
 /*
- * analyzer.js — 银狐防护 评分引擎（多维度加权 + 早期退出 + 阈值分层）
+ * analyzer.js — SilverFoxBlocker 评分引擎（多维度加权 + 早期退出 + 阈值分层）
  *
  * 关键设计（吸收自 VirusDetector 开源实现）：
  *  1) 官方早期退出：域名命中 OFFICIAL_DOMAINS（精确/子域）→ 直接判安全，跳过后续所有规则。
@@ -1920,6 +1920,12 @@
       let r;
       try { r = cat.fn(data) || { hit: false, weight: 0, label: cat.id, detail: '' }; }
       catch (e) { r = { hit: false, weight: 0, label: cat.id, detail: '' }; }
+      // ★ 用户自定义权重：设置页「检测与拦截」逐项可调，保存后在此生效。
+      //   命中时使用用户权重；原权重为负（如老域名减分）则保持负号、取用户权重的绝对值，
+      //   使「权重」同时控制正负两侧的强度（避免出现「用户设 60 却仍 -20 减分」的割裂）。
+      if (r.hit && options.weights && typeof options.weights[cat.id] === 'number') {
+        r.weight = r.weight < 0 ? -Math.abs(options.weights[cat.id]) : options.weights[cat.id];
+      }
       // 只把正向风险维度计入 feature 组合（域名年龄减分等负向维度不参与组合升级）
       features[cat.id] = r.hit && r.weight > 0;
       if (r.hit) {

@@ -1,4 +1,4 @@
-/* content.css — 银狐防护警告浮层 / 拦截提示 / 常驻横幅
+/* content.css — SilverFoxBlocker 警告浮层 / 拦截提示 / 常驻横幅
    设计语言：Liquid Glass（深色渐变 + 毛玻璃 + 柔和阴影 + 丝滑动画） */
 @keyframes sf-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sf-rise { from { opacity: 0; transform: translateY(24px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }

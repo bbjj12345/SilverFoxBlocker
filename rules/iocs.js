@@ -117,7 +117,7 @@
     'hunan.gov.cn',             // 湖南省教育考试院（jyt.hunan.gov.cn）
     'xizang.gov.cn',            // 西藏教育考试院
     'chsi.com.cn',              // 阳光高考 / 学信网（教育部高校招生阳光工程指定平台）
-    // 银狐防护 · SilverFox Guard 项目官网（扩展分发页）
+    // 项目官方站点（扩展分发页，永不拦截）
     'silverfoxguard.dpdns.org',
     'silverfoxguard.top',     // 新主域名（2026-10-11 接入，避免官网被误报）
     // WorkBuddy 官网（用户实测曾被旧版误报，纳入 early-exit 永不拦截）

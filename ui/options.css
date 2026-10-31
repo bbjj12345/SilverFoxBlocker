@@ -123,7 +123,7 @@ body {
   position: sticky; top: 0; height: 100vh;
 }
 .brand { display: flex; align-items: center; gap: 12px; padding: 2px 8px 6px; }
-.brand .logo { width: 40px; height: 40px; flex: 0 0 auto; }
+.brand .logo { width: 40px; height: 40px; flex: 0 0 auto; border-radius: 10px; object-fit: contain; }
 .brand .b1 { font-size: calc(18px * var(--sf-scale)); font-weight: 800; letter-spacing: .5px; }
 .brand .b2 { font-size: calc(10.5px * var(--sf-scale)); opacity: .5; letter-spacing: 2px; }
 
@@ -219,6 +219,33 @@ body {
 .row .rl .rt { font-size: calc(13.5px * var(--sf-scale)); font-weight: 700; }
 .row .rl .rd { font-size: calc(11.5px * var(--sf-scale)); opacity: .6; margin-top: 3px; line-height: 1.5; }
 .weight { font-size: calc(10.5px * var(--sf-scale)); opacity: .55; margin-left: 7px; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,.08); }
+
+/* 检测维度行：右侧「开关 + 调整权重 + 恢复默认」控件组 */
+.cat-ctl { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; flex-wrap: wrap; row-gap: 8px; justify-content: flex-end; }
+.wedit { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.wedit .wlabel { font-size: calc(10px * var(--sf-scale)); opacity: .5; line-height: 1; }
+.wstepper { display: flex; align-items: stretch; height: 28px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); border-radius: 9px; overflow: hidden; }
+.wstepper .wstep { width: 24px; border: none; background: transparent; color: inherit; opacity: .65; font-size: 16px; line-height: 1; cursor: pointer; transition: background .15s, opacity .15s; }
+.wstepper .wstep:hover { background: rgba(255,255,255,.08); opacity: 1; }
+.wstepper .wstep:active { background: rgba(255,255,255,.14); }
+.wstepper .winput { width: 40px; border: none; background: transparent; color: inherit; text-align: center; font-size: calc(12px * var(--sf-scale)); font-weight: 700; -moz-appearance: textfield; }
+.wstepper .winput::-webkit-outer-spin-button, .wstepper .winput::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.wstepper .winput:focus { outline: none; }
+/* 每项「恢复默认」按钮：回退该项权重到加载时的默认值 */
+.wreset { flex: 0 0 auto; margin-left: 2px; padding: 5px 11px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: transparent; color: inherit; opacity: .65; font-size: calc(10.5px * var(--sf-scale)); cursor: pointer; transition: background .15s, opacity .15s, border-color .15s; }
+.wreset:hover { background: rgba(255,255,255,.08); opacity: 1; }
+.wreset:active { background: rgba(255,255,255,.14); }
+
+/* 浅色主题：权重编辑控件反色适配 */
+html.theme-light .wstepper { background: rgba(20,34,64,.05); border-color: rgba(20,34,64,.14); }
+html.theme-light .wstepper .wstep:hover { background: rgba(20,34,64,.08); }
+html.theme-light .wstepper .wstep:active { background: rgba(20,34,64,.12); }
+html.theme-light .wreset { border-color: rgba(20,34,64,.2); }
+html.theme-light .wreset:hover { background: rgba(20,34,64,.08); }
+html.theme-light .wreset:active { background: rgba(20,34,64,.12); }
+
+/* 字号缩放：猫图标彩蛋等不影响；此处仅确保步进器随界面缩放 */
+html.font-smiley .wedit .wlabel { font-size: calc(11px * var(--sf-scale)); }
 
 /* 子开关行（Max 模式下的「借助云端AI分析网页」）：默认缩起，仅 Max 开启时展开。
    用 class .collapsed 控制显隐，带非线性过渡动画（缓出 + 轻微回弹），关闭 Max 时自动收起并隐藏。 */

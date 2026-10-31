@@ -84,13 +84,13 @@ SilverFoxBlocker/
 
 ## 💖 支持作者（爱发电）
 
-如果这个扩展帮到了你，欢迎到 [爱发电](……) 支持作者。
+如果这个扩展帮到了你，欢迎到 [爱发电](https://ifadian.net/a/SilverFoxBlocker) 支持作者。
 赞助者将列入公开感谢名单，在扩展的更新日志与发布说明中获得署名鸣谢。
-你的支持让银狐防护这个免费开源工具能持续更新检测规则、修误报、补新平台适配。
+你的支持让 SilverFoxBlocker 这个免费开源工具能持续更新检测规则、修误报、补新平台适配。
 
 ## 📜 许可证
 
 原算法与部分规则来自 [Lolitide/VirusDetector](https://github.com/Lolitide/VirusDetector)，以 MIT License 发布。
-改良版（SilverFox Guard）同样以 MIT License 发布，详见 [LICENSE](https://github.com/yinbo345/silverfox-guard/blob/main/LICENSE)。
+改良版（SilverFoxBlocker）同样以 MIT License 发布，详见 [LICENSE](https://github.com/yinbo345/silverfox-guard/blob/main/LICENSE)。
 本仓库为其 v1.6.3 预览版的二次修改版本，同样以 MIT License 发布，详见 [LICENSE](https://github.com/bbjj12345/SilverFoxBlocker/blob/main/LICENSE)。
 版权声明：Copyright (c) Lolitide, yinbo345, bbjj12345。

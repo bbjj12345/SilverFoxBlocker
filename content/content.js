@@ -1,5 +1,5 @@
 /*
- * content.js — 银狐防护内容脚本
+ * content.js — SilverFoxBlocker 内容脚本
  * 职责：1) 采集页面代码 + 工程化指标 + ICP 备案
  *       2) 调用评分引擎（含官方早期退出）
  *       3) 分层响应：safe 不动作 / warn 温和提示不拦 / danger 警告浮层 + 禁用全部下载入口
@@ -218,7 +218,7 @@
     'kgithub.com', 'github.moeyy.xyz', 'github.bibaiyu.com', 'githubproxy.com',
     'gitclone.com', 'hub.gitmirror.com', 'github.coolapk.com', 'hub.fastgit.xyz',
     'fastgit.org', 'gh.api.99988866.xyz',
-    // 银狐防护 · SilverFox Guard 项目官网（扩展分发页）
+    // 项目官方站点（扩展分发页，永不拦截）
     'silverfoxguard.dpdns.org',
     'silverfoxguard.top'      // 新主域名（2026-10-11 接入，避免官网被误报）
   ];
@@ -374,7 +374,7 @@
       try { NATIVE.setAttribute.call(btn, 'data-sf-act', 'leave'); } catch (e) {}
       try { NATIVE.setAttribute.call(btn, 'data-sf-fb', '1'); } catch (e) {}
       span.className = 'sf-fb-text';
-      span.textContent = '🛡 银狐防护：检测到高风险网站';
+      span.textContent = '🛡 SilverFoxBlocker：检测到高风险网站';
       NATIVE.put(bar, span);
       NATIVE.put(bar, btn);
       NATIVE.put(root, bar);
@@ -1112,7 +1112,7 @@
       if (!card) throw new Error('createElement failed');
       card.className = 'sf-card';
     } catch (e) {
-      try { showToast('⚠️ 银狐防护：检测到高风险网站（弹窗渲染异常，请离开该网站）'); } catch (e2) {}
+      try { showToast('⚠️ SilverFoxBlocker：检测到高风险网站（弹窗渲染异常，请离开该网站）'); } catch (e2) {}
       return;
     }
     const mounted = sfMountOverlay({
@@ -1219,7 +1219,7 @@
 
   function renderBanner(banner, result) {
     banner.innerHTML =
-      '<div class="sf-btext">🛡 银狐防护：已禁用本页 <b id="sf-bcount">' + blockedCount + '</b> 个下载/跳转入口</div>' +
+      '<div class="sf-btext">🛡 SilverFoxBlocker：已禁用本页 <b id="sf-bcount">' + blockedCount + '</b> 个下载/跳转入口</div>' +
       '<div class="sf-bbtns">' +
       '<button id="sf-release" data-sf-act="release" type="button">我已知晓风险，完全放行</button>' +
       '<button id="sf-bclose" data-sf-act="bclose" type="button">✕</button>' +
@@ -1235,7 +1235,7 @@
     const banner = NATIVE.byId('sf-banner');
     if (!banner) return;
     banner.innerHTML =
-      '<div class="sf-btext">⚠️ 确认完全放行？放行后本页所有下载入口将不再受银狐防护保护。</div>' +
+      '<div class="sf-btext">⚠️ 确认完全放行？放行后本页所有下载入口将不再受 SilverFoxBlocker 保护。</div>' +
       '<div class="sf-bbtns sf-confirm-row">' +
       '<button id="sf-release-confirm" data-sf-act="release-confirm" class="sf-btn-danger" type="button">确认放行</button>' +
       '<button id="sf-release-cancel" data-sf-act="release-cancel" type="button">再想想</button>' +
@@ -1350,7 +1350,7 @@
       sfBindUiActions(hint, { hclose: function () { closeEl(hint); } });
       NATIVE.put(document.body || document.documentElement, hint);
       hint.innerHTML =
-        '🛡 银狐防护提示：当前站点 <b>' + escapeHtml(location.hostname) + '</b> 存在可疑特征（风险分 ' + (result && result.score || 0) + '），请谨慎点击任何下载链接。' +
+        '🛡 SilverFoxBlocker 提示：当前站点 <b>' + escapeHtml(location.hostname) + '</b> 存在可疑特征（风险分 ' + (result && result.score || 0) + '），请谨慎点击任何下载链接。' +
         '<button id="sf-hclose" data-sf-act="hclose" type="button">知道了</button>';
     } catch (e) {
       try { if (hint) NATIVE.rm(hint); } catch (e2) {}
@@ -1364,7 +1364,7 @@
     const html =
       '<div class="sf-card">' + SHIELD_SVG +
       '<h2 class="sf-title">下载已被拦截</h2>' +
-      '<p class="sf-sub">银狐防护已阻止来自 <b>' + escapeHtml(host) + '</b> 的可疑下载文件。该站点被判定为银狐木马风险网站，下载可能植入木马。</p>' +
+      '<p class="sf-sub">SilverFoxBlocker 已阻止来自 <b>' + escapeHtml(host) + '</b> 的可疑下载文件。该站点被判定为银狐木马风险网站，下载可能植入木马。</p>' +
       '<div class="sf-actions">' +
       '<button class="sf-btn sf-btn-leave" id="sf-dl-keep" data-sf-act="dl-keep" type="button">保持拦截</button>' +
       '<button class="sf-btn sf-btn-continue" id="sf-dl-allow" data-sf-act="dl-allow" type="button">仍要下载</button>' +
@@ -1421,7 +1421,7 @@
     const html =
       '<div class="sf-card">' + SHIELD_SVG +
       '<h2 class="sf-title">已拦截可疑下载（下载器扩展）</h2>' +
-      '<p class="sf-sub">检测到已安装的下载器扩展（如迅雷 / IDM 等）试图绕过浏览器，直接抓取来自 <b>' + escapeHtml(String(host || '未知站点')) + '</b> 的 ' + fname + '。<br>此类"绕过浏览器"的下载不受浏览器安全机制约束，银狐防护已将其拦截。</p>' +
+      '<p class="sf-sub">检测到已安装的下载器扩展（如迅雷 / IDM 等）试图绕过浏览器，直接抓取来自 <b>' + escapeHtml(String(host || '未知站点')) + '</b> 的 ' + fname + '。<br>此类"绕过浏览器"的下载不受浏览器安全机制约束，SilverFoxBlocker 已将其拦截。</p>' +
       '<div class="sf-actions">' +
       '<button class="sf-btn sf-btn-leave" id="sf-dl-ext-keep" data-sf-act="dl-ext-keep" type="button">保持拦截</button>' +
       '<button class="sf-btn sf-btn-continue" id="sf-dl-ext-allow" data-sf-act="dl-ext-allow" type="button">我信任此文件，放行</button>' +
@@ -1463,7 +1463,7 @@
       const host = (location && location.hostname) || '';
       const msg = {
         type: 'sf-notify',
-        title: '⚠️ 银狐防护：发现高风险网站',
+        title: '⚠️ SilverFoxBlocker：发现高风险网站',
         message: '检测到 ' + host + ' 疑似银狐(游蛇)木马投递站，已弹出页面警告并禁用下载/跳转链接。'
       };
       if (chrome.runtime && chrome.runtime.sendMessage) chrome.runtime.sendMessage(msg);
@@ -1511,7 +1511,7 @@
 
     data.metrics = collectMetrics();
     data.icp = extractIcp();
-    let result = SF.analyze(data, { enabled: settings.enabled, sensitivity: settings.sensitivity });
+    let result = SF.analyze(data, { enabled: settings.enabled, sensitivity: settings.sensitivity, weights: settings.weights });
 
     // 自定义规则叠加
     const htmlLower = (data.html || '').toLowerCase();

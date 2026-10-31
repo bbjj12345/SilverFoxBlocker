@@ -1,5 +1,5 @@
 /*
- * background.js — 银狐防护后台 service worker
+ * background.js — SilverFoxBlocker 后台 service worker
  * 职责：
  *   1) 初始化默认设置
  *   2) 接收内容脚本的「检测上报」，记录「被判定为危险的标签页」(dangerTabs) 与「用户已放行的站点」(releasedHosts)
@@ -1093,7 +1093,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         chrome.notifications.create(nid, {
           type: 'basic',
           iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-          title: (msg.title || '⚠️ 银狐防护提醒'),
+          title: (msg.title || '⚠️ SilverFoxBlocker 提醒'),
           message: (msg.message || '发现高风险网站'),
           priority: 1,
           requireInteraction: false

@@ -1,5 +1,5 @@
 /*
- * resource-resolver.js — 银狐防护「下载发现层」BFS 资源解析器
+ * resource-resolver.js — SilverFoxBlocker「下载发现层」BFS 资源解析器
  *
  * 来源：整合原作者（上游）ResourceResolver 框架，ESM → IIFE 适配我们的
  *       importScripts + 双环境导出（content script / service worker / Node 测试）。
