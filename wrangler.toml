@@ -1,0 +1,3 @@
+name = "silverfoxblocker"
+main = "你的Worker入口文件名.js"
+compatibility_date = "2026-11-02"
