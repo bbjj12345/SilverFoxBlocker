@@ -1,3 +1,6 @@
 name = "silverfoxblocker"
 main = "worker/index.js"
 compatibility_date = "2026-11-02"
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "6d141838347d4cfc86083a479231bf02"
