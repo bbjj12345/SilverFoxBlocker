@@ -8,6 +8,12 @@
 
   // ============ 可信官方域名（精确匹配 + 子域匹配；命中即「早期退出」判为安全，永不拦截）============
   // 覆盖银狐最常仿冒的目标：办公 / IM / 浏览器 / 安全 / 网盘 / AI / 下载工具 / 压缩 / 电商 / 支付 / 系统工具 / 游戏 / 加速器 / 新闻 等
+
+  // ============ 用户指定豁免域名（整站不拦截 / 不评分告警 / 不参与连坐）============
+  // 见下方 API.EXCEPTION_DOMAINS 注释。命中规则同官方域名（精确 + 子域后缀）。
+  const EXCEPTION_DOMAINS = [
+    'qianwenai.com'              // 用户 2026-11-01 指定豁免（曾被品牌仿冒启发式误判，并清除其连坐存储残留）
+  ];
   const OFFICIAL_DOMAINS = [
     // 安全软件
     '360.cn','360.com','huorong.cn','guanjia.qq.com','gj.qq.com','rising.com.cn','duba.net','ijinshan.com','threatbook.cn','threatbook.com',
@@ -39,6 +45,12 @@
     'alipay.com','alipayplus.com','open.alipay.com','p.alipay.com','pay.weixin.qq.com','api.mch.weixin.qq.com','api2.mch.weixin.qq.com','payapp.weixin.qq.com','action.weixin.qq.com','api.wechatpay.cn','api2.wechatpay.cn',
     // 开发者 / 云
     'aliyun.com','aliyuncs.com','alibabacloud.com','cloud.tencent.com','tencentcloud.com','huaweicloud.com','cloud.baidu.com','intl.cloud.baidu.com','csdn.net','oschina.net','gitee.com','juejin.cn','v2ex.com','github.com',
+    'cloud.gjhdr.xyz',           // 个人开发者凯德荣的官方域名（含其子域名，按 _suffixHit 通配判安全、永不拦截）
+    // ===== 用户指定豁免域名（整站不拦截 / 不评分告警 / 不参与连坐）=====
+    // 与 OFFICIAL_DOMAINS 不同：这些并非「官方」，而是用户明确要求本扩展不得对其做出任何
+    // 拦截或评分告警的站点（例如曾被启发式误判、或确属用户信任）。匹配规则同 _suffixHit：
+    // 仅精确命中或子域后缀命中（www. / api. 等），不会误伤其它含该词的域名。
+    'qianwenai.com',             // 用户 2026-11-01 指定豁免（曾被品牌仿冒启发式误判，并清除其连坐存储残留）
     // 海外托管 / 部署平台的「厂商官网本体」（公司自有站点，非用户内容托管 → 可整体判安全）
     // ⚠️ 注意：用户内容托管子域（*.vercel.app / *.netlify.app / *.pages.dev / *.github.io 等）
     // 已迁至下方 TRUSTED_PLATFORMS。原因：这些平台任何人都能免费部署带 HTTPS 的站点，
@@ -430,8 +442,8 @@
     'abi04.8msg8.com',           // 随机子域，银狐木马投递/C2
     'chat.51mitu.com',           // 多次举报为恶意 AI 钓鱼站
     'qissmusic.com.cn',          // 仿冒音乐平台（qissmusic）钓鱼站
-    'qianwenai.com',             // 仿冒通义千问（qianwen+ai 非官方）钓鱼
-    '108ai.com'                  // 用户举报疑似恶意 AI 钓鱼站（GitHub confirmed-phish 标签确认）
+    '108ai.com',                 // 用户举报疑似恶意 AI 钓鱼站（GitHub confirmed-phish 标签确认）
+    'es.wlygrowth.com'           // 用户实测银狐木马流量落地页（根域名 + 子域/子路径强制 danger）
   ];
 
   // ============ 已知银狐「木马化投递物」文件名（硬编码：命中即强风险）============
@@ -821,6 +833,7 @@
 
   const API = {
     OFFICIAL_DOMAINS,
+    EXCEPTION_DOMAINS,
     TRUSTED_PLATFORMS,
     TRUSTED_DOWNLOAD_HOSTS,
     KNOWN_BAD_DOMAINS,

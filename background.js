@@ -21,6 +21,27 @@ const SF = self.SF_ANALYZER || (typeof window !== 'undefined' ? window.SF_ANALYZ
 
 // 用户在当前会话里「仍要下载」明确放行的下载 URL（避免重复拦截；SW 重启后清空，会重新询问，安全）
 const allowedDownloads = new Set();
+function addAllowedDownload(url) { if (url) allowedDownloads.add(url); }
+// 安全地向内容脚本发消息：显式消费 chrome.runtime.lastError，避免「Receiving end does not exist」/
+// 「上下文不全」等未捕获异步错误在 Edge/Chrome 控制台刷屏（try/catch 无法捕获异步 lastError）。
+function safeTabMsg(tabId, msg) {
+  if (tabId == null) return;
+  try { chrome.tabs.sendMessage(tabId, msg, function () { void chrome.runtime.lastError; }); } catch (e) {}
+}
+function isAllowedDownload(url) { return !!(url && allowedDownloads.has(url)); }
+
+// 临时放行某标签页的全部下载（秒级窗口）。用于内容脚本无法提取到具体下载 URL 的
+// 场景（如 JS 触发 / 表单提交下载）：用户点了「仍要下载」但不知道会下到哪个 URL，
+// 此时让后台在窗口期内对该标签发起的下载一律放行，避免被再次静默拦截。
+const tempAllowedTabs = {}; // tabId -> 过期时间戳(ms)
+function isTabTempAllowed(tabId) {
+  if (tabId == null || tabId < 0) return false;
+  const exp = tempAllowedTabs[tabId];
+  if (!exp) return false;
+  if (exp > Date.now()) return true;
+  delete tempAllowedTabs[tabId]; // 顺手清理过期项
+  return false;
+}
 
 // 记录每个标签页最近一次「顶级导航」的 URL，用于检测「危险站 → 跳转新站」的银狐跳转链
 const lastTopUrl = {};
@@ -32,15 +53,18 @@ const navCommitTime = {};
 // 自动下载判定窗口：页面提交后该时间窗内发起的高危文件下载，视为「自动下载」而非用户手动点击
 const AUTO_WINDOW_MS = 1500;
 
-// 云端官网库（#384，#420 病毒库式改造）：独立、低调托管的公开域名清单，仅作本地 OFFICIAL_DOMAINS 的补充。
-// 病毒库式：SW 启动从 storage.local 秒级载入整库到内存 set（检测不再阻塞网络）；
-// 后台异步轮询极小的 version.json，仅云端版本号变化才重新下载整库并落本地缓存。
-// 绝不接收用户域名 → 零隐私上报。
-const CLOUD_OFFICIAL_URL = 'https://site-directory-cache.pages.dev/official-domains.json';
-const CLOUD_CACHE_KEY = 'sf_cloud_official';
-let _cloudOfficialSet = null;
-let _cloudOfficialLoading = null;
-let _cloudOfficialMeta = { version: null, count: 0, updated: null, etag: null, cachedAt: 0 };
+// ============================================================================
+// 原作者的云端官网库已于 2026-11-01 完整移除
+// ----------------------------------------------------------------------------
+// 原实现：从 https://site-directory-cache.pages.dev/official-domains.json 拉取整库。
+// 实测：3.94 MB / 250,603 条 / Tranco Top-1M 衍生的「热门站点」清单，
+//       语义是「该域名足够主流，不按仿冒站处理」，并非人工审核的软件官网表。
+// 移除原因：源由第三方控制且无签名校验（命中即撤销告警，存在漏放风险）；
+//           本 fork 已移除 unlimitedStorage，该库会吃掉 10MB 配额的约 40%；
+//           SW 每次唤醒需重建 25 万条 Set；且设置页无对应 UI，属静默运行。
+// 替代方案：见本文件下方「我的云端库」模板（已注释，启用步骤写在模板头部）。
+// 备份位置：.bak_20261101010207_remove-cloud/
+// ============================================================================
 
 // 分析闸门：标签页「检测未出结果前默认拒绝下载」的状态机
 //   analyzing = 已加载、内容脚本尚未回传判定 → 该标签全部下载先取消挂起
@@ -84,6 +108,26 @@ function saveState(state) {
   try { chrome.storage.session.set({ dangerTabs: state.dangerTabs, releasedHosts: state.releasedHosts }); } catch (e) {}
 }
 
+// 内存镜像：用户「完全放行」的主机集合（与 storage.session.releasedHosts 同步），
+// 供 onCreated 同步判定，避免每次下载都去读 storage。用户在「完全放行」后期望本页
+// 下载不被再拦截（含自动学习的下载黑名单），故放行来源页的下载应整体放过。
+let releasedHostsCache = {};
+function refreshReleasedCache() {
+  loadState().then(function (state) { releasedHostsCache = state.releasedHosts || {}; });
+}
+try { refreshReleasedCache(); } catch (e) {}
+// 判断本次下载是否来自「已被用户完全放行」的页面：是则后续不再拦截。
+// 优先用下载的 initiator/referrer，回退到本标签最近一次顶级导航（meta refresh 秒跳下载常无 referrer）。
+function isSourceReleased(item) {
+  const h = downloadSourceHost(item);
+  if (h && releasedHostsCache[h]) return true;
+  if (item.tabId && item.tabId >= 0) {
+    const t = lastTopUrl[item.tabId];
+    if (t) { try { const hh = new URL(t).hostname.toLowerCase(); if (releasedHostsCache[hh]) return true; } catch (e) {} }
+  }
+  return false;
+}
+
 // 内存缓存：下载拦截等高频路径每次都读 storage.sync，service worker 冷启动后首次读即缓存，
 // 之后同步返回；监听 storage.onChanged 在设置变更时失效，确保 options 页改动即时生效。
 let _settingsCache = null;
@@ -99,6 +143,8 @@ function getSettings() {
 if (chrome.storage && chrome.storage.onChanged) {
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area === 'sync' && _settingsCache) _settingsCache = null; // 任意 sync 设置变更 → 下次 getSettings 重新拉取
+    // session 里的 releasedHosts 被外部改写（如设置页清空放行记录）→ 同步内存镜像
+    if (area === 'session' && changes.releasedHosts) refreshReleasedCache();
   });
 }
 
@@ -243,11 +289,6 @@ chrome.runtime.onInstalled.addListener(function (details) {
       }
     }
   }
-});
-
-// 浏览器启动 → 强制同步云端库缓存（用户要求：每次打开浏览器自动从云端拉取并缓存）
-chrome.runtime.onStartup.addListener(function () {
-  syncCloudOfficial(true);
 });
 
 // ===== 危险弹窗系统通知（Windows 右下角 toast）=====
@@ -523,165 +564,147 @@ async function queryIcp(domain) {
 }
 
 
-// ===== 云端官网库（按需拉取 + 内存缓存 + 标签对齐后缀匹配）=====
-function _cloudSuffixHit(set, hostname) {
-  const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
-  if (!h) return null;
-  if (set.has(h)) return h;
-  let idx = h.indexOf('.');
-  while (idx !== -1) {
-    const suf = h.slice(idx + 1);
-    if (set.has(suf)) return suf;
-    idx = h.indexOf('.', idx + 1);
-  }
-  return null;
-}
 
-async function ensureCloudOfficialSet() {
-  if (_cloudOfficialSet) return _cloudOfficialSet;
-  if (_cloudOfficialLoading) return _cloudOfficialLoading;
-  _cloudOfficialLoading = (async () => {
-    try {
-      const resp = await fetch(CLOUD_OFFICIAL_URL, { cache: 'force-cache' });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const j = await resp.json();
-      const arr = (j && j.domains) || [];
-      if (!Array.isArray(arr)) throw new Error('bad payload');
-      const set = _buildCloudSet(arr);
-      _cloudOfficialSet = set;
-      _cloudOfficialMeta = {
-        version: (j && j.version) || null,
-        count: arr.length,
-        updated: (j && j.updated) || null,
-        cachedAt: Date.now()
-      };
-      await _persistCloudFull({ version: _cloudOfficialMeta.version, domains: arr, updated: _cloudOfficialMeta.updated, cachedAt: Date.now() });
-    } catch (e) {
-      _cloudOfficialSet = new Set();
-    } finally {
-      _cloudOfficialLoading = null;
-    }
-    return _cloudOfficialSet;
-  })();
-  return _cloudOfficialLoading;
-}
 
-// 从 domains 数组构建 Set（含校验防篡改注入）
-function _buildCloudSet(arr) {
-  const set = new Set();
-  if (!Array.isArray(arr)) return set;
-  for (const d of arr) {
-    if (typeof d === 'string' && d.indexOf(' ') === -1 && d.indexOf('/') === -1 && d.indexOf('..') === -1) set.add(d.toLowerCase());
-  }
-  return set;
-}
+/* ============================================================================
+ * 我的云端库（模板）
+ * ----------------------------------------------------------------------------
+ * 状态：整段已注释，不会影响当前任何功能。
+ * 目的：日后用「我自己控制的静态源」替换上方原作者的云端名单。
+ *
+ * ── 启用步骤 ──────────────────────────────────────────────────────────────
+ * 1) 准备静态 JSON 文件，结构见下方 MY_CLOUD_SAMPLE_PAYLOAD 注释；
+ * 2) 托管到你可控的位置：GitHub Pages / Cloudflare Pages / Gitee Pages / 自建对象存储；
+ * 3) 把 MY_CLOUD_OFFICIAL_URL 改成你的地址；
+ * 4) 在 manifest.json 的 content_security_policy.extension_pages.connect-src 中加上你的域名。
+ *    注意：background service worker 不受 extension_pages 的 CSP 约束，
+ *    但 options.html 属于扩展页——若想在设置页手动刷新名单，必须加该条目；
+ * 5) 签名：把 MY_CLOUD_PUBKEY_JWK 填为 JWK 公钥，源侧用对应私钥签名。
+ *    强烈建议启用；否则源一旦被接管，攻击者即可让任意域名免检；
+ * 6) 原作者的云端库代码（常量 / 同步 / 缓存 / 消息处理器）已于 2026-11-01 全部移除，
+ *    本文件已不存在 CLOUD_OFFICIAL_URL、CLOUD_CACHE_KEY 等任何相关标识符。
+ *    因此启用时只有一条路：整体启用下方 MY_CLOUD_* 全套。
+ *    本模板已自带 _myCloudBuildSet（字符串校验建表）与 _myCloudSuffixHit（后缀查表）
+ *    两个通用工具函数，不依赖任何已删除的代码，可直接开箱启用。
+ * 7) 启用时还需恢复两处调用方：
+ *    - 本文件：取消注释模板末尾的 sf-cloud-official 消息处理器
+ *      （原处理器已随云端库一并删除）；
+ *    - content/content.js：在 collectCriticalEnrichments 中恢复「云端库查询」步骤
+ *      （已于 2026-11-01 一并移除，原文见 .bak_20261101010207_remove-cloud/content.js）；
+ *    - rules/analyzer.js 的 EXTRA_OFFICIAL_SET 与 registerCloudOfficial 已保留，
+ *      作为「运行时动态白名单」的注入槽位，可直接沿用，无需改动。
+ *
+ * ── 内容取舍建议 ──────────────────────────────────────────────────────────
+ * - 名单不是越大越好。原作者那份是「热门站点榜」衍生（25 万条 / 3.94MB），
+ *   语义是「该域名足够主流，不按仿冒站处理」，与「某软件官网」不是一回事。
+ * - 自制名单建议只收录「本引擎实测误报 + 你人工复核过」的域名，
+ *   几十到几百条即可，体积可忽略，也不会触及 10MB 的 storage.local 配额。
+ * ============================================================================ */
 
-// SW 每次唤醒都会重新执行顶层代码，故在文件末尾顶层调用 syncCloudOfficial() 即可保证后台内存常驻云端库：
-// ① 优先从 storage.local 秒级载入已缓存的整库到内存 Set（检测不阻塞网络）；
-// ② 异步用极小的 HEAD 请求比对远端 ETag / Last-Modified，仅当云端变化（或本地为空 / 强制）才下载整库并落本地缓存；
-// ③ 设置页（纯前端）直接 fetch CDN 公开名单、写 storage.local，后台通过 storage.onChanged 同步内存 Set，零消息端口、零隐私上报。
-// 全程纯前端消费 CDN 静态 JSON，绝不接收用户域名 → 零隐私上报。
-const CLOUD_SYNC_THROTTLE_MS = 6 * 60 * 60 * 1000; // 非启动场景下 6 小时节流，避免每次导航都拉 3.9MB
-
-// SW 每次唤醒执行：先同步载入内存，再异步决定是否需要从云端刷新缓存
-function syncCloudOfficial(force) {
-  // ① 同步从 storage.local 载入内存（检测不阻塞）
-  chrome.storage.local.get(CLOUD_CACHE_KEY, function (res) {
-    const data = res && res[CLOUD_CACHE_KEY];
-    if (data && Array.isArray(data.domains) && data.domains.length) {
-      _cloudOfficialSet = _buildCloudSet(data.domains);
-      _cloudOfficialMeta = {
-        version: data.version || null,
-        count: data.domains.length,
-        updated: data.updated || null,
-        etag: data.etag || null,
-        cachedAt: data.cachedAt || 0
-      };
-    }
-    // ② 节流：非强制（非启动 / 非升级）且距上次成功同步不足 6h → 跳过联网检查
-    if (!force && _cloudOfficialMeta.cachedAt && (Date.now() - _cloudOfficialMeta.cachedAt) < CLOUD_SYNC_THROTTLE_MS) {
-      return;
-    }
-    // ③ 异步检查远端是否变化，必要时拉取整库
-    refreshCloudOfficialCache(force);
-  });
-}
-
-// 用 HEAD 比对远端变更；仅变化 / 本地为空 / 强制时才下载整库并写 storage.local
-function refreshCloudOfficialCache(force) {
-  // MV3 保活心跳：HEAD 很快，但随后的 GET 整库（3.9MB）较慢，期间用定时器维持 SW 运行直到完成
-  const keepAlive = setInterval(function () {}, 20000);
-  const finish = function () { try { clearInterval(keepAlive); } catch (e) {} };
-  fetch(CLOUD_OFFICIAL_URL, { method: 'HEAD', cache: 'no-store' })
-    .then(function (head) {
-      if (!head.ok) throw new Error('HEAD ' + head.status);
-      const remoteEtag = head.headers.get('etag');
-      const remoteLM = head.headers.get('last-modified');
-      const changed = !_cloudOfficialMeta.etag ||
-        (remoteEtag && remoteEtag !== _cloudOfficialMeta.etag) ||
-        (remoteLM && _cloudOfficialMeta.updated && remoteLM !== _cloudOfficialMeta.updated);
-      if (!changed && !force) {
-        // 未变化：仅刷新 cachedAt，避免重复写整库
-        _cloudOfficialMeta.cachedAt = Date.now();
-        _persistCloudMeta();
-        return;
-      }
-      return fetch(CLOUD_OFFICIAL_URL, { cache: 'no-store' })
-        .then(function (r) { if (!r.ok) throw new Error('GET ' + r.status); return r.json(); })
-        .then(function (j) {
-          const arr = (j && j.domains) || [];
-          if (!Array.isArray(arr)) throw new Error('bad payload');
-          _cloudOfficialSet = _buildCloudSet(arr);
-          _cloudOfficialMeta = {
-            version: (j && j.version) || null,
-            count: arr.length,
-            updated: (j && j.updated) || remoteLM || null,
-            etag: remoteEtag || null,
-            cachedAt: Date.now()
-          };
-          return _persistCloudFull({ version: _cloudOfficialMeta.version, domains: arr, updated: _cloudOfficialMeta.updated, etag: remoteEtag || null, cachedAt: Date.now() });
-        });
-    })
-    .catch(function () { /* 失败静默，保留旧缓存 */ })
-    .then(finish, finish);
-}
-
-// 设置页（纯前端）更新了云端库缓存 → 同步内存 Set，无需任何消息端口
-chrome.storage.onChanged.addListener(function (changes, area) {
-  if (area !== 'local' || !changes[CLOUD_CACHE_KEY]) return;
-  const data = changes[CLOUD_CACHE_KEY].newValue;
-  if (data && Array.isArray(data.domains)) {
-    _cloudOfficialSet = _buildCloudSet(data.domains);
-    _cloudOfficialMeta = {
-      version: data.version || null,
-      count: data.domains.length,
-      updated: data.updated || null,
-      etag: data.etag || null,
-      cachedAt: data.cachedAt || Date.now()
-    };
-  }
-});
-
-// SW 每次唤醒都执行本顶层调用（MV3 Service Worker 无传统全局单例，靠顶层代码保证初始化）
-syncCloudOfficial(false);
-
-function _persistCloudFull(data) {
-  return new Promise(function (resolve) {
-    chrome.storage.local.set({ [CLOUD_CACHE_KEY]: data }, resolve);
-  });
-}
-
-// 轻量更新 meta（仅 cachedAt 等），不重写整库
-function _persistCloudMeta() {
-  chrome.storage.local.get(CLOUD_CACHE_KEY, function (res) {
-    const data = res && res[CLOUD_CACHE_KEY];
-    if (!data) return;
-    data.cachedAt = _cloudOfficialMeta.cachedAt;
-    chrome.storage.local.set({ [CLOUD_CACHE_KEY]: data });
-  });
-}
-
-function getCloudOfficialMeta() { return _cloudOfficialMeta; }
+// const MY_CLOUD_OFFICIAL_URL = 'https://你的域名/official-domains.json';
+// const MY_CLOUD_CACHE_KEY = 'sfb_cloud_official';
+// const MY_CLOUD_PUBKEY_JWK = null;             // 填 JWK 公钥即启用验签；null = 不校验（仅过渡期可接受）
+// const MY_CLOUD_SYNC_THROTTLE_MS = 6 * 60 * 60 * 1000;
+//
+// // 期望的 JSON 结构（domains 是唯一参与签名的内容，其余字段不签名）
+// // {
+// //   "updated": "2026-11-01",
+// //   "count": 2,
+// //   "source": "SilverFoxBlocker 实测误报清单（人工复核后加入）",
+// //   "domains": ["example.com", "sub.example.org"],
+// //   "signature": "base64url( Ed25519 签名，签的是 JSON.stringify(domains) )"
+// // }
+//
+// let _myCloudSet = null;
+// let _myCloudMeta = { count: 0, updated: null, etag: null, cachedAt: 0 };
+//
+// // 通用工具：域名字符串校验后建 Set（剔除含空格 / 斜杠 / 连续点的异常项）
+// function _myCloudBuildSet(arr) {
+//   const set = new Set();
+//   if (!Array.isArray(arr)) return set;
+//   for (const d of arr) {
+//     if (typeof d === 'string' && d.indexOf(' ') === -1 && d.indexOf('/') === -1 && d.indexOf('..') === -1) {
+//       set.add(d.toLowerCase());
+//     }
+//   }
+//   return set;
+// }
+//
+// // 通用工具：标签对齐后缀匹配（与 analyzer.js 的 isOfficialDomain 同语义）
+// function _myCloudSuffixHit(set, hostname) {
+//   const h = (hostname || '').toLowerCase().replace(/^www\./, '');
+//   if (!h) return null;
+//   if (set.has(h)) return h;
+//   let idx = h.indexOf('.');
+//   while (idx !== -1) {
+//     const suf = h.slice(idx + 1);
+//     if (set.has(suf)) return suf;
+//     idx = h.indexOf('.', idx + 1);
+//   }
+//   return null;
+// }
+//
+// // 验签：未配置公钥时直接放行（仅过渡期使用）
+// async function _myCloudVerify(payload) {
+//   if (!MY_CLOUD_PUBKEY_JWK) return true;
+//   const key = await crypto.subtle.importKey('jwk', MY_CLOUD_PUBKEY_JWK,
+//     { name: 'Ed25519' }, false, ['verify']);
+//   const data = new TextEncoder().encode(JSON.stringify(payload.domains));
+//   const b64 = String(payload.signature || '').replace(/-/g, '+').replace(/_/g, '/');
+//   const sig = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
+//   return crypto.subtle.verify({ name: 'Ed25519' }, key, sig, data);
+// }
+//
+// async function myCloudSync(force) {
+//   try {
+//     const head = await fetch(MY_CLOUD_OFFICIAL_URL, { method: 'HEAD', cache: 'no-store' });
+//     if (!head.ok) throw new Error('HEAD ' + head.status);
+//     const etag = head.headers.get('etag');
+//     if (!force && etag && etag === _myCloudMeta.etag) return;      // 未变化，复用已有缓存
+//     const resp = await fetch(MY_CLOUD_OFFICIAL_URL, { cache: 'no-store' });
+//     if (!resp.ok) throw new Error('GET ' + resp.status);
+//     const j = await resp.json();
+//     if (!Array.isArray(j.domains)) throw new Error('bad payload');
+//     if (!(await _myCloudVerify(j))) throw new Error('signature mismatch');  // 验签失败一律拒绝，不降级
+//     _myCloudSet = _myCloudBuildSet(j.domains);
+//     _myCloudMeta = { count: j.domains.length, updated: j.updated || null, etag: etag, cachedAt: Date.now() };
+//     await new Promise(function (done) {
+//       chrome.storage.local.set({
+//         [MY_CLOUD_CACHE_KEY]: {
+//           domains: j.domains, updated: _myCloudMeta.updated,
+//           etag: etag, cachedAt: Date.now()
+//         }
+//       }, function () {
+//         if (chrome.runtime.lastError) console.warn('[myCloud] 写入失败：', chrome.runtime.lastError.message);
+//         done();
+//       });
+//     });
+//   } catch (e) {
+//     /* 失败静默，保留旧缓存 */
+//   }
+// }
+//
+// // 启动：先读本地缓存秒级可用，再按需联网增量更新
+// chrome.storage.local.get(MY_CLOUD_CACHE_KEY, function (res) {
+//   const d = res && res[MY_CLOUD_CACHE_KEY];
+//   if (d && Array.isArray(d.domains)) {
+//     _myCloudSet = _myCloudBuildSet(d.domains);
+//     _myCloudMeta = { count: d.domains.length, updated: d.updated || null, etag: d.etag || null, cachedAt: d.cachedAt || 0 };
+//   }
+//   if (!_myCloudMeta.cachedAt || (Date.now() - _myCloudMeta.cachedAt) >= MY_CLOUD_SYNC_THROTTLE_MS) {
+//     myCloudSync(false);
+//   }
+// });
+// chrome.runtime.onStartup.addListener(function () { myCloudSync(true); });
+//
+// // 内容脚本查询入口（启用模板时一并取消注释）
+// // 注意：需同时恢复 content.js 里 collectCriticalEnrichments 的云端库查询步骤。
+// chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+//   if (!msg || msg.type !== 'sf-cloud-official') return;
+//   const host = (msg.host || '').toLowerCase().replace(/^www\./, '');
+//   const hit = _myCloudSet ? _myCloudSuffixHit(_myCloudSet, host) : null;
+//   try { sendResponse({ official: !!hit, matched: hit || '' }); } catch (e) {}
+// });
 
 
 // ============================================================
@@ -998,19 +1021,6 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     return true; // 异步 sendResponse
   }
 
-  if (msg.type === 'sf-cloud-official') {
-    // 内容脚本问「本页域名是否命中云端官网库」。后台拉取云端公开名单（仅内存），
-    // 用标签对齐后缀匹配（与 isOfficialDomain 同语义）；不接收任何用户域名 → 零隐私上报。
-    const host = (msg.host || '').toLowerCase().replace(WWW_RE, '');
-    ensureCloudOfficialSet().then(function (set) {
-      const hit = _cloudSuffixHit(set, host);
-      try { sendResponse({ official: !!hit, matched: hit || '' }); } catch (e) {}
-    }).catch(function () {
-      try { sendResponse({ official: false, matched: '' }); } catch (e) {}
-    });
-    return true; // 异步 sendResponse
-  }
-
   if (msg.type === 'sf-detected') {
     // ★ 2026-10-15：hostname 在**信封顶层**（见 content.js 的 sendMessage），不在 msg.data 里
     updateStats(msg.data, msg.hostname, sender);
@@ -1055,6 +1065,12 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (tabId != null && state.dangerTabs[tabId]) state.dangerTabs[tabId].released = true;
       if (host) state.releasedHosts[host] = true;
       saveState(state);
+      // 同步内存镜像，使「完全放行」立即对后续下载生效（无需等 storage 回读）
+      if (host) releasedHostsCache[host] = true;
+      if (tabId != null && state.dangerTabs[tabId]) {
+        const hh = (state.dangerTabs[tabId].hostname || '').toLowerCase();
+        if (hh) releasedHostsCache[hh] = true;
+      }
     });
   } else if (msg.type === 'sf-leave') {
     // 直接关闭触发该消息的标签页；关不掉（如最后一个标签）则退到新标签页
@@ -1067,24 +1083,51 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       });
     }
   } else if (msg.type === 'sf-allow-download') {
-    // 用户选择「仍要下载」：将该 URL 加入本次会话放行名单（避免重复拦截）
-    const url = msg && msg.url;
+    // 用户选择「仍要下载」：将该 URL 加入本次会话放行名单（避免重复拦截）。
+    // 来自「页面内钩子」(fromPage) 时由页面自身执行下载（已在收到回执后触发），
+    // 后台不必重下，避免双下载；来自「后台大弹窗」(下载已被取消) 时则由后台重新触发下载。
+    const url = (msg && msg.url) ? String(msg.url).trim() : '';
     if (url) {
-      allowedDownloads.add(url);
-      // 仅当来自「后台大弹窗」(下载已被取消) 时才由后台重新触发下载；
-      // 来自「页面内钩子」(fromPage) 时由页面自身执行下载，后台不必重下，避免双下载。
+      addAllowedDownload(url);
       if (!msg.fromPage && chrome.downloads && chrome.downloads.download) {
         chrome.downloads.download({ url: url }, function () {
           if (chrome.runtime.lastError) {
             // 无法直接重下（如 blob / 需站内鉴权），提示前台让用户手动在站内下载
             try {
-              if (sender.tab && sender.tab.id != null && chrome.tabs && chrome.tabs.sendMessage)
-                chrome.tabs.sendMessage(sender.tab.id, { type: 'sf-download-allow-failed', url });
+              if (sender.tab && sender.tab.id != null) safeTabMsg(sender.tab.id, { type: 'sf-download-allow-failed', url });
             } catch (e2) {}
           }
         });
       }
     }
+    // 页面内「仍要下载」(fromPage)：用户已明确放行本页下载，额外给来源标签一个短暂放行窗口，
+    // 兜底「链接 href 与最终下载 URL 经重定向不一致」等精确匹配失败的情况，确保浏览器能真正下到文件。
+    if (msg && msg.fromPage) {
+      const tid = sender.tab ? sender.tab.id : null;
+      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 4000);
+    }
+    if (!url) {
+      // 无具体 URL（如 JS 触发 / 表单提交下载）：仅靠上面的临时放行窗口覆盖后续下载
+      const tid = sender.tab ? sender.tab.id : null;
+      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 5000);
+    }
+    // 回执确认：内容脚本在收到回执后才真正触发本页下载，确保本 URL 已登记进放行名单，
+    // 避免「消息异步未达、onCreated 先取消」的竞态（导致「仍要下载」后仍被拦截）。
+    try { sendResponse({ ok: true }); } catch (e) {}
+  } else if (msg.type === 'sf-record-blocked-download') {
+    // 内容脚本在页面级（点击/入口/表单）拦截了一次下载——后台并未走 chrome.downloads 取消流程，
+    // 故在此补计「拦截下载次数」并把载荷域名写入自动学习的下载黑名单（与 cancelDownload 同源逻辑）。
+    // 受保护域名（可信下载源/官方/用户白名单）由 dlBlacklistAdd 内部 _dlBlProtected 自动排除，不会误入库。
+    try {
+      dlBlacklistAdd(parseHost((msg.url || '').trim()), { filename: '', from: (msg.host || '') });
+    } catch (e) {}
+    try {
+      chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, function (r) {
+        const stats = r.stats || { warnings: 0, blocks: 0, recent: [] };
+        stats.blocks = (stats.blocks || 0) + 1;
+        chrome.storage.local.set({ stats });
+      });
+    } catch (e) {}
   } else if (msg.type === 'sf-notify') {
     // 危险弹窗系统通知（Windows 右下角 toast）：内容脚本转发，后台创建原生通知
     try {
@@ -1124,8 +1167,8 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 //   ② **仅 danger 计入「拦截风险网站」**（stats.warnings）：warn 只做页面内温和提示，
 //      不计入拦截数、也不写拦截记录（content 端已不再为 warn 上报 sf-detected）。
 function updateStats(data, hostnameFromMsg, sender) {
-  chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [], blockedTabs: {} } }, function (r) {
-    const stats = r.stats || { warnings: 0, blocks: 0, recent: [], blockedTabs: {} };
+  chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [], suspicious: [], blockedTabs: {} } }, function (r) {
+    const stats = r.stats || { warnings: 0, blocks: 0, recent: [], suspicious: [], blockedTabs: {} };
     const d = data || {};
     const host = String(d.hostname || d.host || hostnameFromMsg || '').toLowerCase();
     const level = d.level || 'safe';
@@ -1164,8 +1207,35 @@ function updateStats(data, hostnameFromMsg, sender) {
         stats.warnings += 1;     // 无 tabId 时退化为「无旧记录才 +1」
       }
       stats.blockedTabs = blockedTabs;
+      // 同一域名若已记入「高危」（recent 的 danger 记录），则从「可疑」列表中剔除，
+      // 避免「同一域名同时出现在高危与可疑」（如 huorongsafe.com.cn 根页判危、子页曾判可疑）。
+      if (host && stats.suspicious && stats.suspicious.length) {
+        const before = stats.suspicious.length;
+        stats.suspicious = stats.suspicious.filter(function (s) { return (s.hostname || '').toLowerCase() !== host; });
+        if (stats.suspicious.length !== before) { /* 已剔除同名可疑记录 */ }
+      }
+    } else if (level === 'warn') {
+      // 可疑域名（warn）：记入「近期可疑域名记录」，不计入「拦截风险网站」计数、不触发下载拦截。
+      // 同一标签 15s 内不重复写入。
+      const suspicious = stats.suspicious || [];
+      let sIdx = -1;
+      if (tabId != null) {
+        for (let i = suspicious.length - 1; i >= 0; i--) {
+          if (suspicious[i].tabId === tabId && (now - suspicious[i].time) < 15000) { sIdx = i; break; }
+        }
+      }
+      const sEntry = {
+        hostname: host,
+        score: (typeof d.score === 'number') ? d.score : null,
+        level: 'warn',
+        time: now,
+        tabId: (tabId != null) ? tabId : undefined
+      };
+      if (sIdx >= 0) suspicious[sIdx] = sEntry;   // 覆盖同标签旧记录（防重复）
+      else suspicious.unshift(sEntry);            // 新记录
+      stats.suspicious = suspicious.slice(0, 50);
     }
-    // warn 不计入任何拦截计数（也不应到达此处，content 端已不上报 warn）。
+    // 其它 level（safe / official / unknown）不计入任何统计。
 
     chrome.storage.local.set({ stats });
   });
@@ -1187,7 +1257,7 @@ function flushHeld(tabId) {
     if (!h.url) return;
     // blob:/data: 无法用 URL 静默重下 → 提示用户手动重新点击
     if (/^(blob:|data:)/i.test(h.url)) {
-      try { if (chrome.tabs && chrome.tabs.sendMessage) chrome.tabs.sendMessage(tabId, { type: 'sf-download-allow-failed', url: h.url }); } catch (e2) {}
+      try { safeTabMsg(tabId, { type: 'sf-download-allow-failed', url: h.url }); } catch (e2) {}
       return;
     }
     reissuedUrls.add(h.url);
@@ -1205,7 +1275,7 @@ function resolveAnalysis(tabId, level) {
       held.forEach(function (h) {
         // 闸门挂起期间的下载在判危后等同于「已拦截」，其载荷域名同样入库（#16）
         try { dlBlacklistAdd(parseHost(h.url), { filename: h.filename, from: lastTopUrl[tabId] ? parseHost(lastTopUrl[tabId]) : '' }); } catch (e) {}
-        try { if (chrome.tabs && chrome.tabs.sendMessage) chrome.tabs.sendMessage(tabId, { type: 'sf-download-blocked', host: parseHost(h.url), url: h.url, filename: h.filename }); } catch (e) {}
+        try { safeTabMsg(tabId, { type: 'sf-download-blocked', host: parseHost(h.url), url: h.url, filename: h.filename }); } catch (e) {}
       });
     }
     delete heldDownloads[tabId];
@@ -1232,11 +1302,15 @@ if (chrome.downloads && chrome.downloads.onCreated) {
     // 判安后静默重下的下载（原被闸门挂起者）→ 直接放行，不再二次闸控
     if (reissuedUrls.has(item.url)) { reissuedUrls.delete(item.url); return; }
     // 本次下载用户已明确「仍要下载」→ 直接放行（避免重复拦截）
-    if (allowedDownloads.has(item.url)) return;
+    if (isAllowedDownload(item.url)) return;
   // ★ 由扩展发起（byExtensionId）的下载：仅「本扩展自身」（静默重下/保存）直接放行；
   //   其它扩展（迅雷/IDM/下载器接管类）发起的下载落入后续风险判定——它们必须先经
   //   downloads API 才能转交外部下载器，在这里掐断即可阻止其绕过浏览器的下载。
   if (item.byExtensionId && item.byExtensionId === chrome.runtime.id) return;
+  // ★ 来源标签页已被「完全放行」(releasedHosts) 或处于「仍要下载」临时放行窗口 → 直接放过本次下载，
+  //   让没有 IDM 的用户也能通过浏览器自身完成下载（含自动学习的下载黑名单域）。
+  if (isTabTempAllowed(item.tabId)) return;
+  if (isSourceReleased(item)) return;
       const host = parseHost(item.url);
       getSettings().then(function (settings) {
       if (!settings.enabledGlobal || !settings.autoBlockDownloads) return;
@@ -1348,14 +1422,20 @@ if (chrome.downloads && chrome.downloads.onChanged) {
       chrome.downloads.search({ id: id }, function (items) {
         if (!items || !items.length) return;
         const it = items[0];
-        if (allowedDownloads.has(it.url) || it.byExtensionId) return; // 用户已明确放行 / 扩展自身发起
+        if (isAllowedDownload(it.url) || it.byExtensionId) return; // 用户已明确放行 / 扩展自身发起
+        // 「仍要下载」临时放行窗口 / 「完全放行」来源页：同样放过，避免 Safe Browsing 延迟判定又取消它
+        if (isTabTempAllowed(it.tabId)) return;
+        if (it.tabId && it.tabId >= 0 && lastTopUrl[it.tabId]) {
+          const hh = parseHost(lastTopUrl[it.tabId]);
+          if (hh && releasedHostsCache[hh]) return;
+        }
         const tabIds = it.tabId >= 0 ? [it.tabId] : [];
         const h = parseHost(it.url);
         if (it.state === 'complete') {
           // 已落地到磁盘：cancel 无效，但仍弹窗警告用户文件可疑
           tabIds.forEach(function (tid) {
-            if (tid != null && chrome.tabs && chrome.tabs.sendMessage) {
-              try { chrome.tabs.sendMessage(tid, { type: 'sf-download-blocked', host: h, url: it.url, filename: it.filename }); } catch (e) {}
+            if (tid != null) {
+              try { safeTabMsg(tid, { type: 'sf-download-blocked', host: h, url: it.url, filename: it.filename }); } catch (e) {}
             }
           });
           return;
@@ -1399,6 +1479,7 @@ if (chrome.webNavigation && chrome.webNavigation.onCommitted) {
   });
 }
 
+
 function cancelDownload(id, host, tabIds, url, filename, extBlock) {
   // ★ 自动入库（#16）：把本次被拦下载的「载荷域名」记进下载黑名单，供后续跨站复用识别。
   //   host 参数是「落地页/来源域名」，真正要记的是文件所在域名（parseHost(url)），
@@ -1413,8 +1494,8 @@ function cancelDownload(id, host, tabIds, url, filename, extBlock) {
     // 不再使用系统通知（关掉浏览器后仍会在系统通知中心弹出）；改为在网页内「大弹窗」提示
     // 把提示发到「发起下载的危险页面」对应的所有标签页（解决 item.tabId 为 -1 收不到提示的问题）
     (tabIds || []).forEach(function (tid) {
-      if (tid != null && tid >= 0 && chrome.tabs && chrome.tabs.sendMessage) {
-        try { chrome.tabs.sendMessage(tid, { type: extBlock ? 'sf-dl-ext-blocked' : 'sf-download-blocked', host: host, url: url, filename: filename }); } catch (e) {}
+      if (tid != null && tid >= 0) {
+        try { safeTabMsg(tid, { type: extBlock ? 'sf-dl-ext-blocked' : 'sf-download-blocked', host: host, url: url, filename: filename }); } catch (e) {}
       }
     });
   });

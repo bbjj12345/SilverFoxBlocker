@@ -134,6 +134,20 @@
 .sf-fb-text { line-height: 1.4 !important; }
 .sf-fallback .sf-btn { flex: none !important; padding: 8px 14px !important; font-size: calc(12.5px * var(--sf-scale)) !important; }
 
+/* ★★ 抗页面样式覆盖（文字颜色兜底，2026-10-31）★★
+   激进落地页常用全局 color 规则或滤镜（filter / invert）把扩展浮层文本压成黑色，
+   导致「黑字配深色遮罩」几乎无法阅读。以下显式强制扩展 UI 文本为白色并全部带 !important，
+   确保任何页面的 color 覆盖都无法得逞（类选择器特异性高于元素/通配选择器，可压过页面规则）。 */
+/* 抗页面样式覆盖（文字颜色兜底，2026-10-31 加固）：
+   用「类 + 通配」(特异性 0,0,1,0) 强制扩展 UI 内所有文本为白色，
+   高于任何页面只用「类型/通配选择器」写的 !important 规则（页面无法预知 .sf-* 类名，写不出更高特异性来压过）。
+   标题保留渐变（text-fill transparent）；其余文本强制白字 + 强制 text-fill 为白，
+   防止页面用 -webkit-text-fill-color 把渐变标题/文本压黑。 */
+.sf-overlay, .sf-overlay *, .sf-banner, .sf-banner *, .sf-hint, .sf-hint *, .sf-toast, .sf-toast * { color: #fff !important; }
+.sf-overlay *, .sf-banner *, .sf-hint *, .sf-toast * { -webkit-text-fill-color: #fff !important; }
+.sf-overlay .sf-title { -webkit-text-fill-color: transparent !important; }
+.sf-overlay { isolation: isolate !important; filter: none !important; }
+
 /* 关闭动画：退场时统一加 .sf-closing */
 @keyframes sf-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes sf-bar-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-100%); } }

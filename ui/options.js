@@ -933,11 +933,11 @@ function formatAbsTime(ts) {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
          p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
-const LEVEL_LABEL = { danger: '高危', warn: '警告', safe: '放行' };
+const LEVEL_LABEL = { danger: '高危', warn: '可疑', safe: '放行' };
 const LEVEL_COLOR = { danger: '#ff4d6d', warn: '#ffae42', safe: '#4be38b' };
 function loadStats() {
   if (!hasStorage()) { if ($('stWarn')) $('stWarn').textContent = 0; if ($('stBlock')) $('stBlock').textContent = 0; return; }
-  chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, (r) => {
+  chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [], suspicious: [] } }, (r) => {
     const st = r.stats || { warnings: 0, blocks: 0, recent: [] };
     if ($('stWarn')) $('stWarn').textContent = st.warnings || 0;
     if ($('stBlock')) $('stBlock').textContent = st.blocks || 0;
@@ -950,7 +950,10 @@ function loadStats() {
       if (!total) bar.innerHTML = '<span class="dl-empty">暂无记录</span>';
       else {
         bar.innerHTML = '';
-        Object.keys(counts).forEach((k) => {
+        // 固定顺序：高危(红) 在前(左)、可疑(黄) 在后(右)，保证统计图始终「左红右黄」
+        const LEVEL_ORDER = ['danger', 'warn', 'safe', 'official', 'unknown'];
+        const barKeys = LEVEL_ORDER.filter((k) => counts[k]).concat(Object.keys(counts).filter((k) => LEVEL_ORDER.indexOf(k) < 0));
+        barKeys.forEach((k) => {
           const seg = document.createElement('span');
           seg.className = 'dl-seg';
           seg.style.width = (counts[k] / total * 100) + '%';
@@ -1209,7 +1212,7 @@ async function init() {
   // 关于页：反馈与建议 —— 点击「发送反馈」打开项目 GitHub Issues 新建页并预填内容。
   // 零第三方表单、无邮箱暴露；失败绝不假装成功，短文本有最小长度校验。
   (function bindFeedback() {
-    var btn = $('fbSend'), spin = $('fbSpin'), msg = $('fbMsg');
+    var btn = $('fbSend'), mailBtn = $('fbMail'), spin = $('fbSpin'), msg = $('fbMsg');
 
     // 分段控件：与项目其它 .seg 完全同款（glider 定位 + .active 切换），不用原生 select。
     // ★ 「关于」是子页面，初始很可能是 display:none ⇒ 量出来的宽度是 0；除了 rAF + resize，
@@ -1257,34 +1260,95 @@ async function init() {
     function prepare(cb) {
       var ta = $('fbText');
       var text = ((ta && ta.value) || '').trim();
-      if (text.length < 5) { show('请把问题描述写清楚一点（至少 5 个字），否则没法定位。', 'warn'); if (ta) ta.focus(); cb(null); return; }
-      cb({ type: fbType(), message: text.slice(0, 4000) });
+      if (text.length < 5) { show('请用清晰的语言描述你遇到的问题，不少于5个字符。', 'warn'); if (ta) ta.focus(); cb(null); return; }
+      if (text.length > 2000) { show('内容已超过 2000 字上限，请精简后再发送。', 'warn'); if (ta) ta.focus(); cb(null); return; }
+      cb({ type: fbType(), message: text.slice(0, 2000) });
     }
 
-    if (btn) btn.addEventListener('click', function () {
-      btn.disabled = true; if (spin) spin.hidden = false; show('');
+    // 实时字数计数（上限 2000，与 Worker 端校验一致）
+    var fbTextEl = $('fbText'), fbCountEl = $('fbCount');
+    function updateFbCount() {
+      if (!fbTextEl || !fbCountEl) return;
+      var n = (fbTextEl.value || '').length;
+      fbCountEl.textContent = n + ' / 2000';
+      fbCountEl.classList.toggle('over', n >= 2000);
+    }
+    if (fbTextEl) { fbTextEl.addEventListener('input', updateFbCount); updateFbCount(); }
+
+    var mailBusy = false; // 防重复发送：在「感谢您的反馈！」显示前/后都不允许重复点击
+    var mailRestoreTimer = null; // 成功后 5 秒自动恢复计时器
+    function runFeedback(viaMail) {
+      var activeBtn = viaMail ? mailBtn : btn;
+      if (viaMail) {
+        // 已处于发送中（按钮禁用或忙碌标记）→ 直接忽略，避免重复发送
+        if (mailBusy || (mailBtn && mailBtn.disabled)) return;
+      }
+      if (activeBtn) activeBtn.disabled = true;
+      if (spin) spin.hidden = false;
+      show('');
       prepare(function (p) {
-        if (!p) { btn.disabled = false; if (spin) spin.hidden = true; return; }
+        if (!p) { if (activeBtn) activeBtn.disabled = false; if (spin) spin.hidden = true; return; }
         var title = '[反馈] ' + p.type + '：' + p.message.slice(0, 40);
         var body = '问题类型：' + p.type + '\n\n' + p.message + '\n\n（以上反馈来自扩展内置「反馈与建议」）';
-        var url = 'https://github.com/bbjj12345/SilverFoxBlocker/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
-        var opened = false;
-        try {
-          var a = document.createElement('a');
-          a.href = url; a.target = '_blank'; a.rel = 'noreferrer'; a.style.display = 'none';
-          document.body.appendChild(a); a.click(); document.body.removeChild(a);
-          opened = true;
-        } catch (e) {}
-        if (!opened) { try { window.open(url, '_blank'); opened = true; } catch (e) {} }
-        if (opened) {
-          show('已打开 GitHub 反馈页面，请登录后提交。谢谢你的反馈！', 'ok');
-          if ($('fbText')) $('fbText').value = '';
+        if (viaMail) {
+          // 直接发信：扩展把反馈 POST 到你的 Worker，由 Worker 代发邮件。
+          // 不经过本地邮件客户端；域名也不在扩展源码以明文出现（见 feedback-config.js）。
+          var cfg = window.SFB_FEEDBACK;
+          var endpoint = (cfg && cfg.decode) ? cfg.decode(cfg.endpointCodes) : '';
+          if (!cfg || !cfg.enabled || !endpoint) {
+            show('邮件反馈尚未配置，暂时无法发送。', 'warn');
+            if (mailBtn) mailBtn.disabled = false; if (spin) spin.hidden = true;
+            return;
+          }
+          mailBusy = true; // 锁定，直到收到响应（含 5 秒自动恢复窗口）
+          // 与 Worker 契约一致：{ message, contact }；类型信息并入正文，正文截断到 2000 字
+          var payload = ('问题类型：' + p.type + '\n\n' + p.message).slice(0, 2000);
+          var contactEl = $('fbContact');
+          var contact = (contactEl && contactEl.value || '').trim();
+          fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: payload, contact: contact })
+          })
+            .then(function (res) {
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              show('感谢您的反馈！', 'ok');
+              if ($('fbText')) { $('fbText').value = ''; updateFbCount(); }
+              if ($('fbContact')) $('fbContact').value = '';
+              // 成功后等待 5 秒自动恢复：先保持禁用，避免重复发送；5 秒后解禁
+              if (mailBtn) mailBtn.disabled = true;
+              if (spin) spin.hidden = true;
+              if (mailRestoreTimer) clearTimeout(mailRestoreTimer);
+              mailRestoreTimer = setTimeout(function () {
+                if (mailBtn) mailBtn.disabled = false;
+                mailBusy = false;
+              }, 5000);
+            })
+            .catch(function () {
+              show('发送失败，请稍后重试。', 'warn');
+              if (mailRestoreTimer) clearTimeout(mailRestoreTimer);
+              if (mailBtn) mailBtn.disabled = false; // 失败可重试
+              mailBusy = false;
+              if (spin) spin.hidden = true;
+            });
         } else {
-          show('未能打开 GitHub，请手动访问 https://github.com/bbjj12345/SilverFoxBlocker/issues 提交。', 'warn');
+          // GitHub Issue：打开项目 Issues 新建页并预填内容
+          var target = 'https://github.com/bbjj12345/SilverFoxBlocker/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
+          var opened = false, a;
+          try {
+            a = document.createElement('a'); a.href = target; a.target = '_blank'; a.rel = 'noreferrer'; a.style.display = 'none';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); opened = true;
+          } catch (e) {}
+          if (!opened) { try { window.open(target, '_blank'); opened = true; } catch (e) {} }
+          if (opened) show('感谢您的反馈！', 'ok');
+          else show('未能打开 GitHub，请手动访问 https://github.com/bbjj12345/SilverFoxBlocker/issues 提交。', 'warn');
+          if (activeBtn) activeBtn.disabled = false; if (spin) spin.hidden = true;
         }
-        btn.disabled = false; if (spin) spin.hidden = true;
       });
-    });
+    }
+
+    if (btn) btn.addEventListener('click', function () { runFeedback(false); });
+    if (mailBtn) mailBtn.addEventListener('click', function () { runFeedback(true); });
   })();
 
   renderSponsors();
@@ -1306,7 +1370,7 @@ async function init() {
   $('resetBtn').addEventListener('click', () => {
     if (!confirm('确定要清空拦截统计吗？白名单与规则设置不会改动。')) return;
     if (hasStorage()) {
-      chrome.storage.local.set({ stats: { warnings: 0, blocks: 0, recent: [] } }, () => { loadStats(); showToast(); });
+      chrome.storage.local.set({ stats: { warnings: 0, blocks: 0, recent: [], suspicious: [] } }, () => { loadStats(); showToast(); });
     } else {
       showToast();
     }

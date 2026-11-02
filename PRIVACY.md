@@ -70,7 +70,29 @@ We do not share, sell, or trade your personal data with any third party. Apart f
 You may disable protection globally at any time, add trusted sites to the allowlist, and clear local statistics.
 ---
 
-## 六、儿童 / Children
+## 六、权限说明 / Permissions
+
+本扩展在 `manifest.json` 中仅声明**实际使用**的权限，遵循"最小权限"原则。各权限的用途如下：
+
+- **storage（本地存储）**：保存您的设置（拦截开关、各项权重、白名单）与防护统计、拦截记录，数据仅存于浏览器本地，不与任何服务器同步或上传。
+- **downloads（下载管理）**：核心防护能力——后台监听下载事件并取消高危 / 恶意下载；同时用于「银狐急救」中按用户主动点击，从 360 官方域名拉取急救工具压缩包。
+- **webNavigation（网页导航）**：监听顶级框架导航，在页面加载瞬间进入"检测中"状态并识别"危险页 → 新域名"跳转链污染，是实时拦截闸门的关键环节。
+- **notifications（通知）**：检测到高风险网站或下载时，弹出系统原生告警（相比声音提示更可靠，且无需用户手势解锁）。
+- **&lt;all_urls&gt;（主机权限）**：内容脚本需在用户访问的所有 http(s) 页面上运行以做实时检测与拦截；同时为 RDAP 域名年龄查询、官方域名库拉取、360 急救下载等必要的网络请求提供主机授权。
+
+The extension declares **only the permissions it actually uses**, following the principle of least privilege. Their purposes:
+
+- **storage**: stores your settings (blocking toggles, per-dimension weights, allowlist) and on-device statistics; never synced to or uploaded to any server.
+- **downloads**: core protection—monitors download events to cancel malicious ones; also used for the user-initiated Rescue download from 360's official domain.
+- **webNavigation**: watches top-level navigations to enter "scanning" state on page load and to detect "risky-page → new-domain" redirect-chain pollution—a key part of the real-time blocking gate.
+- **notifications**: shows native system alerts when a high-risk site or download is detected.
+- **&lt;all_urls&gt; (host permission)**: lets the content script run on all http(s) pages for real-time detection/blocking and authorizes the necessary network requests (RDAP lookup, official-domain fetch, Rescue download).
+
+> 说明：此前 `manifest.json` 中的 `activeTab`、`unlimitedStorage`、`nativeMessaging` 三项因无对应功能实现，已按"最小权限"原则移除。
+
+---
+
+## 七、儿童 / Children
 
 本扩展不面向 儿童，也不故意收集儿童信息。
 

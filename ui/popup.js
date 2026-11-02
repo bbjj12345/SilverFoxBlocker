@@ -39,7 +39,7 @@ function loadPopupStats() {
     if (!recent.length) { list.innerHTML = ''; if (empty) empty.hidden = false; return; }
     if (empty) empty.hidden = true;
     list.innerHTML = '';
-    recent.slice(0, 5).forEach((x) => {
+    recent.forEach((x) => {
       const lv = x.level || 'safe';
       const li = document.createElement('li');
       const dot = document.createElement('span'); dot.className = 'rdot'; dot.style.background = LEVEL_COLOR[lv] || '#888';
@@ -48,7 +48,91 @@ function loadPopupStats() {
       li.append(dot, h, t);
       list.appendChild(li);
     });
+    fitPopupWidth();
+    fitRecentWidth();
+    requestAnimationFrame(() => { fitPopupWidth(); fitRecentWidth(); });
   });
+}
+
+// 长域名兜底：若某条记录在弹窗最大宽度(800px)内仍放不下，则对其换行（优先撑宽单行完整显示）
+function fitRecentWidth() {
+  const list = $('ppRecent');
+  if (!list) return;
+  list.querySelectorAll('li').forEach((li) => {
+    if (li.scrollWidth > li.clientWidth + 1) li.classList.add('wrap');
+    else li.classList.remove('wrap');
+  });
+}
+
+// 宽度最小步长：按最宽一行（域名+时间）把弹窗撑到刚好放得下，下限 400px、上限 800px，
+// 保证内容不被挤压；超过上限才由 fitRecentWidth 换行。
+function fitPopupWidth() {
+  const list = $('ppRecent');
+  if (!list) return;
+  let widest = 0;
+  list.querySelectorAll('li').forEach((li) => { if (li.scrollWidth > widest) widest = li.scrollWidth; });
+  let need = widest + 64; // 卡片内边距(16*2) + app 内边距(16*2)
+  if (need < 400) need = 400;
+  if (need > 800) need = 800;
+  document.body.style.minWidth = need + 'px';
+}
+
+const LEVEL_MAP = { danger: '危险', warn: '可疑', safe: '保持警惕', official: '官方', unknown: '未知' };
+
+// 当前网站评分：无论是否为风险域名，都向活动标签页的内容脚本索取实时评分并展示
+function loadCurrentSite() {
+  const hostEl = $('siteHost'), scoreEl = $('siteScore'), levelEl = $('siteLevel'), reasonsEl = $('siteReasons');
+  if (!hostEl) return;
+  const unknown = (txt) => {
+    hostEl.textContent = '—'; scoreEl.textContent = '—';
+    levelEl.textContent = txt; levelEl.className = 'site-level lvl-unknown';
+    if (reasonsEl) reasonsEl.innerHTML = '';
+  };
+  const render = (r, fallbackHost) => {
+    const host = r.hostname || fallbackHost || '—';
+    hostEl.textContent = host;
+    const score = (typeof r.score === 'number') ? r.score : null;
+    scoreEl.textContent = (score == null) ? '—' : String(score);
+    let level = r.level || (score == null ? 'unknown' : 'safe');
+    if (r.allowlisted) level = 'official';
+    levelEl.textContent = LEVEL_MAP[level] || '未知';
+    levelEl.className = 'site-level lvl-' + level;
+      if (reasonsEl) {
+      reasonsEl.innerHTML = '';
+      if (r.allowlisted) reasonsEl.textContent = '该站点在白名单中，已跳过检测。';
+      else if (r.disabled) reasonsEl.textContent = '防护已全局关闭，未参与评分。';
+      else if (r.analyzed === false) reasonsEl.textContent = '正在分析当前页面…';
+      else {
+        const rs = Array.isArray(r.reasons) ? r.reasons : [];
+        if (!rs.length) reasonsEl.textContent = score > 0 ? '已命中风险特征。' : '未命中任何风险特征。';
+        else {
+          // 显示完整评分依据：逐条列出所有命中特征，不再截断为「等 N 项特征」。
+          rs.forEach((x) => {
+            const d = document.createElement('div'); d.className = 'reason';
+            d.textContent = '· ' + (x.label || '') + (x.detail ? '：' + x.detail : '');
+            reasonsEl.appendChild(d);
+          });
+        }
+      }
+    }
+  };
+  const queryStatus = () => {
+    try {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs && tabs[0];
+        if (!tab || tab.id == null || !tab.url || !/^https?:\/\//i.test(tab.url)) { unknown('当前页面不支持评分'); return; }
+        let fallbackHost = ''; try { fallbackHost = new URL(tab.url).hostname; } catch (e) {}
+        chrome.tabs.sendMessage(tab.id, { type: 'sf-getStatus' }, (resp) => {
+          if (chrome.runtime.lastError || !resp) { unknown('无法获取评分'); return; }
+          render(resp, fallbackHost);
+        });
+      });
+    } catch (e) { unknown('无法获取评分'); }
+  };
+  queryStatus();
+  // 评分依赖异步补强（域名年龄 / ICP 核验 / 深链下挖），延后补查一次，确保弹窗结论与页面浮层一致
+  setTimeout(queryStatus, 1500);
+  setTimeout(queryStatus, 5000);
 }
 
 async function init() {
@@ -86,6 +170,7 @@ async function init() {
   const appEl = document.querySelector('.app');
   if (appEl) appEl.classList.toggle('guarding', !!settings.enabledGlobal);
   loadPopupStats();
+  loadCurrentSite();
 
   // 两个入口：直接打开设置页对应子页面（#sec=<id> 由 options.js 接管跳转）
   const base = chrome.runtime.getURL('ui/options.html');

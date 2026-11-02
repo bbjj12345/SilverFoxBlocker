@@ -25,6 +25,21 @@
   // ============ 官方域名快速索引（精确 + 子域匹配）============
   const OFFICIAL_SET = new Set((IOCS.OFFICIAL_DOMAINS || []).map(d => d.toLowerCase()));
 
+  // ============ 用户指定豁免域名（整站不拦截 / 不评分告警 / 不参与连坐）============
+  const EXCEPTION_SET = new Set((IOCS.EXCEPTION_DOMAINS || []).map(d => d.toLowerCase()));
+  // 精确或子域后缀命中（与 isOfficialDomain 同语义：www. 前缀先去掉，再比对）
+  function isExceptionHost(host) {
+    host = (host || '').toLowerCase().replace(/^www\./, '');
+    if (!host) return false;
+    if (EXCEPTION_SET.has(host)) return true;
+    let i = host.indexOf('.');
+    while (i !== -1) {
+      if (EXCEPTION_SET.has(host.slice(i + 1))) return true;
+      i = host.indexOf('.', i + 1);
+    }
+    return false;
+  }
+
   // 性能优化：模块级复用正则，避免重复编译
   const WWW_RE = /^www\./;
   const SKIP_HREF_RE = /^javascript:|^#|^mailto:|^tel:/i;
@@ -87,10 +102,15 @@
     return _suffixHit(GOV_SET, hostname);
   }
 
-  // ============ 云端官网库补充（#384：本地未命中时由后台实时拉取，仅内存、不持久化）============
-  // 扩展后台在本地 OFFICIAL_DOMAINS 未命中时，按需实时查询云端公开域名清单；命中结果经
-  // registerCloudOfficial 注入本集合后，isOfficialDomain 同步判定即可生效（零延迟、不写 storage）。
-  // 云端只回一份公开名单（GET 公开数据），绝不接收用户当前访问域名 → 零隐私上报。
+  // ============ 运行时动态白名单注入槽位（原作者的云端库已移除，此槽位保留待用）============
+  // 2026-11-01：原作者的云端官网库（site-directory-cache.pages.dev / 250,603 条 /
+  // Tranco Top-1M 衍生清单）已随其数据源一并完整移除。
+  // 此处保留的是「注入槽位」本身：一组字符串 + 一个注入函数，不含任何网络请求，
+  // 也不含原作者特有的判定逻辑，故不属于需清理的死代码。
+  // 保留理由：日后启用 background.js 的「我的云端库」模板时，直接调用
+  // registerCloudOfficial 即可让 isOfficialDomain 立即生效，无需改动本文件。
+  // 若你确定彻底不要任何云端名单，可连同下方 isOfficialDomain 中的
+  // _suffixHit(EXTRA_OFFICIAL_SET, h) 一项一并删除。
   const EXTRA_OFFICIAL_SET = new Set();
   function registerCloudOfficial(arr) {
     if (!arr) return;
@@ -536,6 +556,9 @@
 
   function detectSpoof(hostname) {
     const normalized = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    // ★ 用户指定豁免域名（如 qianwenai.com）：整站不判品牌仿冒（连同 content.js 的连坐/评分告警一并放行）。
+    //   其余检测（缺备案 / 混淆脚本 / 木马安装包等）仍照常运行；其它 qianwen 仿冒站（go0gle 类等）仍受保护。
+    if (isExceptionHost(normalized)) return null;
     // 官方域名豁免：含品牌词但确属官方（如 www.moonshot.cn / qq.com / kimi.moonshot.cn / aliyun.com）
     // 不算仿冒。否则 detectSpoof 仅做品牌词段匹配会把这些真官网误判为仿冒。
     // 官方豁免使用原始 normalized（不施加形近规范化），防止 go0gle 类被误判为官方域名。
@@ -1784,6 +1807,12 @@
   function stabilizeVerdict(prev, next) {
     if (!prev || !next) return next;
     if (!prev.analyzed || prev.allowlisted || prev.disabled || !prev.level) return next;
+    // ★ 已按 danger 出过拦截浮层 / 禁用下载：后续异步补强（.txt 下挖 / BFS 大幅新增普通链接拉低下载占比）
+    //   即使算出更低分，也不得降级为安全/可疑 —— 否则会出现「遮罩判定风险、弹窗却判安全」的矛盾。
+    //   维持已生效的拦截结论，确保弹窗评分与页面浮层一致。
+    if (prev.level === 'danger' && (LEVEL_RANK[next.level] || 0) < (LEVEL_RANK[prev.level] || 0)) {
+      return prev;
+    }
     const up = (LEVEL_RANK[next.level] || 0) > (LEVEL_RANK[prev.level] || 0);
     if (!up) return next;
     const strongNow = FEATURE_STRONG.some((id) => next.features && next.features[id]);
@@ -2060,6 +2089,7 @@
   const API = {
     analyze,
     isOfficialDomain,
+    isExceptionHost,
     isBrandSelfSite,
     registerCloudOfficial,
     isTrustedPlatform,

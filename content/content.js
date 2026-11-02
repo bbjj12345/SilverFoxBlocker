@@ -62,6 +62,7 @@
   let hardGuardsInstalled = false; // 硬拦截钩子（window.open / a.click / 点击捕获 / location）是否已安装
   let dangerReported = false;     // 防「报毒」重复上报：同一页面仅向后台/系统通知上报一次 danger
   let dangerAcknowledged = false; // 用户已点「仍然继续」确认进入 → 本页不再重复弹 danger 浮层（拦截仍生效）
+  let revoked = false;            // 云端官网库命中 → 已撤销 danger 判定（本页不再拦截，且不被 establishedDanger 重新拉起）
   let didRun = false;             // 防 run() 因 DOMContentLoaded + setTimeout 兜底被重复触发（导致二次分析/双记录）
 
   // ===== 原生 API 快照（防止页面改写原型来对抗扩展 UI）=====
@@ -248,9 +249,30 @@
       (document.body || document.documentElement).appendChild(toastEl);
     }
     toastEl.textContent = msg;
+    toastEl.style.setProperty('color', '#ffd9d9', 'important');
     toastEl.style.display = 'block';
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { if (toastEl) toastEl.style.display = 'none'; }, 2600);
+  }
+
+  // ★ 强制扩展 UI 文本为白色（行内 !important，不被任何页面级 CSS 压过）。
+  //   仅当 content.css 的 !important 仍被极端页面覆盖（如祖先 filter invert、内联样式）时兜底。
+  function forceWhiteText(root, keepTitleGradient) {
+    if (!root) return;
+    try {
+      const items = root.querySelectorAll('*');
+      for (let i = 0; i < items.length; i++) {
+        const el = items[i];
+        if (el.nodeType !== 1) continue;
+        if (keepTitleGradient && el.classList && el.classList.contains('sf-title')) {
+          el.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
+          continue;
+        }
+        el.style.setProperty('color', '#fff', 'important');
+        el.style.setProperty('-webkit-text-fill-color', '#fff', 'important');
+      }
+      root.style.setProperty('color', '#fff', 'important');
+    } catch (e) {}
   }
 
   // 带动画的关闭助手：加 .sf-closing 触发 CSS 退场动画，动画结束（或兜底超时）后移除
@@ -641,14 +663,10 @@
   // 这些项会改变判定（尤其 ICP 核验决定「是否扣缺备案号 18 分」），若像旧逻辑那样「先判定、后补强」，
   // 就会出现「首屏 70 分（缺备案）→ 补强后 52 分」的评分跳变与重复记录。
   async function collectCriticalEnrichments(settings, data) {
-    // 0) 云端官网库（纯内存查，无网络等待）：命中即豁免，避免官方站被本地规则误伤。
-    try {
-      const rc = await sendMsg({ type: 'sf-cloud-official', host: location.hostname });
-      if (rc && rc.official && rc.matched) {
-        if (SF.registerCloudOfficial) SF.registerCloudOfficial([rc.matched]);
-        data.cloudOfficial = true;
-      }
-    } catch (e) {}
+    // 原作者的「云端官网库」查询步骤已于 2026-11-01 移除。
+    // 移除原因：源由第三方控制且无签名校验，命中即撤销告警，存在漏放风险。
+    // 原文备份：.bak_20261101010207_remove-cloud/content.js
+    // 日后若改用自有名单，在此恢复查询步骤，并配合 background.js 的「我的云端库」模板启用。
     // 1) ICP 权威核验（三态：确有备案 / 确认无备案 / 查询失败）。失败时后台返回 {queried:false}，引擎回退页面文本扫描。
     if (needIcpVerify(settings, data)) {
       try {
@@ -656,7 +674,7 @@
         if (ra && ra.queried) data.icpAuth = ra;
       } catch (e) {}
     }
-    // 2) 下载黑名单（纯本地读）：只有本页确实存在指向黑名单域名的链接时才注入。
+    // 2) 下载黑名单（纯本地读）：只有本页确实存在指向黑名单域名的链接时才注入（供评分加分 + 页面级拦截提示）。
     try {
       const rb = await sendMsg({ type: 'sf-dl-blacklist' });
       const domains = (rb && rb.domains) || [];
@@ -872,6 +890,37 @@
     return null;
   }
 
+  // 从下载入口元素提取「将要下载的文件 URL」，供「仍要下载」时登记进后台放行名单。
+  // 入口可能是 <a href>、<img src>、带 data-url/data-href/data-download 的按钮，或是
+  // 包着 <a> 的容器 div。相对路径按当前页 location 解析为绝对 URL；只认 http(s)/data:/blob:，
+  // 提取不到（如纯 JS 触发下载）返回 ''，由后台退化为「临时放行本标签」兜底。
+  function getEntryDownloadUrl(el) {
+    if (!el || !el.getAttribute) return '';
+    function resolve(raw) {
+      if (!raw) return '';
+      raw = String(raw).trim();
+      if (!raw || /^(javascript:|#|mailto:|tel:)/i.test(raw)) return '';
+      let abs = null;
+      try { abs = new URL(raw, location.href).href; } catch (e) { abs = null; }
+      if (abs && /^https?:|^data:|^blob:/i.test(abs)) return abs;
+      return '';
+    }
+    const attrs = ['href', 'src', 'data-href', 'data-url', 'data-download', 'data-link', 'data-src'];
+    for (let i = 0; i < attrs.length; i++) {
+      const v = resolve(el.getAttribute(attrs[i]));
+      if (v) return v;
+    }
+    // 入口为容器（如带「下载」文字的 div）时，真实 URL 常在子元素 <a> 上
+    try {
+      if (el.querySelector) {
+        const a = el.querySelector('a[href]');
+        const v = a && resolve(a.getAttribute('href'));
+        if (v) return v;
+      }
+    } catch (e) {}
+    return '';
+  }
+
   // ===== 链接与下载入口静默禁用 =====
   // 被禁用元素的**权威账本**：放行/撤销时用这份列表直接恢复，
   // 不再依赖 querySelectorAll('[data-sf-blocked]') 重新查找 —— 查找一旦失败
@@ -907,11 +956,19 @@
     }
     el.dataset.sfBlocked = '1';
     _blockedEls.push(el);                 // ★ 记账，供后续无条件恢复
+    // ★ 激进兜底：物理层面让元素彻底失去触发能力，堵死任何绕过点击拦截的下载手法
+    //   （如 onclick / addEventListener / 程序化 .click() / 事件委托）。
+    try { if (el.tagName === 'BUTTON') el.disabled = true; } catch (e) {}
+    try { if (el.onclick) el.onclick = null; if (el.removeAttribute) el.removeAttribute('onclick'); } catch (e) {}
+    try { if (el.click && typeof el.click === 'function') { el._sfClick = el.click; el.click = function () { return false; }; } } catch (e) {}
     el.addEventListener('click', blockHandler, true);
     el.addEventListener('contextmenu', blockHandler, true);
-    el.style.pointerEvents = 'none';
-    el.style.opacity = '0.55';
-    el.style.filter = 'grayscale(0.6)';
+    // 注意：不再设置 pointer-events:none。一旦置 none，点击会「穿透」到父节点（事件委托），
+    // 父节点并非下载入口 → 全局守卫放行 → CDN 下载照常触发（即「变暗却仍可点击」的根因）。
+    // 改为保留元素可点击，由 blockHandler（捕获阶段）与 globalClickGuard 拦截点击，
+    // 视觉上仍用 opacity / grayscale 表达「已禁用」。
+    el.style.opacity = '0.5';
+    el.style.filter = 'grayscale(0.85)';
     if (el.tagName === 'A') {
       el.dataset.sfOriginalHref = el.getAttribute('href');
       el.removeAttribute('href');
@@ -985,8 +1042,9 @@
           const href = a.getAttribute('href') || a.href || '';
           // 仅拦截真实导航（排除 javascript:/#/mailto:/tel:/about: 等非导航）
           const navHref = (href && !/^(javascript:|#|mailto:|tel:|about:)/i.test(href)) ? href : null;
-          // 高置信信号(navBlock) 或 明确下载 URL → 拦截，堵死运行时中继取链 / 直接甩文件
-          if (navHref && (navBlock || isDownloadUrl(navHref))) {
+          // 高置信信号(navBlock) 或 明确下载 URL 或 已被禁用(带 data-sf-blocked) 或 命中下载入口 → 拦截，
+          // 堵死运行时中继取链 / 直接甩文件 / fetch→blob→a.click() 等手法
+          if (navHref && (navBlock || isDownloadUrl(navHref) || (a.dataset && a.dataset.sfBlocked) || isDownloadEntry(a))) {
             if (!NATIVE.byId('sf-overlay')) showDownloadBlocked(location.hostname, { url: navHref });
             return;
           }
@@ -1083,11 +1141,20 @@
     // 扩展自身 UI 点击放行（双保险，避免误吞弹窗按钮）
     if (isSfUiElement(target)) return;
     const entry = isDownloadEntry(target) ? target : findDownloadAncestor(target);
+    if (!entry) {
+      // 兜底：点击落点或其祖先若曾被 neutralize（带 data-sf-blocked），同样视为下载入口拦截。
+      // 即便某些元素仍带 pointer-events:none 导致点击穿透到父节点，也能在此兜住。
+      let p = target;
+      while (p && p !== document.documentElement) {
+        if (p.dataset && p.dataset.sfBlocked) { entry = p; break; }
+        p = p.parentElement;
+      }
+    }
     if (!entry) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    showDownloadBlocked(location.hostname, { target: entry });
+    showDownloadBlocked(location.hostname, { target: entry, url: getEntryDownloadUrl(entry) });
     return false;
   }
 
@@ -1136,6 +1203,7 @@
     try {
       NATIVE.put(overlay, card);
       renderWarning(card, result);
+      forceWhiteText(card, true);
       sfFinishOverlay(mounted.fb);
     } catch (e) {
       try { sfRevealFallback(mounted.fb); } catch (e2) {}
@@ -1224,6 +1292,7 @@
       '<button id="sf-release" data-sf-act="release" type="button">我已知晓风险，完全放行</button>' +
       '<button id="sf-bclose" data-sf-act="bclose" type="button">✕</button>' +
       '</div>';
+      forceWhiteText(banner, false);
   }
 
   function updateBannerCount() {
@@ -1302,6 +1371,7 @@
     try { if (hint) closeEl(hint); } catch (e) {}
     // 复位拦截状态，让后续重判按新结论（safe）走
     dangerActive = false;
+    revoked = true;
     navBlock = false;
     fullLockdown = false;
     dangerReported = false;
@@ -1352,9 +1422,31 @@
       hint.innerHTML =
         '🛡 SilverFoxBlocker 提示：当前站点 <b>' + escapeHtml(location.hostname) + '</b> 存在可疑特征（风险分 ' + (result && result.score || 0) + '），请谨慎点击任何下载链接。' +
         '<button id="sf-hclose" data-sf-act="hclose" type="button">知道了</button>';
+      forceWhiteText(hint, false);
     } catch (e) {
       try { if (hint) NATIVE.rm(hint); } catch (e2) {}
     }
+  }
+
+  // ===== 下载拦截的「计数 + 自学习」补偿 =====
+  // 内容脚本在页面级（点击/入口/表单）拦截下载时，后台并未走 chrome.downloads 取消流程，
+  // 故 cancelDownload 里的「拦截下载次数 +1 / 写入自动学习黑名单」不会执行——导致计数恒为 0、黑名单恒空。
+  // 这里在拦截发生时主动通知后台补计（与 cancelDownload 同源逻辑），覆盖后台取消流程到不了的路径。
+  function extractBlockUrl(opts) {
+    if (opts && typeof opts.url === 'string' && opts.url) return opts.url;
+    const el = opts && opts.target;
+    if (el && el.getAttribute) {
+      const u = el.getAttribute('href') || el.getAttribute('src') ||
+                el.getAttribute('data-href') || el.getAttribute('data-url');
+      if (u) return u;
+    }
+    return '';
+  }
+  function recordBlockedDownload(host, url) {
+    try {
+      if (chrome.runtime && chrome.runtime.sendMessage)
+        chrome.runtime.sendMessage({ type: 'sf-record-blocked-download', host: host, url: url || '' });
+    } catch (e) {}
   }
 
   // ===== 被拦下载的大弹窗（两个选项） =====
@@ -1382,22 +1474,30 @@
         'dl-allow': function () {
           closeEl(overlayRef);
           allowNextAction(700);
-          if (opts.url) {
-            const a = document.createElement('a');
-            a.href = opts.url;
-            a.download = '';
-            a.target = '_blank';
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => a.remove(), 100);
-          } else if (opts.target && opts.target.click) {
-            opts.target.click();
+          // 拿到真实下载 URL（优先 opts.url，其次从入口元素提取），登记进后台放行名单。
+          const url = (opts.url || getEntryDownloadUrl(opts.target) || '').trim();
+          // 触发本页实际下载：优先点击原始入口（保留站内 JS 行为 / 鉴权上下文），否则用 <a> 兜底。
+          const trigger = function () {
+            if (opts.target && opts.target.click) { try { opts.target.click(); return; } catch (e) {} }
+            if (url) {
+              const a = document.createElement('a');
+              a.href = url; a.download = ''; a.target = '_blank'; a.style.display = 'none';
+              document.body.appendChild(a); a.click();
+              setTimeout(function () { try { a.remove(); } catch (e) {} }, 100);
+            }
+          };
+          if (chrome.runtime && chrome.runtime.sendMessage) {
+            try {
+              // 等后台回执（已把 URL 写入放行名单）后再触发下载，规避「消息未达、onCreated 先取消」的竞态，
+              // 否则会出现点了「仍要下载」仍被静默拦截。无法提取 URL 时后台会临时放行本标签兜底。
+              chrome.runtime.sendMessage(
+                { type: 'sf-allow-download', url: url, hostname: host, fromPage: true },
+                function () { try { void chrome.runtime.lastError; } catch (e) {} trigger(); }
+              );
+              return;
+            } catch (e) {}
           }
-          try {
-            if (chrome.runtime && chrome.runtime.sendMessage)
-              chrome.runtime.sendMessage({ type: 'sf-allow-download', url: opts.url || '', hostname: host, fromPage: true });
-          } catch (e) {}
+          trigger();
         },
         __escape: function () { closeEl(overlayRef); }
       },
@@ -1407,6 +1507,11 @@
     });
     if (!mounted || !mounted.overlay) return;
     overlayRef = mounted.overlay;
+    // 页面级拦截即构成一次「下载被拦截」事件：后台未走 chrome.downloads 取消流程，
+    // 故在此主动补计「拦截下载次数」并把载荷域名写入自动学习的下载黑名单。
+    // 后台 sf-download-blocked 消息路径（fromBackground）已由 cancelDownload 计过数，跳过避免重复。
+    if (!opts.fromBackground) recordBlockedDownload(host, extractBlockUrl(opts));
+    forceWhiteText(overlayRef, true);
     sfFinishOverlay(mounted.fb);
   }
 
@@ -1452,8 +1557,11 @@
     });
     if (!mounted || !mounted.overlay) return;
     overlayRef = mounted.overlay;
+    forceWhiteText(overlayRef, true);
     sfFinishOverlay(mounted.fb);
   }
+
+
 
   // ===== 危险弹窗提醒（Windows 系统通知，chrome.notifications）=====
   // 不再使用声音提示：浏览器自动播放策略在扩展上下文无法稳定解锁，且用户实测声音未生效。
@@ -1498,6 +1606,85 @@
     return result;
   }
 
+  // ===== 域名级联动（祖/父/子/孙 递归连坐）=====
+  // 任一被拦截域名的子孙（子域/子页）一律连坐拦截，但只有「最先被拦截的那一级」记入统计，
+  // 其下级仅拦截不记录，避免同域反复刷屏。完整域名链示例：
+  //   祖(com) / 父(wlygrowth.com) / 子(es.wlygrowth.com) / 孙(x.es.wlygrowth.com)
+  // 若「子」被判危 → 记录「子」完整域名；「孙」因父域名被标记而连坐拦截，但不记录。
+  let _blockedHosts = null;   // 已被判危 host 集合（chrome.storage.local.sfBlockedHosts 持久化）
+  function _ensureBlockedHostsLoaded() {
+    if (_blockedHosts) return Promise.resolve(_blockedHosts);
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get({ sfBlockedHosts: [] }, (o) => {
+          // 兼容两种存储格式：旧版纯 host 字符串数组（一律视为 danger）、
+          // 新版 "host|level"（danger / warn）数组。
+          const m = new Map();
+          (Array.isArray(o.sfBlockedHosts) ? o.sfBlockedHosts : []).forEach((s) => {
+            if (typeof s !== 'string') return;
+            const i = s.lastIndexOf('|');
+            if (i === -1) m.set(s.toLowerCase(), 'danger');
+            else m.set(s.slice(0, i).toLowerCase(), s.slice(i + 1) === 'warn' ? 'warn' : 'danger');
+          });
+          _blockedHosts = m;
+          resolve(_blockedHosts);
+        });
+      } catch (e) { _blockedHosts = new Map(); resolve(_blockedHosts); }
+    });
+  }
+  // 当前 host 的所有层级后缀（自身 → 父 → 祖…直至注册域），用于递归连坐判定
+  function _hostAncestors(host) {
+    const h = (host || '').toLowerCase().replace(/^www\./, '');
+    const out = [h];
+    let idx = h.indexOf('.');
+    while (idx !== -1) {
+      out.push(h.slice(idx + 1));
+      idx = h.indexOf('.', idx + 1);
+    }
+    return out;
+  }
+  function _sevOf(lv) { return lv === 'danger' ? 2 : 1; }
+  // 当前 host 是否因「自身/祖先域名此前已被判危/可疑」而需连坐（仍判相应等级但不记录）。
+  // 返回 'danger' | 'warn' | null（null 表示无需连坐）；危险优先于可疑。
+  function _inheritedLevel(host) {
+    if (!_blockedHosts) return null;
+    let best = null, bestSev = 0;
+    for (const a of _hostAncestors(host)) {
+      const lv = _blockedHosts.get(a);
+      if (!lv) continue;
+      const s = _sevOf(lv);
+      if (s > bestSev) { bestSev = s; best = lv; }
+    }
+    return best;
+  }
+  // 记录一个刚被判危/可疑的完整 host（供其子孙连坐）；持久化并限容。只升不降。
+  function _recordBlockedHost(host, level) {
+    level = (level === 'warn') ? 'warn' : 'danger';
+    if (!host) return;
+    const h = String(host).toLowerCase().replace(/^www\./, '');
+    _blockedHosts = _blockedHosts || new Map();
+    const prev = _blockedHosts.get(h);
+    if (prev && _sevOf(prev) >= _sevOf(level)) return;  // 只升不降
+    _blockedHosts.set(h, level);
+    let arr = Array.from(_blockedHosts.entries()).map(([k, v]) => k + '|' + v);
+    if (arr.length > 500) arr = arr.slice(arr.length - 500); // 限容防无限增长
+    _blockedHosts = new Map(arr.map((s) => { const i = s.lastIndexOf('|'); return [s.slice(0, i), s.slice(i + 1)]; }));
+    try { chrome.storage.local.set({ sfBlockedHosts: arr }); } catch (e) {}
+  }
+  // 清除某 host 及其全部子域在连坐集合中的残留记录（用于用户豁免域名解除历史连坐）
+  function _clearBlockedHost(host) {
+    host = (host || '').toLowerCase().replace(/^www\./, '');
+    if (!host || !_blockedHosts || !_blockedHosts.size) return;
+    let changed = false;
+    for (const k of Array.from(_blockedHosts.keys())) {
+      if (k === host || k.endsWith('.' + host)) { _blockedHosts.delete(k); changed = true; }
+    }
+    if (changed) {
+      const arr = Array.from(_blockedHosts.entries()).map(([k, v]) => k + '|' + v);
+      try { chrome.storage.local.set({ sfBlockedHosts: arr }); } catch (e) {}
+    }
+  }
+
   function analyzeAndAct(settings, chained, data) {
     if (!settings.enabledGlobal) { lastResult = { analyzed: true, disabled: true }; reportVerdict('safe'); return; }
     // ★ 可信分发域名（网盘 / GitHub 官方及镜像）：直接判安全、跳过分析。
@@ -1509,9 +1696,39 @@
       return;
     }
 
-    data.metrics = collectMetrics();
-    data.icp = extractIcp();
-    let result = SF.analyze(data, { enabled: settings.enabled, sensitivity: settings.sensitivity, weights: settings.weights });
+    // ★ 用户指定豁免域名（qianwenai.com 等）：整站不拦截、不评分告警、不参与连坐；
+    //   并主动清除其可能残留于连坐集合 sfBlockedHosts 的历史记录（避免此前误判写入的
+    //   连坐记录持续生效，表现为「score 100 / 域名级联动拦截」）。
+    if (SF.isExceptionHost && SF.isExceptionHost(location.hostname)) {
+      _clearBlockedHost(location.hostname);
+      // 豁免域名仍给出明确的「0 分 / 安全」评分，避免弹窗对豁免域名显示「未知」。
+      // 不跑评分引擎，但附上 score/level/reasons，使 sf-getStatus 返回的 lastResult 可被弹窗直接渲染。
+      lastResult = { analyzed: true, exception: true, score: 0, level: 'safe', reasons: [] };
+      reportVerdict('safe');
+      return;
+    }
+    // 官方白名单（cloud.gjhdr.xyz 及其子域等）→ 直接判安全，且优先级高于域名级联动拦截
+    if (SF.isOfficialDomain(location.hostname)) {
+      lastResult = { analyzed: true, official: true };
+      reportVerdict('safe');
+      return;
+    }
+    // ★ 域名级联动（祖/父/子/孙 递归连坐）：当前 host 自身或其祖先域名此前已被判危/可疑时，
+    //   本页连坐判相应等级（危险→拦截下载/弹层；可疑→提示），但「不记录」统计——
+    //   仅「最先被判定（危险或可疑）的那一级」记入，其余子孙仅连坐拦截/提示。
+    const _inh = _inheritedLevel(location.hostname);   // 'danger' | 'warn' | null
+    let result;
+    if (_inh === 'danger') {
+      result = {
+        analyzed: true, hostname: location.hostname, blockedCount: 0,
+        score: 100, level: 'danger', detected: true, official: false, inherited: true,
+        reasons: [{ label: '域名级联动拦截', detail: '该域名（或其父域）此前已被判定为银狐木马投递站，子域名/子页连坐拦截，不重复记录', weight: 100 }],
+        features: {}, threshold: 72
+      };
+    } else {
+      data.metrics = collectMetrics();
+      data.icp = extractIcp();
+      result = SF.analyze(data, { enabled: settings.enabled, sensitivity: settings.sensitivity, weights: settings.weights });
 
     // 自定义规则叠加
     const htmlLower = (data.html || '').toLowerCase();
@@ -1543,13 +1760,39 @@
       }
     }
 
+    // ★ 连坐升级（可疑）：本域此前已被判定「可疑(warn)」，而本页自身分析为「安全」时，
+    //   连坐提升为可疑（提示但不硬拦截下载），使同域各页评级一致，避免「根页安全 /
+    //   子页可疑」这类评分不一致。本页自身确为危险时不会被降级（上面 danger 分支已优先）。
+    if (_inh === 'warn' && result.level === 'safe') {
+      result.level = 'warn';
+      result.detected = true;
+      result.inherited = true;
+      if (typeof result.score !== 'number' || result.score < 44) result.score = 44;
+      result.reasons.push({ label: '域名级联动（可疑）', detail: '该域名（或其父域）此前已被判定为可疑站点，子域名/子页连坐提示，不重复记录', weight: 44 });
+    }
+
     // ===== 评分 / 等级稳定性护栏（2026-10-27）=====
     // 异步补强（ICP 核验 / .txt 下挖 / BFS 从脚本里挖下载入口）会给 data.links 追加条目后
     // 重判。这类「同类证据变多」曾让同一页面从 71 分跳到 81 分并突然拦截。
     // 具体判据（只认新强特征或分值跃升 ≥12）见 analyzer.stabilizeVerdict。
+    }
+
     result = SF.stabilizeVerdict(lastResult, result);
 
     lastResult = Object.assign({ analyzed: true, hostname: location.hostname, blockedCount: 0 }, result);
+
+    // ★ 已按 danger 出过拦截浮层 / 横幅：即便异步补强（.txt 下挖 / BFS 新增普通链接拉低下载占比）
+    //   算出更低分，也不得把活跃拦截状态（dangerActive）关掉 —— 否则会出现
+    //   「遮罩判定风险、弹窗却判安全」的矛盾，且「立即下载」按钮会重新变可点击。
+    //   维持已生效的拦截结论，保证弹窗评分与页面浮层一致、下载拦截持续生效。
+    //   （revokeWarningIfShown 命中云端官网库、或用户主动 doRelease 时 revoked/unblocked 为真，仍可正常放行。）
+    const establishedDanger = lastResult && lastResult.analyzed && lastResult.level === 'danger' &&
+      !lastResult.allowlisted && !lastResult.disabled && !unblocked && !revoked;
+    if (establishedDanger && result.level !== 'danger') {
+      result.level = 'danger';
+      result.detected = true;
+      result.stabilizedKept = true;
+    }
 
     if (result.level === 'danger') {
       dangerActive = true;
@@ -1562,13 +1805,16 @@
       // 所有交互型 CTA 入口（含伪装成「开始对话」「API 开放平台」的按钮）一律灰化 + 拦截点击
       fullLockdown = navBlock;
       installHardGuards();
-      if (settings.autoBlockDownloads) blockAllDownloadEntries();
+      blockAllDownloadEntries();   // ★ danger 级一律硬拦截下载（不再受 autoBlockDownloads 开关限制）
       updateBannerCount();
       if (settings.showWarning) showWarning(result);
-      // 同一页面仅上报一次「报毒」，避免初始分析 + 异步补强 + 二次扫描重复弹出系统通知
+      // 记录完整域名供子孙连坐（幂等：只升不降；连坐/复访也补记，保证计数完整）
+      _recordBlockedHost(location.hostname, 'danger');
       if (!dangerReported) {
-        if (settings.notify) sfNotify(result);
-        reportDetection(result);
+        // 通知保持「同页仅一次」：连坐/复访不再重复弹系统通知，避免刷屏；
+        // 但 reportDetection 必须上报——否则连坐/复访的危险页不会被计入「拦截风险网站」记录。
+        if (settings.notify && !result.inherited) sfNotify(result);
+        reportDetection(result);   // ★ 已移除 inherited 门控：连坐/复访也上报计数，避免漏记
         dangerReported = true;
       }
     } else if (result.level === 'warn') {
@@ -1576,8 +1822,17 @@
       navBlock = false;
       fullLockdown = false;
       dangerReported = false;
-      // ★ warn 只做页面内温和提示，不计入「拦截」：不上报后台统计、不写拦截记录。
-      //   后台仅 danger 才计入「拦截风险网站」并写入「近期拦截记录」（见 background.updateStats）。
+      // ★ warn（可疑）上报后台写入「近期可疑域名记录」（见 background.updateStats）。
+      //   但：若本域（或其父域）已被判为 danger（本地连坐黑名单），则它已属危险域名，
+      //   不应再写入「可疑」列表（避免「同一域名同时出现在高危与可疑」）。
+      //   此时以 danger 上报计入「拦截风险网站」，确保该域名的访问被记录；否则才按可疑处理。
+      const _alreadyDanger = _inheritedLevel(location.hostname) === 'danger';
+      if (_alreadyDanger) {
+        reportDetection(Object.assign({}, result, { level: 'danger' }));
+      } else {
+        if (!result.inherited) _recordBlockedHost(location.hostname, 'warn');
+        reportDetection(result);
+      }
       if (settings.showWarning) showWarnHint(result);
       // 本页完全无辜（真官网/有备案/无下载），清除跳转链污染
       if (chained) {
@@ -1638,6 +1893,7 @@
       const data = collectCore();
       await waitPageSettled(5000);
       await collectCriticalEnrichments(settings, data);
+      await _ensureBlockedHostsLoaded();   // 载入域名级联动阻断集合（供子页连坐）
       analyzeAndAct(settings, chained, data);   // 单次权威判定
       enrichDeepAsync(settings, chained, data);  // 后台深度补强（可能再重判一次，已去重）
     } catch (e) {
@@ -1671,8 +1927,9 @@
           const href = a.getAttribute('href') || a.href || '';
           // 仅拦截真实导航（排除 javascript:/#/mailto:/tel:/about: 等非导航）
           const navHref = (href && !/^(javascript:|#|mailto:|tel:|about:)/i.test(href)) ? href : null;
-          // 高置信信号(navBlock) 或 明确下载 URL → 拦截，堵死运行时中继取链 / 直接甩文件
-          if (navHref && (navBlock || isDownloadUrl(navHref))) {
+          // 高置信信号(navBlock) 或 明确下载 URL 或 已被禁用(带 data-sf-blocked) 或 命中下载入口 → 拦截，
+          // 堵死运行时中继取链 / 直接甩文件 / fetch→blob→a.click() 等手法
+          if (navHref && (navBlock || isDownloadUrl(navHref) || (a.dataset && a.dataset.sfBlocked) || isDownloadEntry(a))) {
             if (!NATIVE.byId('sf-overlay')) showDownloadBlocked(location.hostname, { url: navHref });
             return;
           }
@@ -1697,7 +1954,7 @@
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'sf-getStatus') { sendResponse(lastResult); return true; }
-    if (msg && msg.type === 'sf-download-blocked') { showDownloadBlocked(location.hostname, { url: msg.url || '' }); }
+    if (msg && msg.type === 'sf-download-blocked') { showDownloadBlocked(location.hostname, { url: msg.url || '', fromBackground: true }); }
     if (msg && msg.type === 'sf-dl-ext-blocked') { showExtDlConfirm(location.hostname, { url: msg.url || '', filename: msg.filename || '' }); }
     if (msg && msg.type === 'sf-download-allow-failed') { showToast('⚠️ 请手动在站内点击下载，已临时放行该链接'); }
   });

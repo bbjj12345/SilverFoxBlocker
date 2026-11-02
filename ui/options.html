@@ -308,7 +308,7 @@
         <div class="card fb-card" id="fbCard" data-page-node-id="SF_FB_CARD">
           <div class="field" data-page-node-id="SF_FB_HEAD">
             <label data-page-node-id="SF_FB_TITLE">反馈与建议</label>
-            <div class="hint" data-page-node-id="SF_FB_HINT">误报、漏报、想要的功能，点击下方「发送反馈」即可打开项目 GitHub Issues 提交，不经过任何第三方表单服务、不暴露邮箱。</div>
+            <div class="hint" data-page-node-id="SF_FB_HINT">误报、漏报、想要的功能，可点击「发送反馈到GitHub Issue」提交到项目 Issues，或点击「发送反馈到作者邮箱」直接发邮件给作者。均不经第三方表单服务。</div>
           </div>
           <div class="field" data-page-node-id="SF_FB_TYPE">
             <label data-page-node-id="SF_FB_TYPE_L">问题类型</label>
@@ -322,12 +322,20 @@
           </div>
           <div class="field" data-page-node-id="SF_FB_TEXT">
             <label for="fbText">问题描述</label>
-            <textarea id="fbText" rows="4" placeholder="越具体越好：哪个网站、你做了什么操作、期望的结果是什么。&#10;例：访问 example.com 时弹出高危警告，但那是我们公司官网；点击下载按钮也被拦了。"></textarea>
-            <div class="hint">请不要粘贴账号密码、身份证号等敏感信息。</div>
+            <textarea id="fbText" rows="4" maxlength="2000" placeholder="越具体越好：哪个网站、你做了什么操作、期望的结果是什么。&#10;例：访问 example.com 时弹出高危警告，但那是我们公司官网；点击下载按钮也被拦了。"></textarea>
+            <div class="fb-text-meta">
+              <span class="hint">请不要粘贴账号密码、身份证号等敏感信息。最大长度不超过2000个字符。</span>
+              <span class="fb-count" id="fbCount">0 / 2000</span>
+            </div>
+          </div>
+          <div class="field" data-page-node-id="SF_FB_CONTACT">
+            <label for="fbContact">邮件联系方式（选填）</label>
+            <input id="fbContact" type="email" class="fb-input" placeholder="选填，方便我们回复你；也可留空。" autocomplete="off" />
           </div>
           <div class="field" data-page-node-id="SF_FB_ACTIONS">
             <div class="fb-actions">
-              <button class="btn btn-primary" id="fbSend" type="button">发送反馈</button>
+              <button class="btn btn-primary" id="fbSend" type="button">发送反馈到GitHub Issue</button>
+              <button class="btn btn-sec" id="fbMail" type="button">发送反馈到作者邮箱</button>
               <span class="upd-checking" id="fbSpin" hidden>发送中…</span>
             </div>
             <div class="hint" id="fbMsg" hidden></div>
@@ -418,6 +426,7 @@
 
   <script src="../rules/iocs.js"></script>
   <script src="../rules/analyzer.js"></script>
+  <script src="feedback-config.js?v=20261102"></script>
   <script src="options.js?v=20260822b"></script>
 </body>
 </html>
