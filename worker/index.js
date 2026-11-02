@@ -46,19 +46,27 @@ export default {
         });
       }
 
-      // 5. 发送邮件 (调用 Resend API)
-      // 这里的 from 需要用 Resend 提供的测试地址，或者你以后验证的自有域名
-      const emailResponse = await fetch("https://api.resend.com/emails", {
+      // 5. 发送邮件 (调用 Brevo API)
+      // 这里的 from 需要用 Brevo 提供的测试地址，或者你以后验证的自有域名
+      // 5. 发送邮件 (调用 Brevo API)
+      const emailResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${env.RESEND_API_KEY}`,
+          "api-key": env.BREVO_API_KEY, // 注意：Brevo 使用的是 api-key，不是 Bearer
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          from: "Feedback <onboarding@resend.dev>",
-          to: ["feedback@silverfoxblocker.dpdns.org"], // 会通过 Cloudflare 邮件路由转发到你的 QQ 邮箱
+          sender: { 
+            name: "SilverFoxBlocker 反馈", 
+            email: "feedback@silverfoxblocker.dpdns.org" // 必须是你 Brevo 认证过的域名
+          },
+          to: [
+            { 
+              email: "feedback@silverfoxblocker.dpdns.org" // 依然发到这里，然后通过 Cloudflare 邮件路由转给 QQ
+            }
+          ],
           subject: "【SilverFoxBlocker】收到一条新的扩展反馈",
-          html: `
+          htmlContent: `
             <h3>新反馈</h3>
             <p><strong>联系方式：</strong> ${userContact}</p>
             <p><strong>内容：</strong></p>
@@ -68,9 +76,10 @@ export default {
           `
         })
       });
-
       if (!emailResponse.ok) {
-        throw new Error(`邮件发送失败: ${await emailResponse.text()}`);
+        // 如果 Brevo 报错，抛出异常，方便在 Cloudflare Logs 中看到
+        const errText = await emailResponse.text();
+        throw new Error(`Brevo 邮件发送失败: ${errText}`);
       }
 
       // 6. 发送成功，更新 KV 限流计数（有效期设为 24 小时）
