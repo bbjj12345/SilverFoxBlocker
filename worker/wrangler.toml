@@ -1,0 +1,18 @@
+name = "silverfox-feedback"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# 部署前用 secret 写入敏感值（不要写死在文件里）：
+#   wrangler secret put RESEND_API_KEY
+#   wrangler secret put TO_EMAIL
+#   wrangler secret put FROM_EMAIL
+#
+# 例如：
+#   TO_EMAIL   = feedback@你的域名
+#   FROM_EMAIL = feedback@你的域名   （须在 Resend 已验证该域名）
+#
+# 非敏感的路由等配置可在此用 [vars] 放；密钥务必用 secret。
+
+# [vars]
+# TO_EMAIL = "feedback@example.com"
+# FROM_EMAIL = "feedback@example.com"
