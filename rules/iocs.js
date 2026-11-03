@@ -1,6 +1,6 @@
 /*
  * iocs.js — 银狐(Silver Fox / 游蛇)木马投递网站特征库
- * 数据来源：CNCERT / 安天 官方通报 + 参考 VirusDetector 开源实现(domain-database / icp-utils)。
+ * 数据来源：CNCERT / 安天 的官方通报 + 参考 VirusDetector 开源实现(domain-database / icp-utils)。
  * 同时被 content script 与 background service worker 加载，兼容 window / self / node。
  */
 (function () {
