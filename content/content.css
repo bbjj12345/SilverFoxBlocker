@@ -1,5 +1,5 @@
 /* content.css — SilverFoxBlocker 警告浮层 / 拦截提示 / 常驻横幅
-   设计语言：Liquid Glass（深色渐变 + 毛玻璃 + 柔和阴影 + 丝滑动画） */
+   设计语言：Liquid Glass（显示：深色渐变 + 毛玻璃 + 柔和阴影 + 丝滑动画） */
 @keyframes sf-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sf-rise { from { opacity: 0; transform: translateY(24px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes sf-pulse { 0%,100% { transform: scale(1); filter: drop-shadow(0 0 10px rgba(255,90,90,.5)); } 50% { transform: scale(1.06); filter: drop-shadow(0 0 22px rgba(255,90,90,.85)); } }
@@ -163,24 +163,33 @@
   font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
 }
 
-/* ===== 威胁情报横幅（动态宽度、居中、仅展示判为恶意的情报源）===== */
-.sf-intel-banner { position: fixed !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483647 !important;
-  width: fit-content !important; max-width: calc(100% - 24px) !important; display: flex !important; align-items: center !important; gap: 10px !important;
-  padding: 9px 14px !important; border-radius: 12px !important;
+/* ===== 威胁情报横幅栈（动态宽度、居中、自上而下堆叠各检出情报源）===== */
+/* 栈容器固定定位于页面顶部、居中；内部各情报源横幅为普通块级卡片，按结果顺序纵向排列（VT→URLhaus→NetAPI）。
+   未检出的源不渲染，后续源自动上移补位，故堆叠始终无空隙。 */
+.sf-intel-stack { position: fixed !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483647 !important;
+  display: flex !important; flex-direction: column !important; align-items: stretch !important; gap: 8px !important;
+  width: fit-content !important; max-width: calc(100% - 24px) !important; pointer-events: none !important; }
+.sf-intel-banner { position: relative !important; width: 100% !important; box-sizing: border-box !important;
+  display: flex !important; align-items: center !important; gap: 10px !important; padding: 9px 14px !important; border-radius: 12px !important;
   background: linear-gradient(90deg, rgba(216,42,62,.96), rgba(196,58,96,.94)) !important;
   border: 1px solid rgba(255,180,195,.5) !important;
   color: #fff !important; font-size: calc(12.5px * var(--sf-scale)) !important; font-weight: 600 !important;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
   box-shadow: 0 10px 30px rgba(0,0,0,.45) !important; backdrop-filter: blur(8px) !important; -webkit-backdrop-filter: blur(8px) !important;
-  text-align: center !important; }
-.sf-intel-banner .sf-ib-text { flex: 1 !important; min-width: 0 !important; line-height: 1.45 !important; text-align: left !important; }
+  text-align: center !important; pointer-events: auto !important; visibility: visible !important; }
+.sf-intel-banner .sf-ib-text { flex: 1 !important; min-width: 0 !important; line-height: 1.4 !important; text-align: left !important; }
+.sf-intel-banner .sf-ib-sub { flex-basis: 100% !important; font-size: calc(11px * var(--sf-scale)) !important; font-weight: 500 !important;
+  opacity: .92 !important; text-align: left !important; margin-top: 2px !important; }
 .sf-intel-banner .sf-ib-close { flex: none !important; cursor: pointer !important; border: 1px solid rgba(255,255,255,.55) !important;
   background: rgba(255,255,255,.18) !important; color: #fff !important; border-radius: 10px !important; padding: 6px 13px !important;
   font-size: calc(12px * var(--sf-scale)) !important; font-weight: 700 !important; font-family: inherit !important; }
 .sf-intel-banner .sf-ib-close:hover { background: rgba(255,255,255,.3) !important; }
 .sf-intel-banner.sf-font-smiley { font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important; }
 .sf-intel-banner.sf-closing { animation: sf-bar-out .28s ease both !important; }
+/* 软判定源（如 Google Safe Browsing）：用琥珀/橙色调表达「疑似」，与确认类情报源（红）区分，呼应「疑似/可能」限定措辞 */
+.sf-intel-banner.sf-soft { background: linear-gradient(90deg, rgba(214,148,28,.97), rgba(198,132,32,.95)) !important; border-color: rgba(255,224,170,.6) !important; }
+/* OpenPhish 本地黑名单命中：深红（与 GSB「疑似」琥珀色、VT 红粉区分），表达「确已被拉黑」的确定性 */
+.sf-intel-banner.sf-openphish { background: linear-gradient(90deg, rgba(140,18,42,.97), rgba(120,30,60,.96)) !important; border-color: rgba(255,170,190,.55) !important; }
 /* 抗页面样式覆盖 */
-.sf-intel-banner { pointer-events: auto !important; visibility: visible !important; user-select: none !important; -webkit-user-select: none !important; }
-.sf-intel-banner, .sf-intel-banner * { color: #fff !important; -webkit-text-fill-color: #fff !important; }
+.sf-intel-banner, .sf-intel-banner * { color: #fff !important; -webkit-text-fill-color: #fff !important; user-select: none !important; -webkit-user-select: none !important; }
 

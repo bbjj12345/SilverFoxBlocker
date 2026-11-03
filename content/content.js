@@ -3,7 +3,7 @@
  * 职责：1) 采集页面代码 + 工程化指标 + ICP 备案
  *       2) 调用评分引擎（含官方早期退出）
  *       3) 分层响应：safe 不动作 / warn 温和提示不拦 / danger 警告浮层 + 禁用全部下载入口
- *       4) 用户可「离开 / 继续访问(仍拦截) / 完全放行」
+ *       4) 用户可「离开 / 继续访问(仍拦截下载) / 完全放行」
  *       5) 拦截任意元素触发的下载：a / button / div / img / 程序化 click / location 跳转 / window.open
  */
 (function () {
@@ -50,11 +50,14 @@
     fontMode: 'system',   // 'system' | 'smiley'
     theme: 'dark',        // 'dark' | 'light'
     fontScale: 1,         // 0.85 ~ 1.40，界面字号缩放系数
-    // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
+    // 威胁情报 API（可选）：默认关闭；启用后扩展实时查询当前域名在第三方情报库的判定。
+    // VirusTotal 需用户自有 Key；URLhaus / NetAPI 无需 Key（免费公开接口）。
     threatIntel: {
       enabled: false,
-      providers: { virustotal: { enabled: false, apiKey: '' } }
-    }
+      providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false },       googlesafebrowsing: { enabled: false, apiKey: '' } }
+    },
+    // OpenPhish 本地钓鱼黑名单：启用后与本地静态域名名单比对，命中即渲染横幅
+    openphish: { enabled: false, lastUpdated: 0 }
   };
 
   let lastResult = { analyzed: false };
@@ -1887,17 +1890,39 @@
     try {
       const ti = (settings && settings.threatIntel) || {};
       const tiEnabled = !!ti.enabled;
-      const vt = (ti.providers && ti.providers.virustotal) || {};
+      const pro = (ti.providers) || {};
+      const vt = pro.virustotal || {};
+      const gsb = pro.googlesafebrowsing || {};
+      // 注意：Google Safe Browsing 的 Key 以密文存储于 storage，settings 里读到的 apiKey 是密文，不可当明文判定
       const vtOn = !!vt.enabled;
-      const vtKeyLen = (vt.apiKey || '').length;
+      const gsbOn = !!gsb.enabled;
       console.log('[SilverFoxBlocker][情报] run() 已启动，域名=' + _host +
-        '，威胁情报总开关=' + tiEnabled + '，VirusTotal子开关=' + vtOn + '，Key长度=' + vtKeyLen);
+        '，威胁情报总开关=' + tiEnabled +
+        '，已启用源：VirusTotal=' + vtOn + '，URLhaus=' + !!(pro.urlhaus && pro.urlhaus.enabled) +
+        '，NetAPI=' + !!(pro.netapi && pro.netapi.enabled) + '，GoogleSafeBrowsing=' + gsbOn);
       if (tiEnabled && _host) {
-        if (vtOn && vtKeyLen > 0) {
-          queryAndShowThreatIntel(_host);
-        } else {
-          console.log('[SilverFoxBlocker][情报] 已勾选总开关，但 VirusTotal 子开关未开启或 Key 为空 → 未发起查询（需两层都勾 + 填 Key）');
-        }
+        const needsKey = (vtOn || gsbOn);
+        console.log('[SilverFoxBlocker][情报] 已勾选总开关，发起威胁情报查询（需 Key 的源=' +
+          (needsKey ? '已启用；Key 仅在后台 service worker 内解密，绝不进入页面脚本' : '无') + '）');
+        queryAndShowThreatIntel(_host);
+      }
+    } catch (e) {}
+
+    // —— OpenPhish 本地钓鱼黑名单：启用后与本地静态名单（域名集合）比对，命中即渲染横幅 ——
+    try {
+      const op = (settings && settings.openphish) || {};
+      if (op.enabled && _host) {
+        console.log('[SilverFoxBlocker][OpenPhish] 已启用，向后台查询本地黑名单：' + _host);
+        sendMsg({ type: 'sf-openphish-check', hostname: _host }).then(function (r) {
+          try {
+            if (r && r.listed) {
+              console.log('[SilverFoxBlocker][OpenPhish] 命中本地黑名单：' + _host + '，渲染横幅');
+              renderOpenPhishBanner(_host);
+            } else {
+              console.log('[SilverFoxBlocker][OpenPhish] 未命中（本地名单数量=' + ((r && r.count) || 0) + '）');
+            }
+          } catch (e) {}
+        }).catch(function () {});
       }
     } catch (e) {}
 
@@ -1935,7 +1960,7 @@
   //  · 与危险横幅(.sf-banner)/温和提示条(.sf-hint)错开，避免重叠（它们固定贴页面最顶且整行铺满）；
   //  · 框架化：后期在 background 的 THREAT_INTEL_PROVIDERS 增加新源，此处无需改动。
   function queryAndShowThreatIntel(host) {
-    if (document.getElementById('sfIntelBanner')) return; // 避免 SPA 重跑重复渲染
+    if (document.getElementById('sfIntelStack')) return; // 避免 SPA 重跑重复渲染
     // 同时把当前页面完整 URL 传给后台：VirusTotal 对「域名」与「网址」分开统计，
     // 钓鱼站常在 URL 端点被标红，需要后台一并查询 URL 端点。
     const pageUrl = (typeof location !== 'undefined' && location && location.href) ? location.href : '';
@@ -1948,7 +1973,7 @@
         }
         if (resp.results.length > 0) {
           console.log('[SilverFoxBlocker][情报] 域名 ' + host + ' 命中恶意情报源，渲染横幅：', resp.results);
-          renderIntelBanner(resp.results);
+          renderIntelBanners(resp.results);
         } else {
           // 无命中：区分"VT 判安全"与"查询出错 / Key 无效"，给出明确提示
           const errs = Array.isArray(resp.errors) ? resp.errors : [];
@@ -1973,60 +1998,119 @@
     }).catch(function () { console.log('[SilverFoxBlocker][情报] 查询异常（后台未响应或扩展被重载）'); });
   }
 
-  function positionIntelBanner(banner) {
+  function positionIntelStack(stack) {
     let top = 8;
     const topBar = document.querySelector('.sf-banner') || document.querySelector('.sf-hint');
     if (topBar) { try { top = topBar.getBoundingClientRect().bottom + 8; } catch (e) {} }
-    banner.style.top = top + 'px';
+    stack.style.top = top + 'px';
   }
 
-  function renderIntelBanner(results) {
-    if (document.getElementById('sfIntelBanner')) return;
-    const banner = document.createElement('div');
-    banner.id = 'sfIntelBanner';
-    banner.className = 'sf-intel-banner' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+  // 按结果顺序（后台已按 provider order 排序：VT→URLhaus→NetAPI）渲染一组情报横幅，
+  // 每个检出源一条、自上而下堆叠在网页顶部居中；未检出的源不渲染，后续源自动上移补位（无空隙）。
+  function renderIntelBanners(results) {
+    if (!results || !results.length) return;
+    if (document.getElementById('sfIntelStack')) return;
+    const stack = document.createElement('div');
+    stack.id = 'sfIntelStack';
+    stack.className = 'sf-intel-stack' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
 
-    const text = document.createElement('div');
-    text.className = 'sf-ib-text';
-    const parts = results.map(function (r) {
+    results.forEach(function (r) {
+      const banner = document.createElement('div');
+      banner.className = 'sf-intel-banner' + (r.soft ? ' sf-soft' : '');
       // VT 对「域名」与「网址」分开统计：若命中来自 URL 端点则说"该网址"，否则"该域名"
       const target = (r.src === '网址') ? '该网址' : '该域名';
-      const base = r.name + '已将' + target + '判定为恶意或存在风险';
-      return r.hasScore ? (base + '，评分 ' + r.score + '/' + r.scoreMax) : base;
+      // 软判定源（如 Google Safe Browsing，其 v4 API 已标记淘汰）：必须用「疑似/可能」等限定词，
+      // 不得断言「该网站不安全」——仅提示谷歌威胁情报库「疑似」标记，仅供参考。
+      const base = r.soft
+        ? (r.name + '疑似将' + target + '标记为存在风险（仅供参考）')
+        : (r.name + '已将' + target + '判定为恶意或存在风险');
+      const text = document.createElement('div');
+      text.className = 'sf-ib-text';
+      text.textContent = r.hasScore ? (base + '，评分 ' + r.score + '/' + r.scoreMax) : base;
+      banner.appendChild(text);
+      // 非评分源（URLhaus/NetAPI）以副行展示判定细节（无评分，仅给判断结果）
+      if (r.detail) {
+        const sub = document.createElement('div');
+        sub.className = 'sf-ib-sub';
+        sub.textContent = r.detail;
+        banner.appendChild(sub);
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'sf-ib-close';
+      btn.textContent = '知道了';
+      banner.appendChild(btn);
+      btn.addEventListener('click', function () {
+        banner.classList.add('sf-closing');
+        setTimeout(function () {
+          try { banner.remove(); } catch (e) {}
+          if (stack && stack.children.length === 0) { try { stack.remove(); } catch (e) {} }
+        }, 280);
+      });
+      stack.appendChild(banner);
     });
-    text.textContent = parts.join('；');
-    banner.appendChild(text);
 
+    const root = document.body || document.documentElement;
+    if (!root) return;
+    root.appendChild(stack);
+
+    // 危险横幅(.sf-banner)/温和条(.sf-hint)可能在情报栈之后才出现（本地检测需等页面稳定 + 5s），
+    // 故监听其创建并定期复检，把情报栈整体下移到其下方，避免重叠。
+    positionIntelStack(stack);
+    try {
+      const mo = new MutationObserver(function () { positionIntelStack(stack); });
+      mo.observe(document.body, { childList: true });
+      stack._sfIntelMO = mo;
+      let n = 0;
+      const rechk = setInterval(function () {
+        positionIntelStack(stack);
+        if (++n >= 12) { clearInterval(rechk); try { mo.disconnect(); } catch (e) {} }
+      }, 500);
+      stack._sfIntelRechk = rechk;
+    } catch (e) {}
+  }
+
+  // OpenPhish 命中本地黑名单时渲染横幅「OpenPhish 已将其拉黑」。复用 #sfIntelStack 容器与定位逻辑，
+  // 与威胁情报横幅上下堆叠；样式用 .sf-openphish（深红，区别于 GSB 的「疑似」琥珀色）。
+  function renderOpenPhishBanner(host) {
+    let stack = document.getElementById('sfIntelStack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.id = 'sfIntelStack';
+      stack.className = 'sf-intel-stack' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+      const root = document.body || document.documentElement;
+      if (!root) return;
+      root.appendChild(stack);
+      positionIntelStack(stack);
+      try {
+        const mo = new MutationObserver(function () { positionIntelStack(stack); });
+        mo.observe(document.body, { childList: true });
+        let n = 0;
+        const rechk = setInterval(function () {
+          positionIntelStack(stack);
+          if (++n >= 12) { clearInterval(rechk); try { mo.disconnect(); } catch (e) {} }
+        }, 500);
+      } catch (e) {}
+    }
+    const banner = document.createElement('div');
+    banner.className = 'sf-intel-banner sf-openphish';
+    const text = document.createElement('div');
+    text.className = 'sf-ib-text';
+    text.textContent = 'OpenPhish 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）';
+    banner.appendChild(text);
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'sf-ib-close';
     btn.textContent = '知道了';
-    banner.appendChild(btn);
-
-    const root = document.body || document.documentElement;
-    if (!root) return;
-    root.appendChild(banner);
-
-    // 危险横幅(.sf-banner)/温和条(.sf-hint)可能在情报横幅之后才出现（本地检测需等页面稳定 + 5s），
-    // 故监听其创建并定期复检，把情报横幅下移到其下方，避免重叠。
-    positionIntelBanner(banner);
-    try {
-      const mo = new MutationObserver(function () { positionIntelBanner(banner); });
-      mo.observe(document.body, { childList: true });
-      banner._sfIntelMO = mo;
-      let n = 0;
-      const rechk = setInterval(function () {
-        positionIntelBanner(banner);
-        if (++n >= 12) { clearInterval(rechk); try { mo.disconnect(); } catch (e) {} }
-      }, 500);
-      banner._sfIntelRechk = rechk;
-    } catch (e) {}
     btn.addEventListener('click', function () {
-      try { banner._sfIntelMO && banner._sfIntelMO.disconnect(); } catch (e) {}
-      try { banner._sfIntelRechk && clearInterval(banner._sfIntelRechk); } catch (e) {}
       banner.classList.add('sf-closing');
-      setTimeout(function () { try { banner.remove(); } catch (e) {} }, 280);
+      setTimeout(function () {
+        try { banner.remove(); } catch (e) {}
+        if (stack && stack.children.length === 0) { try { stack.remove(); } catch (e) {} }
+      }, 280);
     });
+    stack.appendChild(banner);
+    positionIntelStack(stack);
   }
 
   // ===== 硬拦截钩子（document_start 即安装，抢在站点脚本之前） =====
