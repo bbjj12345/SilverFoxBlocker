@@ -64,7 +64,10 @@ let _gsKeySet = false;       // 设置页打开时是否已存在密文 Key（�
 let _gsSavedCipher = '';     // 已保存的密文，用户留空时原样保留，避免误清空
 let _gsEncryptFailed = false;// 本次保存时加密是否失败（首次填写却加密失败 → 不存明文，提示用户重试）
 let _gsFieldDirty = false;   // 用户是否修改过 Key 输入框（聚焦后输入过）→ 决定保存时是否重新加密
-const GSB_MASK = '••••••••••••';  // 已保存 Key 的掩码显示（与 VT 同款圆点，绝不以明文/可识别密文暴露）
+// 已保存 Key 的掩码显示：约 40 个圆点（贴近 Google API Key 的正常长度 ~39 位），
+// 既不像密文那样看起来像「乱码」，也不会短得只剩十几个点显得没存上；保存前后长度完全一致。
+const GSB_MASK_CHAR = '•';
+const GSB_MASK = new Array(40 + 1).join(GSB_MASK_CHAR);
 
 function $(id) { return document.getElementById(id); }
 // 扩展环境才有 chrome.storage；浏览器直接预览时优雅退回默认值，不影响真实行为
@@ -704,13 +707,15 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, _sendResponse) {
     if (r.ok) {
       const d = new Date();
       const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-      statusEl.textContent = '更新成功：' + ds + '（共 ' + (r.count || 0) + ' 条域名）';
+      const s = r.source || '';
+      const srcNote = s ? ('，源：' + (s.indexOf('gh-proxy') >= 0 ? 'GitHub 反代' : (s.indexOf('jsdelivr') >= 0 ? 'jsDelivr 镜像' : (s.indexOf('raw.githubusercontent') >= 0 ? 'GitHub raw' : 'openphish 官方')))) : '';
+      statusEl.textContent = '更新成功：' + ds + '（共 ' + (r.count || 0) + ' 条域名' + srcNote + '）';
       statusEl.style.color = '';
     } else if (r.skipped) {
       statusEl.textContent = '更新跳过（24 小时内已更新，共 ' + (r.count || 0) + ' 条域名）';
       statusEl.style.color = '';
     } else {
-      statusEl.textContent = '更新失败：' + (r.error || '未知错误') + '（请检查网络能否访问 openphish.com）';
+      statusEl.textContent = '更新失败（全部镜像源均不可达）：' + (r.error || '未知错误');
       statusEl.style.color = '#c0392b';
     }
   } catch (e) {}
@@ -773,13 +778,13 @@ function bindControls(settings) {
     if (tiGsKeyWrap) tiGsKeyWrap.style.display = (tiGsEnabled && tiGsEnabled.checked) ? '' : 'none';
     if (tiGsKeyHint) { tiGsKeyHint.textContent = ''; tiGsKeyHint.style.color = ''; }
     if (gs.apiKey && sfLooksEncrypted(gs.apiKey)) {
-      // 已加密保存：用「圆点掩码」显示（与 VT 同款，不暴露明文/可识别密文），点击输入框不会消失，
-      // 聚焦时全选、输入即替换，保存逻辑据此判断是「保留原密文」还是「重新加密新 Key」。
+      // 已加密保存：显示「正常长度圆点掩码」（约 40 个点，贴近 API Key 真实长度），
+      // 不用密文串（避免被看成乱码），也不用过短掩码（避免看似没存上）；保存前后长度完全一致。
       _gsKeySet = true; _gsSavedCipher = gs.apiKey; _gsFieldDirty = false;
       if (tiGsKey) {
         tiGsKey.type = 'password';
         tiGsKey.value = GSB_MASK;
-        tiGsKey.placeholder = '已加密保存（显示为圆点，实际为密文，不可读取）。点击输入框可输入新 Key 替换。';
+        tiGsKey.placeholder = '已加密保存（显示为圆点）。点击输入框可输入新 Key 替换；留空保存则保留原 Key。';
         tiGsKey.onfocus = function () {
           // 仍显示掩码时全选，使首次按键直接替换；不主动清空，避免「点击即消失」的困惑
           if (tiGsKey.value === GSB_MASK) { try { tiGsKey.select(); } catch (_) {} }
@@ -787,11 +792,12 @@ function bindControls(settings) {
         tiGsKey.oninput = function () { _gsFieldDirty = true; };  // 用户已改动 → 保存时重新加密
       }
       if (tiGsKeyHint) {
-        tiGsKeyHint.textContent = '✓ 已配置并加密保存（显示为圆点，实际为密文，不可读取）。如需更换请直接输入新 Key；留空保存则保留原 Key。';
+        tiGsKeyHint.textContent = '✓ 已配置并加密保存（显示为圆点，实际为密文，不可读取）。如需更换请点击输入框直接输入新 Key；留空保存则保留原 Key。';
         tiGsKeyHint.style.color = '#2e9e6b';
       }
     } else if (gs.apiKey) {
       // 兼容：若意外存了非密文（理论不会发生），提示用户重新输入以重新加密
+      if (tiGsKey) { tiGsKey.type = 'text'; tiGsKey.value = gs.apiKey; }
       if (tiGsKeyHint) {
         tiGsKeyHint.textContent = '检测到旧格式 Key（未加密），请重新输入以重新加密保存。';
         tiGsKeyHint.style.color = '#c0392b';
@@ -1053,9 +1059,9 @@ async function collectSettings() {
   let gsKeyEnc = '';
   _gsEncryptFailed = false;
   if (!_gsFieldDirty) {
-    // 用户未改动输入框（仅显示圆点掩码）→ 直接保留原密文，不要对掩码/密文二次加密
+    // 用户未改动输入框（仍显示已存密文）→ 直接保留原密文，不要对密文二次加密
     gsKeyEnc = _gsSavedCipher || '';
-  } else if (gsInput && gsInput !== GSB_MASK) {
+  } else if (gsInput && gsInput !== _gsSavedCipher && gsInput !== GSB_MASK) {
     const enc = await sfEncryptKey(gsInput);   // 加密失败返回 null → 不回退明文
     if (enc) {
       gsKeyEnc = enc;
@@ -1067,9 +1073,17 @@ async function collectSettings() {
       _gsEncryptFailed = true;
     }
   } else {
-    // 用户聚焦/清空但未输入新值（或仍是掩码）→ 保留原密文，避免误清空
+    // 用户清空或内容与原密文相同（未实质改动）→ 保留原密文，避免误清空
     gsKeyEnc = _gsSavedCipher || '';
   }
+  // 保存后立即把输入框呈现为「圆点掩码」态，与刷新后重新加载的显示完全一致（解决刷新前后长度不一致）
+  try {
+    const tiGsKeyEl = $('tiGsKey');
+    if (tiGsKeyEl) { tiGsKeyEl.type = 'password'; tiGsKeyEl.value = gsKeyEnc ? GSB_MASK : ''; }
+    _gsSavedCipher = gsKeyEnc; _gsFieldDirty = false;
+    const tiGsKeyHintEl = $('tiGsKeyHint');
+    if (tiGsKeyHintEl && gsKeyEnc) { tiGsKeyHintEl.textContent = '✓ 已配置并加密保存（显示为圆点，实际为密文，不可读取）。如需更换请点击输入框直接输入新 Key；留空保存则保留原 Key。'; tiGsKeyHintEl.style.color = '#2e9e6b'; }
+  } catch (e) {}
   return {
     enabledGlobal: (window.__sfSettings ? !!window.__sfSettings.enabledGlobal : true),
     showWarning: $('showWarning').checked,

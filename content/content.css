@@ -166,19 +166,22 @@
 /* ===== 威胁情报横幅栈（动态宽度、居中、自上而下堆叠各检出情报源）===== */
 /* 栈容器固定定位于页面顶部、居中；内部各情报源横幅为普通块级卡片，按结果顺序纵向排列（VT→URLhaus→NetAPI）。
    未检出的源不渲染，后续源自动上移补位，故堆叠始终无空隙。 */
-.sf-intel-stack { position: fixed !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483647 !important;
-  display: flex !important; flex-direction: column !important; align-items: stretch !important; gap: 8px !important;
-  width: fit-content !important; max-width: calc(100% - 24px) !important; pointer-events: none !important; }
-.sf-intel-banner { position: relative !important; width: 100% !important; box-sizing: border-box !important;
-  display: flex !important; align-items: center !important; gap: 10px !important; padding: 9px 14px !important; border-radius: 12px !important;
+.sf-intel-stack { position: fixed !important; left: 50% !important; top: 8px !important; transform: translateX(-50%) !important; z-index: 2147483647 !important;
+  display: flex !important; flex-direction: column !important; align-items: center !important; gap: 8px !important;
+  width: auto !important; max-width: calc(100vw - 16px) !important; pointer-events: none !important; }
+/* 明确给定横幅宽度（不再用 width:auto，避免 flex 在窄容器下把文字挤成竖排）；
+   440px 上限，窄屏自适应；flex-wrap 让副行(sf-ib-sub)独占一行。 */
+.sf-intel-banner { position: relative !important; box-sizing: border-box !important;
+  width: min(440px, calc(100vw - 16px)) !important; max-width: calc(100vw - 16px) !important;
+  display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 7px 10px !important; padding: 8px 12px !important; border-radius: 10px !important;
   background: linear-gradient(90deg, rgba(216,42,62,.96), rgba(196,58,96,.94)) !important;
   border: 1px solid rgba(255,180,195,.5) !important;
   color: #fff !important; font-size: calc(12.5px * var(--sf-scale)) !important; font-weight: 600 !important;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
   box-shadow: 0 10px 30px rgba(0,0,0,.45) !important; backdrop-filter: blur(8px) !important; -webkit-backdrop-filter: blur(8px) !important;
-  text-align: center !important; pointer-events: auto !important; visibility: visible !important; }
-.sf-intel-banner .sf-ib-text { flex: 1 !important; min-width: 0 !important; line-height: 1.4 !important; text-align: left !important; }
-.sf-intel-banner .sf-ib-sub { flex-basis: 100% !important; font-size: calc(11px * var(--sf-scale)) !important; font-weight: 500 !important;
+  text-align: left !important; pointer-events: auto !important; visibility: visible !important; }
+.sf-intel-banner .sf-ib-text { flex: 1 1 auto !important; min-width: 0 !important; line-height: 1.45 !important; text-align: left !important; word-break: break-word !important; }
+.sf-intel-banner .sf-ib-sub { flex: 1 1 100% !important; font-size: calc(11px * var(--sf-scale)) !important; font-weight: 500 !important;
   opacity: .92 !important; text-align: left !important; margin-top: 2px !important; }
 .sf-intel-banner .sf-ib-close { flex: none !important; cursor: pointer !important; border: 1px solid rgba(255,255,255,.55) !important;
   background: rgba(255,255,255,.18) !important; color: #fff !important; border-radius: 10px !important; padding: 6px 13px !important;

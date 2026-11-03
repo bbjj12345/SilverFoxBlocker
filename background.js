@@ -338,7 +338,22 @@ const _INTEL_CACHE_TTL = 10 * 60 * 1000;
 // 设计：后台定时（默认每天）抓取 https://openphish.com/feed.txt，解析出域名集合存入
 // chrome.storage.local；访问网站时内容脚本把 hostname 发来，后台用内存 Set 做 O(1) 本地比对。
 // 名单保存在本地、不上传，符合「本地静态黑名单」诉求。
-const OPENPHISH_FEED_URL = 'https://openphish.com/feed.txt';
+// OpenPhish 免费公开钓鱼 feed：openphish.com/feed.txt 会 302 跳转到 GitHub raw，
+// 而该跳转响应无 CORS 头，扩展 service worker 的 fetch 跨域重定向会被拦（报 Failed to fetch）。
+// 故直接拉取「最终内容源」，并按「jsDelivr 镜像(中国可达性最好) → GitHub raw → openphish 官方(兜底)」顺序尝试，
+// 任一成功即采用，最大化在受限网络下也能更新成功。
+// 中国大陆网络常无法解析 cdn.jsdelivr.net / raw.githubusercontent.com（DNS 污染/封锁）。
+// 故优先使用 jsDelivr 的备用域名（fastly / gcore / testingcf，实测均返回真实 feed 且带 CORS *），
+// 再退到 GitHub 反代(gh-proxy.com)，最后才用原域名与 openphish 官方源兜底；任一成功即采用。
+const OPENPHISH_FEED_SOURCES = [
+  'https://fastly.jsdelivr.net/gh/openphish/public_feed@main/feed.txt',
+  'https://gcore.jsdelivr.net/gh/openphish/public_feed@main/feed.txt',
+  'https://testingcf.jsdelivr.net/gh/openphish/public_feed@main/feed.txt',
+  'https://gh-proxy.com/https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt',
+  'https://cdn.jsdelivr.net/gh/openphish/public_feed@main/feed.txt',
+  'https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt',
+  'https://openphish.com/feed.txt'
+];
 const SF_OP_DOMAINS_KEY = 'sfOpenPhishDomains';   // storage.local: string[]（已 lowercased 的域名）
 const SF_OP_META_KEY = 'sfOpenPhishMeta';         // storage.local: { updated, count, error }
 let _opDomains = null;                            // 内存缓存 Set，加速页面访问时的本地比对
@@ -351,36 +366,64 @@ async function loadOpenPhishDomains() {
   return _opDomains;
 }
 
-async function fetchOpenPhishFeed() {
-  try {
-    const res = await fetch(OPENPHISH_FEED_URL, { method: 'GET', cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const text = await res.text();
-    const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const domains = new Set();
-    for (const u of lines) {
-      try {
-        let host = u;
-        if (/^https?:\/\//i.test(u)) host = new URL(u).hostname;
-        else host = u.split('/')[0].split('?')[0];
-        if (host) domains.add(host.toLowerCase());
-      } catch (e) {}
-    }
-    const arr = Array.from(domains);
-    await new Promise((res) => chrome.storage.local.set({
-      [SF_OP_DOMAINS_KEY]: arr,
-      [SF_OP_META_KEY]: { updated: Date.now(), count: arr.length, error: '' }
-    }, res));
-    _opDomains = new Set(arr);
-    return { ok: true, count: arr.length };
-  } catch (e) {
+// 将 feed 文本解析为去重域名数组（仅收录含点、无空格/端口冒号的「域名形态」，避免把异常行当域名污染名单）
+function extractOpenPhishDomains(text) {
+  const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const domains = new Set();
+  for (const u of lines) {
     try {
-      await new Promise((res) => chrome.storage.local.set({
-        [SF_OP_META_KEY]: { updated: Date.now(), count: (_opDomains ? _opDomains.size : 0), error: String((e && e.message) || e) }
-      }, res));
-    } catch (_) {}
-    return { ok: false, error: String((e && e.message) || e) };
+      let host = u;
+      if (/^https?:\/\//i.test(host)) {
+        host = new URL(host).hostname;
+      } else if (host.indexOf('://') >= 0) {
+        host = host.split('://')[1].split('/')[0].split('?')[0];
+      } else {
+        host = host.split('/')[0].split('?')[0];
+      }
+      if (host && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host)) domains.add(host.toLowerCase());
+    } catch (e) {}
   }
+  return Array.from(domains);
+}
+
+async function fetchOpenPhishFeed() {
+  const failures = [];
+  for (const src of OPENPHISH_FEED_SOURCES) {
+    try {
+      // 加超时，避免单个源访问慢/被拦截时 fetch 无限挂起（曾导致后台 SW 被回收、消息端口关闭）
+      const ctrl = new AbortController();
+      const to = setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, 15000);
+      let res;
+      try {
+        res = await fetch(src, { method: 'GET', cache: 'no-store', signal: ctrl.signal, redirect: 'follow' });
+      } finally {
+        clearTimeout(to);
+      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      const arr = extractOpenPhishDomains(text);
+      if (arr.length === 0) throw new Error('内容非 feed（无可解析域名）');
+      await new Promise((res) => chrome.storage.local.set({
+        [SF_OP_DOMAINS_KEY]: arr,
+        [SF_OP_META_KEY]: { updated: Date.now(), count: arr.length, error: '', source: src }
+      }, res));
+      _opDomains = new Set(arr);
+      return { ok: true, count: arr.length, source: src };
+    } catch (e) {
+      // 记录每个源的失败原因（便于设置页定位：网络被拦 / 404 / 非 feed 等）
+      const host = (function () { try { return new URL(src).host; } catch (_) { return src; } })();
+      failures.push(host + ': ' + ((e && e.message) || String(e)));
+    }
+  }
+  // 全部源失败：把逐源原因拼成可读提示
+  const brief = failures.map(function (s) { return s.replace('Failed to fetch', '网络不可达'); }).join('；');
+  const errMsg = brief || '所有更新源均失败';
+  try {
+    await new Promise((res) => chrome.storage.local.set({
+      [SF_OP_META_KEY]: { updated: Date.now(), count: (_opDomains ? _opDomains.size : 0), error: errMsg }
+    }, res));
+  } catch (_) {}
+  return { ok: false, error: errMsg, attempts: failures.length };
 }
 
 async function maybeUpdateOpenPhish(force) {
@@ -394,15 +437,28 @@ async function maybeUpdateOpenPhish(force) {
   return fetchOpenPhishFeed();
 }
 
-// OpenPhish 每日自动更新（仅启用时由后台 alarm 触发）
+// OpenPhish 每日自动更新（仅启用时由后台 alarm 触发）；手动更新复用一次性 alarm，保证 SW 在抓取期间存活
+function notifyOpenPhishUpdated(r) {
+  // 单向推送结果给设置页（无长连接，不受 MV3 SW 回收影响）；结果同时已写入 storage.local，设置页打开时会回读
+  try { chrome.runtime.sendMessage({ type: 'sf-openphish-updated', result: (r || { ok: true }) }); } catch (_) {}
+}
 try {
   chrome.alarms.create('sfOpenPhishDaily', { periodInMinutes: 1440 });
-  chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm && alarm.name === 'sfOpenPhishDaily') {
-      getSettings().then((s) => {
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (!alarm) return;
+    try {
+      if (alarm.name === 'sfOpenPhishDaily') {
+        const s = await getSettings();
         const op = (s && s.openphish) || {};
-        if (op.enabled) maybeUpdateOpenPhish(false);
-      }).catch(() => {});
+        if (!op.enabled) return;            // 未启用则不抓取
+        const r = await maybeUpdateOpenPhish(false);
+        notifyOpenPhishUpdated(r);
+      } else if (alarm.name === 'sfOpenPhishManual') {
+        const r = await maybeUpdateOpenPhish(true);   // 强制抓取
+        notifyOpenPhishUpdated(r);
+      }
+    } catch (e) {
+      notifyOpenPhishUpdated({ ok: false, error: String((e && e.message) || e) });
     }
   });
 } catch (e) {}
@@ -1520,9 +1576,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // ===== OpenPhish 本地钓鱼黑名单 =====
   if (msg.type === 'sf-openphish-update') {
-    // 手动/自动更新：强制抓取最新 feed 并写入 storage.local
-    maybeUpdateOpenPhish(true).then((r) => { try { sendResponse(r); } catch (e) {}; })
-      .catch((e) => { try { sendResponse({ ok: false, error: String((e && e.message) || e) }); } catch (_) {} });
+    // 解耦长任务：立即 ACK，真正的抓取交给一次性 alarm（alarm 回调期间 Chrome 保证 SW 存活），
+    // 抓取结果通过单向消息 sf-openphish-updated 推送给设置页——避免「长连接 + 后台被回收」导致 port closed。
+    try { chrome.alarms.create('sfOpenPhishManual', { when: Date.now() + 200 }); } catch (e) {}
+    try { sendResponse({ started: true }); } catch (e) {}
     return true;
   }
   if (msg.type === 'sf-openphish-check') {
