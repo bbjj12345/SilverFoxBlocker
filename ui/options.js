@@ -67,7 +67,7 @@ let _gsFieldDirty = false;   // 用户是否修改过 Key 输入框（聚焦后�
 // 已保存 Key 的掩码显示：约 40 个圆点（贴近 Google API Key 的正常长度 ~39 位），
 // 既不像密文那样看起来像「乱码」，也不会短得只剩十几个点显得没存上；保存前后长度完全一致。
 const GSB_MASK_CHAR = '•';
-const GSB_MASK = new Array(40 + 1).join(GSB_MASK_CHAR);
+const GSB_MASK = new Array(39 + 1).join(GSB_MASK_CHAR);  // 已保存 Key 的掩码（39 点 = Google API Key 典型长度）；未保存时输入框为空
 
 function $(id) { return document.getElementById(id); }
 // 扩展环境才有 chrome.storage；浏览器直接预览时优雅退回默认值，不影响真实行为
@@ -778,26 +778,26 @@ function bindControls(settings) {
     if (tiGsKeyWrap) tiGsKeyWrap.style.display = (tiGsEnabled && tiGsEnabled.checked) ? '' : 'none';
     if (tiGsKeyHint) { tiGsKeyHint.textContent = ''; tiGsKeyHint.style.color = ''; }
     if (gs.apiKey && sfLooksEncrypted(gs.apiKey)) {
-      // 已加密保存：显示「正常长度圆点掩码」（约 40 个点，贴近 API Key 真实长度），
-      // 不用密文串（避免被看成乱码），也不用过短掩码（避免看似没存上）；保存前后长度完全一致。
+      // 已加密保存：输入框显示「39 个圆点」掩码（对应 Google API Key 的真实长度），
+      // 未配置时输入框为空——一眼可辨「有没有存过 Key」。明文 Key 永不回显。
+      // 点击不消失（仅全选），直接打字即替换；留空保存 = 保留原 Key（靠 _gsFieldDirty 判断）。
       _gsKeySet = true; _gsSavedCipher = gs.apiKey; _gsFieldDirty = false;
       if (tiGsKey) {
         tiGsKey.type = 'password';
         tiGsKey.value = GSB_MASK;
-        tiGsKey.placeholder = '已加密保存（显示为圆点）。点击输入框可输入新 Key 替换；留空保存则保留原 Key。';
+        tiGsKey.placeholder = '已加密保存（显示为圆点）。点击可输入新 Key 替换；留空保存则保留原 Key。';
         tiGsKey.onfocus = function () {
-          // 仍显示掩码时全选，使首次按键直接替换；不主动清空，避免「点击即消失」的困惑
           if (tiGsKey.value === GSB_MASK) { try { tiGsKey.select(); } catch (_) {} }
         };
         tiGsKey.oninput = function () { _gsFieldDirty = true; };  // 用户已改动 → 保存时重新加密
       }
       if (tiGsKeyHint) {
-        tiGsKeyHint.textContent = '✓ 已配置并加密保存（显示为圆点，实际为密文，不可读取）。如需更换请点击输入框直接输入新 Key；留空保存则保留原 Key。';
+        tiGsKeyHint.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。';
         tiGsKeyHint.style.color = '#2e9e6b';
       }
     } else if (gs.apiKey) {
-      // 兼容：若意外存了非密文（理论不会发生），提示用户重新输入以重新加密
-      if (tiGsKey) { tiGsKey.type = 'text'; tiGsKey.value = gs.apiKey; }
+      // 兼容：若意外存了非密文（理论不会发生），不回显明文，仅提示重新输入以重新加密
+      if (tiGsKey) { tiGsKey.type = 'password'; tiGsKey.value = ''; }
       if (tiGsKeyHint) {
         tiGsKeyHint.textContent = '检测到旧格式 Key（未加密），请重新输入以重新加密保存。';
         tiGsKeyHint.style.color = '#c0392b';
@@ -1055,13 +1055,15 @@ async function collectSettings() {
   const sensBtn = sensSeg ? sensSeg.querySelector('button.active') : null;
   const activeFont = (document.querySelector('.font-opt.active') || { dataset: {} }).dataset;
   // Google Safe Browsing：Key 加密后存储；用户未改动则保留原密文，绝不存明文/可识别密文
-  const gsInput = ($('tiGsKey') ? ($('tiGsKey').value || '').trim() : '');
+  // 先剥掉掩码圆点：防止用户把光标点在掩码末尾直接续写，导致「•••+新Key」被整体加密
+  const gsRaw = ($('tiGsKey') ? ($('tiGsKey').value || '') : '');
+  const gsInput = gsRaw.split(GSB_MASK_CHAR).join('').trim();
   let gsKeyEnc = '';
   _gsEncryptFailed = false;
   if (!_gsFieldDirty) {
-    // 用户未改动输入框（仍显示已存密文）→ 直接保留原密文，不要对密文二次加密
+    // 用户未改动输入框（仍是掩码）→ 直接保留原密文，不要对掩码二次加密
     gsKeyEnc = _gsSavedCipher || '';
-  } else if (gsInput && gsInput !== _gsSavedCipher && gsInput !== GSB_MASK) {
+  } else if (gsInput && gsInput !== _gsSavedCipher) {
     const enc = await sfEncryptKey(gsInput);   // 加密失败返回 null → 不回退明文
     if (enc) {
       gsKeyEnc = enc;
@@ -1076,13 +1078,13 @@ async function collectSettings() {
     // 用户清空或内容与原密文相同（未实质改动）→ 保留原密文，避免误清空
     gsKeyEnc = _gsSavedCipher || '';
   }
-  // 保存后立即把输入框呈现为「圆点掩码」态，与刷新后重新加载的显示完全一致（解决刷新前后长度不一致）
+  // 保存后立即呈现「39 点掩码」态（有 Key）/ 空白（无 Key），与刷新后重新加载的显示完全一致
   try {
     const tiGsKeyEl = $('tiGsKey');
     if (tiGsKeyEl) { tiGsKeyEl.type = 'password'; tiGsKeyEl.value = gsKeyEnc ? GSB_MASK : ''; }
     _gsSavedCipher = gsKeyEnc; _gsFieldDirty = false;
     const tiGsKeyHintEl = $('tiGsKeyHint');
-    if (tiGsKeyHintEl && gsKeyEnc) { tiGsKeyHintEl.textContent = '✓ 已配置并加密保存（显示为圆点，实际为密文，不可读取）。如需更换请点击输入框直接输入新 Key；留空保存则保留原 Key。'; tiGsKeyHintEl.style.color = '#2e9e6b'; }
+    if (tiGsKeyHintEl && gsKeyEnc) { tiGsKeyHintEl.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。'; tiGsKeyHintEl.style.color = '#2e9e6b'; }
   } catch (e) {}
   return {
     enabledGlobal: (window.__sfSettings ? !!window.__sfSettings.enabledGlobal : true),

@@ -42,6 +42,14 @@
 .sf-btn-stay,
 .sf-btn-continue { color: #fff !important; background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.22) !important; }
 .sf-actions { display: flex !important; gap: 12px !important; margin-top: 4px !important; width: 100% !important; }
+/* 「添加到全局黑名单」独占一行，作为次级动作放在主按钮上方 */
+.sf-actions-stack { margin-top: 0 !important; margin-bottom: 10px !important; }
+.sf-btn-blocklist { flex: 1 1 100% !important; padding: 11px 10px !important;
+  font-size: calc(13px * var(--sf-scale)) !important; font-weight: 600 !important;
+  background: rgba(255,255,255,.08) !important; border: 1px dashed rgba(255,255,255,.34) !important; }
+.sf-btn-blocklist:hover { background: rgba(255,255,255,.14) !important; }
+.sf-btn-blocklist.sf-btn-done { cursor: default !important; transform: none !important; filter: none !important;
+  opacity: .72 !important; background: rgba(46,158,107,.26) !important; border: 1px solid rgba(120,230,180,.5) !important; }
 .sf-tip,
 .sf-foot { margin: 14px 0 0 !important; font-size: calc(11.5px * var(--sf-scale)) !important; text-align: center !important; opacity: .58 !important; line-height: 1.5 !important; }
 

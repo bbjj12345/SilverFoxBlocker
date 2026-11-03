@@ -1175,12 +1175,90 @@
   // 主拦截浮层当前所在的根节点（供二次确认等子视图更新动作表）
   let warningOverlay = null;
 
+  // 黑名单条目归一化：允许用户粘贴带协议/路径的地址
+  function normBlackDomain(d) {
+    return String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  }
+  // 当前站点是否已命中全局黑名单（含父域匹配）
+  function isHostBlacklisted(host, list) {
+    const h = String(host || '').toLowerCase().replace(/^www\./, '');
+    if (!h) return false;
+    return (Array.isArray(list) ? list : []).some(function (d) {
+      d = normBlackDomain(d);
+      return d && (h === d || h.endsWith('.' + d));
+    });
+  }
+  // 已拉黑时把按钮直接置为「已完成」态，避免用户重复点击
+  function syncBlacklistButton(card) {
+    if (!card) return;
+    try {
+      chrome.storage.sync.get({ customBadDomains: [] }, function (s) {
+        if (!isHostBlacklisted(location.hostname, s && s.customBadDomains)) return;
+        let btn = null;
+        try { btn = card.querySelector('.sf-btn-blocklist') || document.getElementById('sf-blocklist'); } catch (e) {}
+        if (!btn) return;
+        try {
+          btn.textContent = '✓ 已在全局黑名单';
+          btn.disabled = true;
+          btn.classList.add('sf-btn-done');
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
+  // ★ 用户主动「添加到全局黑名单」：写入 customBadDomains（chrome.storage.sync，跨站点永久生效）。
+  //   设计变更（2026-11-03）：判危本身**不再自动拉黑**（原逻辑会把 84 分的页面自动记入
+  //   sfBlockedHosts，导致二次访问被连坐判 100 分，误报无法复查）。现在只有用户点这个按钮才拉黑。
+  function addHostToGlobalBlacklist(btn) {
+    const host = String(location.hostname || '').toLowerCase().replace(/^www\./, '');
+    if (!host) return;
+    const markDone = function (ok, msg) {
+      if (!btn) return;
+      try {
+        if (ok) {
+          btn.textContent = '✓ 已加入全局黑名单';
+          btn.disabled = true;
+          btn.classList.add('sf-btn-done');
+        } else {
+          btn.textContent = '加入失败，请重试';
+        }
+      } catch (e) {}
+      if (msg) { try { showToast(msg); } catch (e) {} }
+    };
+    try {
+      chrome.storage.sync.get({ customBadDomains: [] }, function (s) {
+        try {
+          let arr = Array.isArray(s && s.customBadDomains) ? s.customBadDomains.slice() : [];
+          if (!isHostBlacklisted(host, arr)) arr.push(host);
+          chrome.storage.sync.set({ customBadDomains: arr }, function () {
+            const err = chrome.runtime && chrome.runtime.lastError;
+            if (err) { markDone(false, '加入全局黑名单失败：' + err.message); return; }
+            markDone(true, '已加入全局黑名单：' + host);
+          });
+        } catch (e) { markDone(false, '加入全局黑名单失败'); }
+      });
+    } catch (e) { markDone(false, '加入全局黑名单失败'); }
+  }
+
   function showWarning(result) {
     // 用户已确认「仍然继续」→ 本页不再重复弹 danger 浮层（下载拦截仍生效）。
-    // 修复：原逻辑仅靠 DOM 里是否存在 #sf-overlay 判重，但「继续访问」会 closeEl 移除 overlay，
-    // 导致 enrichDeepAsync 异步补强 / SPA 重跑 analyzeAndAct 时再次弹窗。
     if (dangerAcknowledged) return;
-    if (NATIVE.byId('sf-overlay')) return;
+    // ★ 2026-11-04 修复「浮层评分与下拉菜单不一致」：
+    //   原实现只要浮层已存在就 return（防重复弹窗），于是异步补强/SPA 重判产生的新分数
+    //   从不回写到卡片 —— 卡片冻结在首次渲染的分数，而 lastResult 已被更新，下拉菜单读到新值。
+    //   现改为「原地重绘」：复用同一浮层，仅重写卡片内容（不重播动画、不新增节点），
+    //   并避开「二次确认」视图（那里没有 #sf-blocklist，用户正在做选择，不能被抢画）。
+    const _existing = NATIVE.byId('sf-overlay');
+    if (_existing) {
+      try {
+        const _card = _existing.querySelector('.sf-card');
+        if (_card && _card.querySelector('#sf-blocklist')) {
+          renderWarning(_card, result);
+          forceWhiteText(_card, true);
+        }
+      } catch (e) {}
+      return;
+    }
     let card = null;
     try {
       card = NATIVE.mk('div');
@@ -1198,6 +1276,8 @@
       actions: {
         leave: function () { leaveSite(); },
         continue: function () { try { showContinueConfirm(card, result); } catch (e) {} },
+        // ★ 用户主动拉黑：判危不再自动写入全局黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
+        'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
         __escape: function () { leaveSite(); }
       },
       onFail: function () {
@@ -1235,6 +1315,9 @@
       '<h2 class="sf-title">检测到银狐木马风险网站</h2>' +
       '<p class="sf-sub">' + subText + '</p>' +
       '<ul class="sf-reasons">' + reasonsHtml + '</ul>' +
+      '<div class="sf-actions sf-actions-stack">' +
+      '<button class="sf-btn sf-btn-blocklist" id="sf-blocklist" data-sf-act="add-blacklist" type="button">添加到全局黑名单</button>' +
+      '</div>' +
       '<div class="sf-actions">' +
       // ★ 动作改用 data-sf-act 标识，由 window 捕获阶段的事件委托统一分发
       //   （不再逐个 querySelector('#id').addEventListener —— 那正是黑屏死按钮的根源）
@@ -1243,6 +1326,8 @@
       '</div>' +
       '<p class="sf-foot">银狐（游蛇）木马常通过仿冒官网投递带毒安装包，请勿轻易放行下载。<br>若已安装 IDM 等第三方下载器，请临时关闭其「浏览器接管」，以免其从链接直接抓取下载。</p>';
 
+    // 若该域名已在全局黑名单中，按钮直接显示「✓ 已在全局黑名单」并禁用
+    syncBlacklistButton(card);
   }
 
 
@@ -1263,6 +1348,8 @@
     sfBindUiActions(root, {
       leave: function () { leaveSite(); },
       'cc-back': function () { try { renderWarning(card, result); } catch (e) {} },
+      // 从二次确认返回主卡后，「添加到全局黑名单」按钮仍需可用
+      'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
       'cc-go': function () {
         dangerAcknowledged = true; // 标记本页已确认继续，不再重复弹报毒浮层
         closeEl(root);
@@ -1620,20 +1707,44 @@
   //   祖(com) / 父(wlygrowth.com) / 子(es.wlygrowth.com) / 孙(x.es.wlygrowth.com)
   // 若「子」被判危 → 记录「子」完整域名；「孙」因父域名被标记而连坐拦截，但不记录。
   let _blockedHosts = null;   // 已被判危 host 集合（chrome.storage.local.sfBlockedHosts 持久化）
+  // ★ 一次性清理名单（2026-11-04）：历史上「评高分即自动拉黑」误写入连坐集合的域名，需从本地黑名单移除。
+  //   只删除这里列出的域名（含其子域），其余条目保留，连坐逻辑不变。
+  const _PURGED_BLOCKED_HOSTS = ['malware-filter.gitlab.io'];
+  function _isPurgedBlockedHost(h) {
+    h = String(h || '').toLowerCase().replace(/^www\./, '');
+    if (!h) return false;
+    return _PURGED_BLOCKED_HOSTS.some((p) => h === p || h.endsWith('.' + p));
+  }
   function _ensureBlockedHostsLoaded() {
     if (_blockedHosts) return Promise.resolve(_blockedHosts);
     return new Promise((resolve) => {
       try {
-        chrome.storage.local.get({ sfBlockedHosts: [] }, (o) => {
+        chrome.storage.local.get({ sfBlockedHosts: [], sfBlockedHostsCleared: false }, (o) => {
+          // ★ 一次性迁移（2026-11-03）：旧版本「判危即自动记入」产生的连坐集合不可信
+          //   （用户从未主动拉黑），会让二次访问被抬到 100 分、误报无法复查 —— 升级后清空一次。
+          if (!o || !o.sfBlockedHostsCleared) {
+            try { chrome.storage.local.set({ sfBlockedHosts: [], sfBlockedHostsCleared: true }); } catch (e) {}
+            _blockedHosts = new Map();
+            resolve(_blockedHosts);
+            return;
+          }
           // 兼容两种存储格式：旧版纯 host 字符串数组（一律视为 danger）、
           // 新版 "host|level"（danger / warn）数组。
           const m = new Map();
+          let purged = 0;
           (Array.isArray(o.sfBlockedHosts) ? o.sfBlockedHosts : []).forEach((s) => {
             if (typeof s !== 'string') return;
             const i = s.lastIndexOf('|');
-            if (i === -1) m.set(s.toLowerCase(), 'danger');
-            else m.set(s.slice(0, i).toLowerCase(), s.slice(i + 1) === 'warn' ? 'warn' : 'danger');
+            const hostKey = (i === -1 ? s : s.slice(0, i)).toLowerCase();
+            // ★ 移出「自动拉黑」误伤名单（含其子域），并持久化，避免下次再被连坐判 100 分
+            if (_isPurgedBlockedHost(hostKey)) { purged++; return; }
+            if (i === -1) m.set(hostKey, 'danger');
+            else m.set(hostKey, s.slice(i + 1) === 'warn' ? 'warn' : 'danger');
           });
+          if (purged) {
+            const arr = Array.from(m.entries()).map(([k, v]) => k + '|' + v);
+            try { chrome.storage.local.set({ sfBlockedHosts: arr }); } catch (e) {}
+          }
           _blockedHosts = m;
           resolve(_blockedHosts);
         });
@@ -1785,22 +1896,26 @@
     // 具体判据（只认新强特征或分值跃升 ≥12）见 analyzer.stabilizeVerdict。
     }
 
-    result = SF.stabilizeVerdict(lastResult, result);
-
-    lastResult = Object.assign({ analyzed: true, hostname: location.hostname, blockedCount: 0 }, result);
+    const _prevResult = lastResult;
+    result = SF.stabilizeVerdict(_prevResult, result);
 
     // ★ 已按 danger 出过拦截浮层 / 横幅：即便异步补强（.txt 下挖 / BFS 新增普通链接拉低下载占比）
     //   算出更低分，也不得把活跃拦截状态（dangerActive）关掉 —— 否则会出现
     //   「遮罩判定风险、弹窗却判安全」的矛盾，且「立即下载」按钮会重新变可点击。
     //   维持已生效的拦截结论，保证弹窗评分与页面浮层一致、下载拦截持续生效。
     //   （revokeWarningIfShown 命中云端官网库、或用户主动 doRelease 时 revoked/unblocked 为真，仍可正常放行。）
-    const establishedDanger = lastResult && lastResult.analyzed && lastResult.level === 'danger' &&
-      !lastResult.allowlisted && !lastResult.disabled && !unblocked && !revoked;
+    const establishedDanger = _prevResult && _prevResult.analyzed && _prevResult.level === 'danger' &&
+      !_prevResult.allowlisted && !_prevResult.disabled && !unblocked && !revoked;
     if (establishedDanger && result.level !== 'danger') {
       result.level = 'danger';
       result.detected = true;
       result.stabilizedKept = true;
     }
+
+    // ★ 2026-11-04：lastResult 必须在「所有对 result 的修正」之后才快照。
+    //   原实现先快照、后由 establishedDanger 把 result.level 改成 danger，
+    //   于是浮层按 danger 渲染、下拉菜单读到的 lastResult 却仍是 warn/safe（又一处评分不一致）。
+    lastResult = Object.assign({ analyzed: true, hostname: location.hostname, blockedCount: 0 }, result);
 
     if (result.level === 'danger') {
       dangerActive = true;
@@ -1816,8 +1931,10 @@
       blockAllDownloadEntries();   // ★ danger 级一律硬拦截下载（不再受 autoBlockDownloads 开关限制）
       updateBannerCount();
       if (settings.showWarning) showWarning(result);
-      // 记录完整域名供子孙连坐（幂等：只升不降；连坐/复访也补记，保证计数完整）
-      _recordBlockedHost(location.hostname, 'danger');
+      // ★ 2026-11-03 行为变更：判危**不再自动写入黑名单**。
+      //   旧逻辑在此调用 _recordBlockedHost(host,'danger')，导致「评分 84 的页面被自动拉黑，
+      //   二次访问时被连坐抬到 100 分」，误报既无法复查也无法撤销。
+      //   现在只有用户点击拦截弹窗里的「添加到全局黑名单」才写入 customBadDomains。
       if (!dangerReported) {
         // 通知保持「同页仅一次」：连坐/复访不再重复弹系统通知，避免刷屏；
         // 但 reportDetection 必须上报——否则连坐/复访的危险页不会被计入「拦截风险网站」记录。
@@ -1838,7 +1955,7 @@
       if (_alreadyDanger) {
         reportDetection(Object.assign({}, result, { level: 'danger' }));
       } else {
-        if (!result.inherited) _recordBlockedHost(location.hostname, 'warn');
+        // ★ 不再自动把「可疑」域名写进连坐集合（同上，避免自动拉黑 + 二次访问被抬分）
         reportDetection(result);
       }
       if (settings.showWarning) showWarnHint(result);

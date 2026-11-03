@@ -1813,6 +1813,21 @@
     if (prev.level === 'danger' && (LEVEL_RANK[next.level] || 0) < (LEVEL_RANK[prev.level] || 0)) {
       return prev;
     }
+    // ★ 2026-11-04 修复「弹窗与浮层评分不一致」：
+    //   原实现只比较 level，忽略了「等级不变、分数却下降」的情形。异步补强会往 data.links
+    //   追加链接，而链接类维度按「占比」计分（下载入口数 / 总链接数），分母变大后同一份证据
+    //   的分值会自己变小（实测同一页首次 92 分、补强后 76 分，少掉的正是 16 分的「链接分析异常」）。
+    //   等级仍为 danger 时不触发上面的降级保护，于是 next 被整体采纳 → 浮层停在 92、下拉菜单
+    //   读到 76。这里补上「同级不降分」：等级相同且分值下降，视为同类证据的量变，沿用上次结论，
+    //   让浮层与下拉菜单、横幅读到的始终是同一份结果。
+    const sameLevel = (LEVEL_RANK[prev.level] || 0) === (LEVEL_RANK[next.level] || 0);
+    if (sameLevel && prev.level !== 'safe' && (next.score || 0) < (prev.score || 0)) {
+      // 例外：补强挖到了「上次没有的强特征」→ 属新证据，允许按新结果重算（分数可能因分母变化略降）
+      const newStrong = FEATURE_STRONG.some((id) => next.features && next.features[id] && !(prev.features && prev.features[id]));
+      if (!newStrong) {
+        return Object.assign({}, prev, { stabilized: true, scoreHeld: true });
+      }
+    }
     const up = (LEVEL_RANK[next.level] || 0) > (LEVEL_RANK[prev.level] || 0);
     if (!up) return next;
     const strongNow = FEATURE_STRONG.some((id) => next.features && next.features[id]);
