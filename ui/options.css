@@ -1783,3 +1783,19 @@ html.theme-light .fb-card .fb-count.over { color: #e03131; }
 html.theme-light .fb-card .fb-input { background: rgba(255,255,255,.7); border: 1px solid rgba(20,34,64,.15); color: #1b2333; }
 html.theme-light .fb-card .fb-input:focus { border-color: rgba(47,111,237,.55); box-shadow: 0 0 0 3px rgba(47,111,237,.16); }
 html.theme-light .fb-card .fb-input::placeholder { color: rgba(30,41,59,.4); }
+
+/* 威胁情报 API 设置卡 */
+.ti-providers { margin-top: 12px; padding: 4px 0 2px; border-top: 1px dashed rgba(255,255,255,.12); }
+.ti-provider { padding: 6px 0; }
+.ti-providers .rd { font-size: calc(11.5px * var(--sf-scale)); color: rgba(220,232,247,.66); }
+.ti-input {
+  width: 100%; box-sizing: border-box; border-radius: 12px; padding: 11px 14px;
+  background: rgba(8,12,24,.5); border: 1px solid rgba(255,255,255,.14); color: #eaf0fa;
+  font-family: inherit; font-size: calc(12.5px * var(--sf-scale)); line-height: 1.6; outline: none;
+  transition: border-color .18s, box-shadow .18s;
+}
+.ti-input:focus { border-color: rgba(125,180,255,.7); box-shadow: 0 0 0 3px rgba(125,180,255,.18); }
+.ti-input::placeholder { color: rgba(220,232,247,.4); }
+html.theme-light .ti-input { background: rgba(255,255,255,.7); border: 1px solid rgba(20,34,64,.15); color: #1b2333; }
+html.theme-light .ti-input:focus { border-color: rgba(47,111,237,.55); box-shadow: 0 0 0 3px rgba(47,111,237,.16); }
+html.theme-light .ti-input::placeholder { color: rgba(30,41,59,.4); }

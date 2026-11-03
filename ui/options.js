@@ -34,6 +34,11 @@ const DEFAULTS = {
   aiScanFileAnalyse: false, // 子开关「借助云端AI分析扫描文件」（Max 下，银狐扫描可疑文件时发特征摘要给 AI 辅助研判）
   remindMode: 'normal',    // 扩展整体报毒识别/提醒偏好：'normal' 正常 | 'quiet' 安静（仅危险告警，不弹软提示卡）
   fontScale: 1,         // 0.85 ~ 1.40，界面字号缩放系数
+  // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
+  threatIntel: {
+    enabled: false,
+    providers: { virustotal: { enabled: false, apiKey: '' } }
+  },
   customTheme: null,    // 用户导入的自定义主题：{ name, theme:{ bgPrimary,bgSecondary,accent,accent2,text,surface,border,material,sidebar,control } }
   reduceMotion: false,  // 减弱动画效果：关闭全部过渡与动画
   layout: 'new',        // 设置页布局：'new'(新版 8 项分组导航，默认) | 'old'(旧版 11 项平铺导航)
@@ -666,6 +671,28 @@ function bindControls(settings) {
   $('notify').checked = !!settings.notify;
   if ($('icpApiVerify')) $('icpApiVerify').checked = settings.icpApiVerify !== false;
 
+  // 威胁情报 API：主开关默认不勾选；勾选才展开 provider 列表，再勾选具体情报源才出现 Key 输入框
+  const tiEnabled = $('tiEnabled');
+  if (tiEnabled) {
+    const ti = settings.threatIntel || { enabled: false, providers: {} };
+    const vt = (ti.providers && ti.providers.virustotal) || { enabled: false, apiKey: '' };
+    const tiProviders = $('tiProviders');
+    const tiVtEnabled = $('tiVtEnabled');
+    const tiVtKey = $('tiVtKey');
+    const tiVtKeyWrap = $('tiVtKeyWrap');
+    tiEnabled.checked = !!ti.enabled;
+    if (tiProviders) tiProviders.style.display = tiEnabled.checked ? '' : 'none';
+    if (tiVtEnabled) tiVtEnabled.checked = !!vt.enabled;
+    if (tiVtKey) tiVtKey.value = vt.apiKey || '';
+    if (tiVtKeyWrap) tiVtKeyWrap.style.display = (tiVtEnabled && tiVtEnabled.checked) ? '' : 'none';
+    tiEnabled.addEventListener('change', function () {
+      if (tiProviders) tiProviders.style.display = tiEnabled.checked ? '' : 'none';
+    });
+    if (tiVtEnabled) tiVtEnabled.addEventListener('change', function () {
+      if (tiVtKeyWrap) tiVtKeyWrap.style.display = tiVtEnabled.checked ? '' : 'none';
+    });
+  }
+
   // 灵敏度分段（带滑动药丸动画）—— 防护总览页已移除，仅当控件存在时绑定
   const seg = $('sensitivity');
   if (seg) {
@@ -908,6 +935,16 @@ function collectSettings() {
     fontScale: ($('fontScale') ? parseFloat($('fontScale').value) / 100 : 1),
     reduceMotion: ($('reduceMotion') ? $('reduceMotion').checked : false),
     layout: ((window.__sfSettings && window.__sfSettings.layout) || 'new'),   // 双布局：new(新版默认)/old(旧版)
+    // 威胁情报 API：仅当主开关或任一 provider 启用时才写入真实配置；默认全关
+    threatIntel: {
+      enabled: ($('tiEnabled') ? $('tiEnabled').checked : false),
+      providers: {
+        virustotal: {
+          enabled: ($('tiVtEnabled') ? $('tiVtEnabled').checked : false),
+          apiKey: ($('tiVtKey') ? ($('tiVtKey').value || '').trim() : '')
+        }
+      }
+    },
     enabled,
     weights,
     allowlist: splitLines($('allowlist').value),

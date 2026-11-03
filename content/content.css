@@ -163,3 +163,24 @@
   font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
 }
 
+/* ===== 威胁情报横幅（动态宽度、居中、仅展示判为恶意的情报源）===== */
+.sf-intel-banner { position: fixed !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483647 !important;
+  width: fit-content !important; max-width: calc(100% - 24px) !important; display: flex !important; align-items: center !important; gap: 10px !important;
+  padding: 9px 14px !important; border-radius: 12px !important;
+  background: linear-gradient(90deg, rgba(216,42,62,.96), rgba(196,58,96,.94)) !important;
+  border: 1px solid rgba(255,180,195,.5) !important;
+  color: #fff !important; font-size: calc(12.5px * var(--sf-scale)) !important; font-weight: 600 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+  box-shadow: 0 10px 30px rgba(0,0,0,.45) !important; backdrop-filter: blur(8px) !important; -webkit-backdrop-filter: blur(8px) !important;
+  text-align: center !important; }
+.sf-intel-banner .sf-ib-text { flex: 1 !important; min-width: 0 !important; line-height: 1.45 !important; text-align: left !important; }
+.sf-intel-banner .sf-ib-close { flex: none !important; cursor: pointer !important; border: 1px solid rgba(255,255,255,.55) !important;
+  background: rgba(255,255,255,.18) !important; color: #fff !important; border-radius: 10px !important; padding: 6px 13px !important;
+  font-size: calc(12px * var(--sf-scale)) !important; font-weight: 700 !important; font-family: inherit !important; }
+.sf-intel-banner .sf-ib-close:hover { background: rgba(255,255,255,.3) !important; }
+.sf-intel-banner.sf-font-smiley { font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important; }
+.sf-intel-banner.sf-closing { animation: sf-bar-out .28s ease both !important; }
+/* 抗页面样式覆盖 */
+.sf-intel-banner { pointer-events: auto !important; visibility: visible !important; user-select: none !important; -webkit-user-select: none !important; }
+.sf-intel-banner, .sf-intel-banner * { color: #fff !important; -webkit-text-fill-color: #fff !important; }
+

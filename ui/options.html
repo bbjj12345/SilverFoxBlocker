@@ -142,6 +142,32 @@
             </button>
           </div>
         </div>
+        <!-- 威胁情报 API（可选，默认关闭；启用后用户输入自己的 Key，扩展直连第三方情报库） -->
+        <div class="card" data-page-node-id="sfTiCard">
+          <div class="field" data-page-node-id="sfTiField">
+            <div class="row" style="border:0;padding:0" data-page-node-id="sfTiRow1">
+              <div class="rl" data-page-node-id="sfTiRl1">
+                <div class="rt" data-page-node-id="sfTiRt1">威胁情报 API（可选）</div>
+                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展用你自己的密钥实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal。</div>
+              </div>
+              <label class="switch" data-page-node-id="sfTiSw1"><input type="checkbox" id="tiEnabled" data-page-node-id="sfTiCb1"><span class="slider" data-page-node-id="sfTiSl1"></span></label>
+            </div>
+            <div id="tiProviders" class="ti-providers" style="display:none" data-page-node-id="sfTiProv">
+              <div class="ti-provider" data-page-node-id="sfTiVt">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRow2">
+                  <div class="rl" data-page-node-id="sfTiRl2">
+                    <div class="rt" data-page-node-id="sfTiRt2">VirusTotal</div>
+                    <div class="rd" data-page-node-id="sfTiRd2">免费额度有限（每分钟约 4 次查询）。密钥仅保存在本地，扩展直连 virustotal.com，不经过任何中转服务器。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfTiSw2"><input type="checkbox" id="tiVtEnabled" data-page-node-id="sfTiCb2"><span class="slider" data-page-node-id="sfTiSl2"></span></label>
+                </div>
+                <div id="tiVtKeyWrap" style="display:none;margin:4px 0 2px" data-page-node-id="sfTiKeyWrap">
+                  <input type="password" id="tiVtKey" class="ti-input" placeholder="粘贴你的 VirusTotal API Key（x-apikey）" autocomplete="off" spellcheck="false" data-page-node-id="sfTiKey">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">
           <div class="field" data-page-node-id="oOItSmLqHP6DxMGlyjQtdD">
             <label data-page-node-id="Ol7axpG3tDeKZDnTWkWPDA">自动学习的下载黑名单</label>

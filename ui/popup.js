@@ -8,7 +8,12 @@ const DEFAULTS = {
   themePalette: 'classic', // 'classic' | 'gold' | 'neon' | 'mist' | 'space' | 'pixel'
   material: 'frosted',  // 'frosted' | 'liquid'
   bgImage: '',          // 自定义背景 dataURL
-  fontScale: 1          // 0.85 ~ 1.40，界面字号缩放系数
+  fontScale: 1,         // 0.85 ~ 1.40，界面字号缩放系数
+  // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
+  threatIntel: {
+    enabled: false,
+    providers: { virustotal: { enabled: false, apiKey: '' } }
+  }
 };
 
 function $(id) { return document.getElementById(id); }

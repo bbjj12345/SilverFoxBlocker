@@ -91,8 +91,129 @@ const DEFAULTS = {
     cloudDiskDist: true, obfuscatedJs: true, fakeOfficial: true,
     socialEngineering: true, domainStructure: true, redirectIframe: true
   },
-  allowlist: [], customKeywords: [], customBadDomains: []
+  allowlist: [], customKeywords: [], customBadDomains: [],
+  // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
+  // 框架化设计：providers 下可动态增加更多情报源（如 URLhaus / NetAPI），UI 当前仅开放 VirusTotal。
+  threatIntel: {
+    enabled: false,
+    providers: {
+      virustotal: { enabled: false, apiKey: '' }
+    }
+  }
 };
+
+// ===== 威胁情报 API 注册表（框架化）=====
+// 每个 provider 描述一个第三方情报源；只需在下方数组追加一项即可动态接入新情报源，
+// 其余逻辑（启用判定 / 并行查询 / 仅返回恶意结果 / 缓存）完全复用，无需改动调用方。
+// query(domain, apiKey, pageUrl) → 返回 { malicious:true, score, scoreMax, detail }（有评分源）
+//   或 { malicious:true, detail }（无评分源，如 URLhaus 仅给出"检出/未检出"）
+//   或 { malicious:false }（未检出）或 { error:true }（查询失败，视为未检出，不阻断页面）
+// 注意：VirusTotal 对「域名」与「网址(URL)」分开统计；许多钓鱼站只在 URL 端点被引擎标红，
+// 因此 VirusTotal provider 会同时查询两个端点，任一被标红即判恶意。
+
+// 将字符串按 RFC 4648 做 base64url 编码（VT 的 /api/v3/urls/{id} 中 id 即 URL 的 base64url）
+function base64urlEncode(str) {
+  try {
+    const bytes = new TextEncoder().encode(String(str));
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  } catch (e) { return null; }
+}
+
+const THREAT_INTEL_PROVIDERS = [
+  {
+    id: 'virustotal',
+    name: 'VirusTotal',
+    hasScore: true,
+    async query(domain, apiKey, pageUrl) {
+      if (!apiKey) return { error: true, reason: 'no_key' };
+      const key = String(apiKey).trim();   // 去除复制粘贴可能带入的首尾空格
+      if (!key) return { error: true, reason: 'no_key' };
+      const headers = { 'x-apikey': key };
+
+      // 并行查询「域名端点」与「网址(URL)端点」——VT 对二者分开统计，
+      // 钓鱼站常在 URL 端点被标红而域名端点仍为空，必须两者都查。
+      const tasks = [
+        fetch('https://www.virustotal.com/api/v3/domains/' + encodeURIComponent(domain), { headers })
+      ];
+      let urlId = null;
+      if (pageUrl && /^https?:\/\//i.test(pageUrl)) {
+        try { urlId = base64urlEncode(pageUrl); } catch (e) { urlId = null; }
+      }
+      if (urlId) {
+        tasks.push(fetch('https://www.virustotal.com/api/v3/urls/' + encodeURIComponent(urlId), { headers }));
+      }
+
+      const settled = await Promise.allSettled(tasks);
+      const domRes = settled[0];
+      const urlRes = settled[1];
+
+      // 解析域名端点
+      let domStats = null, domErr = null;
+      if (domRes && domRes.status === 'fulfilled') {
+        const r = domRes.value;
+        if (r.status === 401 || r.status === 403) return { error: true, status: r.status, reason: 'auth', detail: 'API Key 无效或权限不足' };
+        if (!r.ok) domErr = { status: r.status };
+        else { const j = await r.json().catch(() => null); domStats = (j && j.data && j.data.attributes && j.data.attributes.last_analysis_stats) || null; }
+      } else { domErr = { status: 0, reason: 'network' }; }
+
+      // 解析网址端点
+      let urlStats = null, urlErr = null;
+      if (urlId && urlRes && urlRes.status === 'fulfilled') {
+        const r = urlRes.value;
+        if (r.status === 401 || r.status === 403) return { error: true, status: r.status, reason: 'auth', detail: 'API Key 无效或权限不足' };
+        if (!r.ok) urlErr = { status: r.status };
+        else { const j = await r.json().catch(() => null); urlStats = (j && j.data && j.data.attributes && j.data.attributes.last_analysis_stats) || null; }
+      }
+
+      // 合并：优先采用被标红的来源（URL 或 域名）
+      const flaggedOf = function (s) { if (!s) return 0; return (s.malicious || 0) + (s.suspicious || 0); };
+      const totalOf = function (s) { if (!s) return 0; return (s.malicious || 0) + (s.suspicious || 0) + (s.harmless || 0) + (s.undetected || 0) + (s.timeout || 0); };
+      const flaggedDom = flaggedOf(domStats), flaggedUrl = flaggedOf(urlStats);
+      let stats = null, srcLabel = '';
+      if (flaggedUrl > 0) { stats = urlStats; srcLabel = '网址'; }
+      else if (flaggedDom > 0) { stats = domStats; srcLabel = '域名'; }
+
+      if (stats) {
+        const malicious = stats.malicious || 0;
+        const suspicious = stats.suspicious || 0;
+        const total = totalOf(stats) || 1;
+        const flagged = malicious + suspicious;
+        return {
+          malicious: true,
+          score: flagged,
+          scoreMax: total,
+          src: srcLabel,
+          detail: '来源=' + srcLabel + '，恶意 ' + malicious + ' / 可疑 ' + suspicious + ' / 共 ' + total + ' 个引擎'
+        };
+      }
+
+      // 两个端点都无标红：若任一端点鉴权失败(401/403)仍按错误上报，否则视为判安全
+      const authErr = (domErr && (domErr.status === 401 || domErr.status === 403)) || (urlErr && (urlErr.status === 401 || urlErr.status === 403));
+      if (authErr) return { error: true, status: 401, reason: 'auth', detail: 'API Key 无效或权限不足' };
+      const httpErr = (domErr && domErr.status && domErr.status !== 200) || (urlErr && urlErr.status && urlErr.status !== 200);
+      if (httpErr) return { error: true, status: (domErr && domErr.status) || (urlErr && urlErr.status) || 0, reason: 'http' };
+      return { malicious: false };
+    }
+  }
+  // —— 后期可动态增加的情报源示例（当前未在 UI 开放，仅演示框架）——
+  // {
+  //   id: 'urlhaus',
+  //   name: 'URLhaus',
+  //   hasScore: false,
+  //   async query(domain, apiKey) {
+  //     const res = await fetch('https://urlhaus.abuse.ch/api/v1/host/' + encodeURIComponent(domain));
+  //     const j = await res.json().catch(() => null);
+  //     if (j && j.url_count > 0) return { malicious: true, detail: 'URLhaus 检出该域名关联的 ' + j.url_count + ' 条恶意样本' };
+  //     return { malicious: false };
+  //   }
+  // }
+];
+
+// 情报查询结果内存缓存（按 hostname，10 分钟有效），避免重复查询命中 API 速率限制
+const _intelCache = {};
+const _INTEL_CACHE_TTL = 10 * 60 * 1000;
 
 // ===== 会话级状态（service worker 重启不丢）=====
 function loadState() {
@@ -1147,6 +1268,46 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         }, 10000);
       }
     } catch (e) {}
+  } else if (msg.type === 'sf-intel-query') {
+    // 威胁情报查询：按设置中启用的 provider 查询当前域名，仅返回"判定为恶意"的结果
+    // （满足"只显示判断为恶意的 API"），供内容脚本在网页顶部横幅展示。
+    (async function () {
+      try {
+        const host = (msg.hostname || '').toLowerCase();
+        const cacheKey = 'sf_intel_' + host;
+        const cached = _intelCache[cacheKey];
+        if (cached && (Date.now() - cached.t) < _INTEL_CACHE_TTL) {
+          try { sendResponse({ enabled: true, results: cached.r, errors: cached.e || [] }); } catch (e) {}
+          return;
+        }
+        const settings = await getSettings();
+        const ti = settings.threatIntel || { enabled: false, providers: {} };
+        if (!ti.enabled || !host) {
+          try { sendResponse({ enabled: !!ti.enabled, results: [] }); } catch (e) {}
+          return;
+        }
+        const providers = ti.providers || {};
+        const results = [];
+        const errors = [];
+        for (const p of THREAT_INTEL_PROVIDERS) {
+          const cfg = providers[p.id];
+          if (!cfg || !cfg.enabled) continue;
+          try {
+            const r = await p.query(host, cfg.apiKey || '', msg.url || '');
+            if (r && r.malicious) {
+              results.push({ id: p.id, name: p.name, hasScore: !!p.hasScore, score: r.score, scoreMax: r.scoreMax, detail: r.detail, src: r.src });
+            } else if (r && r.error) {
+              errors.push({ id: p.id, name: p.name, status: (r.status || null), reason: (r.reason || 'unknown'), detail: (r.detail || '') });
+            }
+          } catch (e) {}
+        }
+        _intelCache[cacheKey] = { t: Date.now(), r: results, e: errors };
+        try { sendResponse({ enabled: true, results: results, errors: errors }); } catch (e) {}
+      } catch (e) {
+        try { sendResponse({ enabled: false, results: [] }); } catch (e2) {}
+      }
+    })();
+    return true; // 异步 sendResponse
   }
 });
 

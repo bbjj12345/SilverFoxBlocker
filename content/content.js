@@ -49,7 +49,12 @@
     customBadDomains: [],
     fontMode: 'system',   // 'system' | 'smiley'
     theme: 'dark',        // 'dark' | 'light'
-    fontScale: 1          // 0.85 ~ 1.40，界面字号缩放系数
+    fontScale: 1,         // 0.85 ~ 1.40，界面字号缩放系数
+    // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
+    threatIntel: {
+      enabled: false,
+      providers: { virustotal: { enabled: false, apiKey: '' } }
+    }
   };
 
   let lastResult = { analyzed: false };
@@ -199,7 +204,7 @@
     'pan.baidu.com', 'wap.baidu.com', 'eyun.baidu.com', // 百度网盘
     'aliyundrive.com',                                  // 阿里云盘
     'weiyun.com',                                       // 腾讯微云
-    'lanzou.com', 'lanzous.com', 'lanzoux.com',         // 蓝奏云
+    'lanzou.com', 'lanzous.com', 'lanzoux.com', 'lanzoui.com', // 蓝奏云（lanzoui.com 官网，避免被误判为投递站而拦截下载）
     'pan.quark.cn',                                     // 夸克网盘
     'cloud.189.cn',                                     // 天翼云盘
     '115.com', '115cache.com',                          // 115 网盘
@@ -1876,6 +1881,26 @@
     // 把最终系数注入第三方页面根元素，供网页内横幅的 calc(var(--sf-scale)) 继承。
     if (currentFontMode === 'smiley') currentScale *= 1.10;
     try { document.documentElement.style.setProperty('--sf-scale', currentScale.toFixed(3)); } catch (e) {}
+
+    // —— 威胁情报横幅（尽早、与本地检测并行）：启用后用用户 Key 实时查询第三方情报库，
+    //    命中恶意情报源即在网页顶部居中展示动态宽度横幅（仅显示判为恶意的 API）。
+    try {
+      const ti = (settings && settings.threatIntel) || {};
+      const tiEnabled = !!ti.enabled;
+      const vt = (ti.providers && ti.providers.virustotal) || {};
+      const vtOn = !!vt.enabled;
+      const vtKeyLen = (vt.apiKey || '').length;
+      console.log('[SilverFoxBlocker][情报] run() 已启动，域名=' + _host +
+        '，威胁情报总开关=' + tiEnabled + '，VirusTotal子开关=' + vtOn + '，Key长度=' + vtKeyLen);
+      if (tiEnabled && _host) {
+        if (vtOn && vtKeyLen > 0) {
+          queryAndShowThreatIntel(_host);
+        } else {
+          console.log('[SilverFoxBlocker][情报] 已勾选总开关，但 VirusTotal 子开关未开启或 Key 为空 → 未发起查询（需两层都勾 + 填 Key）');
+        }
+      }
+    } catch (e) {}
+
     // 跳转链污染状态（本页是否由已判危站跳转而来）
     let chained = false;
     try { const r = await sendMsg({ type: 'sf-check-chain' }); chained = !!(r && r.tainted); } catch (e) {}
@@ -1899,6 +1924,109 @@
     } catch (e) {
       reportVerdict('safe');
     }
+
+  }
+
+  // ===== 威胁情报横幅 =====
+  // 异步查询后台 sf-intel-query，仅当返回"判定为恶意"的结果时渲染顶部横幅。
+  // 设计要点（满足用户需求）：
+  //  · 宽度动态（fit-content，居中），只显示判为恶意的 API（background 已过滤未检出的源）；
+  //  · VirusTotal 等 hasScore 源展示"评分 X/Y"，无评分源（如后期 URLhaus）只给判定语；
+  //  · 与危险横幅(.sf-banner)/温和提示条(.sf-hint)错开，避免重叠（它们固定贴页面最顶且整行铺满）；
+  //  · 框架化：后期在 background 的 THREAT_INTEL_PROVIDERS 增加新源，此处无需改动。
+  function queryAndShowThreatIntel(host) {
+    if (document.getElementById('sfIntelBanner')) return; // 避免 SPA 重跑重复渲染
+    // 同时把当前页面完整 URL 传给后台：VirusTotal 对「域名」与「网址」分开统计，
+    // 钓鱼站常在 URL 端点被标红，需要后台一并查询 URL 端点。
+    const pageUrl = (typeof location !== 'undefined' && location && location.href) ? location.href : '';
+    console.log('[SilverFoxBlocker][情报] 已向后台发起威胁情报查询：' + host + '（URL=' + pageUrl + '）');
+    sendMsg({ type: 'sf-intel-query', hostname: host, url: pageUrl }).then(function (resp) {
+      try {
+        if (!resp || !Array.isArray(resp.results)) {
+          console.log('[SilverFoxBlocker][情报] 查询无有效响应（可能后台未启用情报源 / VirusTotal Key 缺失 / 扩展被重载）：', resp);
+          return;
+        }
+        if (resp.results.length > 0) {
+          console.log('[SilverFoxBlocker][情报] 域名 ' + host + ' 命中恶意情报源，渲染横幅：', resp.results);
+          renderIntelBanner(resp.results);
+        } else {
+          // 无命中：区分"VT 判安全"与"查询出错 / Key 无效"，给出明确提示
+          const errs = Array.isArray(resp.errors) ? resp.errors : [];
+          if (errs.length > 0) {
+            errs.forEach(function (e) {
+              const name = e.name || e.id || '情报源';
+              if (e.status === 401 || e.status === 403) {
+                console.log('[SilverFoxBlocker][情报] ⚠ ' + name + ' 查询失败：HTTP ' + e.status + ' —— API Key 无效或权限不足，请到「规则与白名单」核对 VirusTotal Key。当前域名判定不可信，未显示横幅。');
+              } else if (e.reason === 'no_key') {
+                console.log('[SilverFoxBlocker][情报] ℹ ' + name + ' 未配置 Key，已跳过查询。');
+              } else if (e.reason === 'network') {
+                console.log('[SilverFoxBlocker][情报] ⚠ ' + name + ' 网络请求失败：' + (e.detail || '') + '（可能网络受限或 virustotal.com 不可达）。');
+              } else {
+                console.log('[SilverFoxBlocker][情报] ⚠ ' + name + ' 查询失败：HTTP ' + (e.status || '?') + '（' + (e.reason || 'unknown') + '）。');
+              }
+            });
+          } else {
+            console.log('[SilverFoxBlocker][情报] 域名 ' + host + ' 未被任何"已启用"情报源判为恶意（情报源总开关启用=' + resp.enabled + '，VirusTotal 域名分析返回 0 检出），按设计不显示横幅');
+          }
+        }
+      } catch (e) {}
+    }).catch(function () { console.log('[SilverFoxBlocker][情报] 查询异常（后台未响应或扩展被重载）'); });
+  }
+
+  function positionIntelBanner(banner) {
+    let top = 8;
+    const topBar = document.querySelector('.sf-banner') || document.querySelector('.sf-hint');
+    if (topBar) { try { top = topBar.getBoundingClientRect().bottom + 8; } catch (e) {} }
+    banner.style.top = top + 'px';
+  }
+
+  function renderIntelBanner(results) {
+    if (document.getElementById('sfIntelBanner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'sfIntelBanner';
+    banner.className = 'sf-intel-banner' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+
+    const text = document.createElement('div');
+    text.className = 'sf-ib-text';
+    const parts = results.map(function (r) {
+      // VT 对「域名」与「网址」分开统计：若命中来自 URL 端点则说"该网址"，否则"该域名"
+      const target = (r.src === '网址') ? '该网址' : '该域名';
+      const base = r.name + '已将' + target + '判定为恶意或存在风险';
+      return r.hasScore ? (base + '，评分 ' + r.score + '/' + r.scoreMax) : base;
+    });
+    text.textContent = parts.join('；');
+    banner.appendChild(text);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sf-ib-close';
+    btn.textContent = '知道了';
+    banner.appendChild(btn);
+
+    const root = document.body || document.documentElement;
+    if (!root) return;
+    root.appendChild(banner);
+
+    // 危险横幅(.sf-banner)/温和条(.sf-hint)可能在情报横幅之后才出现（本地检测需等页面稳定 + 5s），
+    // 故监听其创建并定期复检，把情报横幅下移到其下方，避免重叠。
+    positionIntelBanner(banner);
+    try {
+      const mo = new MutationObserver(function () { positionIntelBanner(banner); });
+      mo.observe(document.body, { childList: true });
+      banner._sfIntelMO = mo;
+      let n = 0;
+      const rechk = setInterval(function () {
+        positionIntelBanner(banner);
+        if (++n >= 12) { clearInterval(rechk); try { mo.disconnect(); } catch (e) {} }
+      }, 500);
+      banner._sfIntelRechk = rechk;
+    } catch (e) {}
+    btn.addEventListener('click', function () {
+      try { banner._sfIntelMO && banner._sfIntelMO.disconnect(); } catch (e) {}
+      try { banner._sfIntelRechk && clearInterval(banner._sfIntelRechk); } catch (e) {}
+      banner.classList.add('sf-closing');
+      setTimeout(function () { try { banner.remove(); } catch (e) {} }, 280);
+    });
   }
 
   // ===== 硬拦截钩子（document_start 即安装，抢在站点脚本之前） =====

@@ -229,6 +229,7 @@
     // ---- 软件 / 工具 / 下载 / 论坛社区（极易被误报，重点补）----
     '52pojie.cn','52pojie.com','ghxi.com','tool.lu','lanzou.com','lanzous.com','lanzoux.com',
     'lanzouw.com','ilanzou.com', // 蓝奏云主站官网 / 优享版官网（B站网友反馈误报，2026-08-31 加）
+    'lanzoui.com', // 蓝奏云官网被误报，已添加到白名单
     'pcsoft.com.cn','onlinedown.net','duote.com','crsky.com','zol.com.cn','skycn.com','xiazaiba.com',
     'a67.com','greenxf.com','rj.baidu.com','software.qq.com','mydown.com','oray.com','putty.org',
     'winscp.net','filezilla-project.org','notepad-plus-plus.org','sublimetext.com','jetbrains.com',
