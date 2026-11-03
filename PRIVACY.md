@@ -2,7 +2,7 @@
 
 **SilverFoxBlocker**（以下简称"本扩展"）
 
-生效日期 / Effective Date：2026-10-31（更新至 v1.0）
+生效日期 / Effective Date：2026-10-31（更新至 v1.0.0）
 
 ---
 

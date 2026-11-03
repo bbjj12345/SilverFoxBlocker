@@ -5,11 +5,11 @@
  *   2) 接收内容脚本的「检测上报」，记录「被判定为危险的标签页」(dangerTabs) 与「用户已放行的站点」(releasedHosts)
  *   3) 拦截下载：★ 只有「发起下载的页面」本身被判定为危险且用户未放行时才拦，绝不全局误拦
  *   4) 接收「离开此网站」指令，直接关闭该标签页（不再跳百度）
- * 状态保存在 chrome.storage.session，可在 service worker 重启后存活（同一浏览器会话内有效）。
+ * 状态保存在 chrome.storage.session，可在 service worker 重启后存活（在同一浏览器会话内有效）。
  */
 'use strict';
 
-importScripts('rules/iocs.js', 'rules/analyzer.js');
+importScripts('rules/iocs.js', 'rules/analyzer.js', 'crypto-helper.js');
 
 // 兼容 service worker（self，无 window）与内容脚本（window 隔离世界）两种上下文：
 // iocs.js / analyzer.js 已同时挂到 self 与 window。兜底 stub 防止依赖缺失时崩溃。
@@ -97,9 +97,14 @@ const DEFAULTS = {
   threatIntel: {
     enabled: false,
     providers: {
-      virustotal: { enabled: false, apiKey: '' }
+      virustotal: { enabled: false, apiKey: '' },
+      // Google Safe Browsing：需自有 API Key，且 Key 以「密文」形式存储（crypto-helper 加解密），不以明文落盘
+      googlesafebrowsing: { enabled: false, apiKey: '' }
     }
-  }
+  },
+  // OpenPhish 本地钓鱼黑名单：免费 feed.txt（无需 API Key），默认每天自动更新一次，
+  // 名单保存在 chrome.storage.local；访问网站时与本地静态名单（域名集合）比对，命中即渲染横幅。
+  openphish: { enabled: false, lastUpdated: 0 }
 };
 
 // ===== 威胁情报 API 注册表（框架化）=====
@@ -196,24 +201,211 @@ const THREAT_INTEL_PROVIDERS = [
       if (httpErr) return { error: true, status: (domErr && domErr.status) || (urlErr && urlErr.status) || 0, reason: 'http' };
       return { malicious: false };
     }
+  },
+  // —— URLhaus（abuse.ch，无需 Key）：并行查询「主机」与「当前 URL」是否被收录为恶意样本投递源 ——
+  {
+    id: 'urlhaus',
+    name: 'URLhaus',
+    hasScore: false,
+    order: 1,
+    async query(domain, apiKey, pageUrl) {
+      const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+      const tasks = [
+        fetch('https://urlhaus-api.abuse.ch/v1/host/', { method: 'POST', headers: headers, body: 'host=' + encodeURIComponent(domain) })
+      ];
+      if (pageUrl && /^https?:\/\//i.test(pageUrl)) {
+        tasks.push(fetch('https://urlhaus-api.abuse.ch/v1/url/', { method: 'POST', headers: headers, body: 'url=' + encodeURIComponent(pageUrl) }));
+      }
+      const settled = await Promise.allSettled(tasks);
+      for (const s of settled) {
+        if (s.status !== 'fulfilled') continue;
+        let j = null;
+        try { j = await s.value.json(); } catch (e) { continue; }
+        // query_status: "ok" 表示命中；"no_results"/"invalid_host" 等表示未命中
+        if (j && j.query_status === 'ok' && Array.isArray(j.urls) && j.urls.length > 0) {
+          const threats = j.urls.map(function (u) { return u.threat; }).filter(Boolean);
+          const uniq = threats.filter(function (t, i) { return threats.indexOf(t) === i; });
+          return {
+            malicious: true,
+            detail: 'URLhaus 检出 ' + j.urls.length + ' 条恶意 URL' + (uniq.length ? '（' + uniq.join('/') + '）' : '')
+          };
+        }
+      }
+      return { malicious: false };
+    }
+  },
+  // —— NetAPI（netapi.com，免费方法无需 Key）：查询域名是否在失陷情报库（过去 24h 内被报 = 当前恶意）——
+  {
+    id: 'netapi',
+    name: 'NetAPI',
+    hasScore: false,
+    order: 2,
+    async query(domain, apiKey, pageUrl) {
+      let res;
+      try {
+        res = await fetch('https://netapi.com/api-json/?method=compromised-check&value=' + encodeURIComponent(domain));
+      } catch (e) {
+        return { error: true, reason: 'network', detail: String((e && e.message) || e) };
+      }
+      if (!res.ok) {
+        if (res.status === 429) return { error: true, status: 429, reason: 'ratelimit' };
+        return { error: true, status: res.status, reason: 'http' };
+      }
+      let j = null;
+      try { j = await res.json(); } catch (e) { return { error: true, reason: 'json' }; }
+      if (j && j.error) {
+        return { error: true, reason: 'api', detail: (j.error && j.error.message) || 'NetAPI 查询错误' };
+      }
+      // listed_now=true：过去 24h 内被报（当前失陷）；listed_ever 仅历史记录，不视为当前恶意，避免误报
+      if (j && j.listed_now === true) {
+        return {
+          malicious: true,
+          detail: 'NetAPI 失陷情报库当前标记（last_seen=' + (j.last_seen || '未知') + '，原因=' + (j.block_reason || '未说明') + '）'
+        };
+      }
+      return { malicious: false };
+    }
+  },
+  // —— Google Safe Browsing（v4 Lookup API，需自有 API Key；Key 以密文存储，见 background 解密分支）——
+  // 说明：Google Safe Browsing API v4 已被官方标记为「已淘汰（deprecated）」，推荐使用 v4 的 Lookup API
+  //   （即本实现所用的 threatMatches:find）或迁移到 Web Risk。此处仅用于「疑似」提示，绝不断言「该网站不安全」。
+  // 横幅措辞必须带「疑似 / 可能」等限定词（GSB 返回 matches 即视为疑似命中）。
+  {
+    id: 'googlesafebrowsing',
+    name: 'Google Safe Browsing',
+    hasScore: false,
+    order: 3,                 // 显示在 NetAPI(2) 下方
+    encryptsKey: true,        // 提示 sf-intel-query handler 在调用前先解密 apiKey
+    async query(domain, apiKey, pageUrl) {
+      if (!apiKey) return { error: true, reason: 'no_key' };
+      const key = String(apiKey).trim();
+      if (!key) return { error: true, reason: 'no_key' };
+      // 优先用完整页面 URL（GSB 对 URL 做归一化匹配，最贴近真实命中）；无 URL 时回退到 http://domain/
+      const targetUrl = (pageUrl && /^https?:\/\//i.test(pageUrl)) ? pageUrl : ('http://' + domain + '/');
+      const url = 'https://safebrowsing.googleapis.com/v4/threatMatches:find?key=' + encodeURIComponent(key);
+      const body = {
+        client: { clientId: 'silverfoxblocker', clientVersion: '1.0.1' },
+        threatInfo: {
+          threatTypes: ['MALWARE', 'SOCIAL_ENGINEERING', 'UNWANTED_SOFTWARE', 'POTENTIALLY_HARMFUL_APPLICATION'],
+          platformTypes: ['WINDOWS', 'ANY_PLATFORM'],
+          threatEntryTypes: ['URL'],
+          threatEntries: [{ url: targetUrl }]
+        }
+      };
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      } catch (e) {
+        return { error: true, reason: 'network', detail: String((e && e.message) || e) };
+      }
+      if (!res.ok) {
+        // 400 多为 Key 无效 / 请求格式错误；403 为权限或配额耗尽
+        if (res.status === 400) return { error: true, status: 400, reason: 'auth', detail: 'API Key 无效或请求被拒（请检查 Google Cloud 控制台中该 Key 是否启用 Safe Browsing API 且未限制来源）' };
+        if (res.status === 403) return { error: true, status: 403, reason: 'auth', detail: 'API Key 权限不足或配额耗尽' };
+        return { error: true, status: res.status, reason: 'http' };
+      }
+      let j = null;
+      try { j = await res.json(); } catch (e) { return { error: true, reason: 'json' }; }
+      // matches 非空即视为「疑似命中」（v4 Lookup 已标记淘汰，仅作疑似提示，不做绝对断言）
+      if (j && Array.isArray(j.matches) && j.matches.length > 0) {
+        const types = j.matches.map(function (m) { return (m.threatType || '').toLowerCase(); }).filter(Boolean);
+        const uniq = types.filter(function (t, i) { return types.indexOf(t) === i; });
+        const labelMap = {
+          'malware': '恶意软件', 'social_engineering': '钓鱼/社工', 'unwanted_software': '潜在多余软件',
+          'potentially_harmful_application': '可能有害的程序', 'api_abuse': 'API 滥用'
+        };
+        const zh = uniq.map(function (t) { return labelMap[t] || t; });
+        return {
+          malicious: true,
+          soft: true,   // 软判定：横幅必须用「疑似/可能」措辞，不断言「该网站不安全」
+          detail: 'Google 安全浏览疑似将其标记为存在风险（类型=' + (zh.join('/') || '未知') + '）。此判定来自谷歌威胁情报库，仅供参考，不代表本扩展断言该网站已确认不安全。'
+        };
+      }
+      return { malicious: false };
+    }
   }
-  // —— 后期可动态增加的情报源示例（当前未在 UI 开放，仅演示框架）——
-  // {
-  //   id: 'urlhaus',
-  //   name: 'URLhaus',
-  //   hasScore: false,
-  //   async query(domain, apiKey) {
-  //     const res = await fetch('https://urlhaus.abuse.ch/api/v1/host/' + encodeURIComponent(domain));
-  //     const j = await res.json().catch(() => null);
-  //     if (j && j.url_count > 0) return { malicious: true, detail: 'URLhaus 检出该域名关联的 ' + j.url_count + ' 条恶意样本' };
-  //     return { malicious: false };
-  //   }
-  // }
 ];
 
 // 情报查询结果内存缓存（按 hostname，10 分钟有效），避免重复查询命中 API 速率限制
 const _intelCache = {};
 const _INTEL_CACHE_TTL = 10 * 60 * 1000;
+
+// ===== OpenPhish 本地钓鱼黑名单（免费 feed.txt，无需 API Key）=====
+// 设计：后台定时（默认每天）抓取 https://openphish.com/feed.txt，解析出域名集合存入
+// chrome.storage.local；访问网站时内容脚本把 hostname 发来，后台用内存 Set 做 O(1) 本地比对。
+// 名单保存在本地、不上传，符合「本地静态黑名单」诉求。
+const OPENPHISH_FEED_URL = 'https://openphish.com/feed.txt';
+const SF_OP_DOMAINS_KEY = 'sfOpenPhishDomains';   // storage.local: string[]（已 lowercased 的域名）
+const SF_OP_META_KEY = 'sfOpenPhishMeta';         // storage.local: { updated, count, error }
+let _opDomains = null;                            // 内存缓存 Set，加速页面访问时的本地比对
+
+async function loadOpenPhishDomains() {
+  try {
+    const r = await new Promise((res) => chrome.storage.local.get({ [SF_OP_DOMAINS_KEY]: [] }, res));
+    _opDomains = new Set((r[SF_OP_DOMAINS_KEY] || []).map((d) => String(d).toLowerCase()));
+  } catch (e) { _opDomains = new Set(); }
+  return _opDomains;
+}
+
+async function fetchOpenPhishFeed() {
+  try {
+    const res = await fetch(OPENPHISH_FEED_URL, { method: 'GET', cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const domains = new Set();
+    for (const u of lines) {
+      try {
+        let host = u;
+        if (/^https?:\/\//i.test(u)) host = new URL(u).hostname;
+        else host = u.split('/')[0].split('?')[0];
+        if (host) domains.add(host.toLowerCase());
+      } catch (e) {}
+    }
+    const arr = Array.from(domains);
+    await new Promise((res) => chrome.storage.local.set({
+      [SF_OP_DOMAINS_KEY]: arr,
+      [SF_OP_META_KEY]: { updated: Date.now(), count: arr.length, error: '' }
+    }, res));
+    _opDomains = new Set(arr);
+    return { ok: true, count: arr.length };
+  } catch (e) {
+    try {
+      await new Promise((res) => chrome.storage.local.set({
+        [SF_OP_META_KEY]: { updated: Date.now(), count: (_opDomains ? _opDomains.size : 0), error: String((e && e.message) || e) }
+      }, res));
+    } catch (_) {}
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+async function maybeUpdateOpenPhish(force) {
+  const s = await getSettings();
+  const op = (s && s.openphish) || {};
+  if (!op.enabled && !force) return { ok: false, skipped: true };
+  const meta = await new Promise((res) => chrome.storage.local.get({ [SF_OP_META_KEY]: { updated: 0 } }, res));
+  const last = (meta[SF_OP_META_KEY] && meta[SF_OP_META_KEY].updated) || 0;
+  // 非强制更新：24 小时内已更新则跳过，避免频繁请求
+  if (!force && (Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: (_opDomains ? _opDomains.size : 0) };
+  return fetchOpenPhishFeed();
+}
+
+// OpenPhish 每日自动更新（仅启用时由后台 alarm 触发）
+try {
+  chrome.alarms.create('sfOpenPhishDaily', { periodInMinutes: 1440 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === 'sfOpenPhishDaily') {
+      getSettings().then((s) => {
+        const op = (s && s.openphish) || {};
+        if (op.enabled) maybeUpdateOpenPhish(false);
+      }).catch(() => {});
+    }
+  });
+} catch (e) {}
 
 // ===== 会话级状态（service worker 重启不丢）=====
 function loadState() {
@@ -395,6 +587,12 @@ chrome.runtime.onInstalled.addListener(function (details) {
   chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, function (r) {
     if (!r.stats) chrome.storage.local.set({ stats: { warnings: 0, blocks: 0, recent: [] } });
   });
+  // OpenPhish：预热内存名单；若已启用则触发一次更新（避免首次启用后 24h 内无名单可用）
+  loadOpenPhishDomains().catch(function () {});
+  getSettings().then(function (s) {
+    const op = (s && s.openphish) || {};
+    if (op.enabled) maybeUpdateOpenPhish(false);
+  }).catch(function () {});
   // OOBE 首次引导向导已移除：安装/升级不再弹出初始化设置页
   if (details.reason === 'update') {
     // 升级后自动打开设置页（更新日志放映页已移除，不再跳转 #sec=changelog）
@@ -1292,22 +1490,53 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         for (const p of THREAT_INTEL_PROVIDERS) {
           const cfg = providers[p.id];
           if (!cfg || !cfg.enabled) continue;
+          // 需加密存储 Key 的情报源（如 Google Safe Browsing）：先解密再传入 query，明文 Key 不出后台
+          let key = cfg.apiKey || '';
+          if (p.encryptsKey && key) {
+            try { key = await sfDecryptKey(key); } catch (e) { key = ''; }
+            if (!key) {
+              errors.push({ id: p.id, name: p.name, status: null, reason: 'decrypt', detail: 'API Key 密文无法解密（可能曾手动改动或被篡改），请到「规则与白名单」重新填写。' });
+              continue;
+            }
+          }
           try {
-            const r = await p.query(host, cfg.apiKey || '', msg.url || '');
+            const r = await p.query(host, key, msg.url || '');
             if (r && r.malicious) {
-              results.push({ id: p.id, name: p.name, hasScore: !!p.hasScore, score: r.score, scoreMax: r.scoreMax, detail: r.detail, src: r.src });
+              results.push({ id: p.id, name: p.name, hasScore: !!p.hasScore, soft: !!r.soft, score: r.score, scoreMax: r.scoreMax, detail: r.detail, src: r.src, order: (p.order || 0) });
             } else if (r && r.error) {
               errors.push({ id: p.id, name: p.name, status: (r.status || null), reason: (r.reason || 'unknown'), detail: (r.detail || '') });
             }
           } catch (e) {}
         }
+        results.sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
         _intelCache[cacheKey] = { t: Date.now(), r: results, e: errors };
         try { sendResponse({ enabled: true, results: results, errors: errors }); } catch (e) {}
       } catch (e) {
-        try { sendResponse({ enabled: false, results: [] }); } catch (e2) {}
-      }
+      try { sendResponse({ enabled: false, results: [] }); } catch (e2) {}
+    }
+  })();
+  return true; // 异步 sendResponse
+  }
+
+  // ===== OpenPhish 本地钓鱼黑名单 =====
+  if (msg.type === 'sf-openphish-update') {
+    // 手动/自动更新：强制抓取最新 feed 并写入 storage.local
+    maybeUpdateOpenPhish(true).then((r) => { try { sendResponse(r); } catch (e) {}; })
+      .catch((e) => { try { sendResponse({ ok: false, error: String((e && e.message) || e) }); } catch (_) {} });
+    return true;
+  }
+  if (msg.type === 'sf-openphish-check') {
+    // 内容脚本访问网站时调用：与本地静态名单（域名集合）比对
+    (async () => {
+      try {
+        if (!_opDomains) await loadOpenPhishDomains();
+        const host = (msg.hostname || '').toLowerCase();
+        const listed = !!(_opDomains && _opDomains.has(host));
+        const meta = await new Promise((res) => chrome.storage.local.get({ [SF_OP_META_KEY]: { updated: 0, count: 0 } }, res));
+        try { sendResponse({ listed: listed, count: (_opDomains ? _opDomains.size : 0), updated: (meta[SF_OP_META_KEY] && meta[SF_OP_META_KEY].updated) || 0 }); } catch (e) {}
+      } catch (e) { try { sendResponse({ listed: false, count: 0, updated: 0 }); } catch (_) {} }
     })();
-    return true; // 异步 sendResponse
+    return true;
   }
 });
 
