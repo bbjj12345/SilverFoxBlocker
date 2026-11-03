@@ -8,12 +8,14 @@ const DEFAULTS = {
   themePalette: 'classic', // 'classic' | 'gold' | 'neon' | 'mist' | 'space' | 'pixel'
   material: 'frosted',  // 'frosted' | 'liquid'
   bgImage: '',          // 自定义背景 dataURL
-  fontScale: 1,         // 0.85 ~ 1.40，界面字号缩放系数
-  // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
+  fontScale: 1,         // 0.85 ~ 1.40，设置界面字号缩放系数
+  // 威胁情报 API（可选）：默认关闭；启用后扩展实时查询当前域名在第三方情报库的判定。
+  // VirusTotal 需用户自有 Key；URLhaus / NetAPI 无需 Key（免费公开接口）。
   threatIntel: {
     enabled: false,
-    providers: { virustotal: { enabled: false, apiKey: '' } }
-  }
+    providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false }, googlesafebrowsing: { enabled: false, apiKey: '' } }
+  },
+  openphish: { enabled: false, lastUpdated: 0 }
 };
 
 function $(id) { return document.getElementById(id); }

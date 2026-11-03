@@ -4,7 +4,7 @@ input[type="file"][hidden] { display: none !important; }
 
 /* options.css — SilverFoxBlocker 设置（侧边栏分类 · Liquid Glass） */
 /* --sf-scale 由 JS 弹性弹簧(spring)逐帧驱动，实现拖动手感 + 松手/重置的弹性回弹。
-   仍注册为 <number> 类型以备不时之需；实际动画不走 CSS transition，避免与 spring 叠加导致滞后。 */
+   仍然注册为 <number> 类型以备不时之需；实际动画不走 CSS transition，避免与 spring 叠加导致滞后。 */
 @property --sf-scale {
   syntax: "<number>";
   inherits: true;

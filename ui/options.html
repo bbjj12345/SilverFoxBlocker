@@ -148,7 +148,7 @@
             <div class="row" style="border:0;padding:0" data-page-node-id="sfTiRow1">
               <div class="rl" data-page-node-id="sfTiRl1">
                 <div class="rt" data-page-node-id="sfTiRt1">威胁情报 API（可选）</div>
-                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展用你自己的密钥实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal。</div>
+                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal（需自有 Key）、URLhaus 与 NetAPI（均无需 Key）。三者横幅自上而下依次为 VirusTotal → URLhaus → NetAPI，仅显示判为恶意的情报源；任一未检出则后续自动上移补位。</div>
               </div>
               <label class="switch" data-page-node-id="sfTiSw1"><input type="checkbox" id="tiEnabled" data-page-node-id="sfTiCb1"><span class="slider" data-page-node-id="sfTiSl1"></span></label>
             </div>
@@ -165,7 +165,51 @@
                   <input type="password" id="tiVtKey" class="ti-input" placeholder="粘贴你的 VirusTotal API Key（x-apikey）" autocomplete="off" spellcheck="false" data-page-node-id="sfTiKey">
                 </div>
               </div>
+              <div class="ti-provider" data-page-node-id="sfTiUrlhaus">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowUH">
+                  <div class="rl" data-page-node-id="sfTiRlUH">
+                    <div class="rt" data-page-node-id="sfTiRtUH">URLhaus（abuse.ch）</div>
+                    <div class="rd" data-page-node-id="sfTiRdUH">无需 API Key，免费查询域名/网址是否被收录为恶意样本投递源。由扩展直连 urlhaus-api.abuse.ch。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfTiSwUH"><input type="checkbox" id="tiUrlhausEnabled" data-page-node-id="sfTiCbUH"><span class="slider" data-page-node-id="sfTiSlUH"></span></label>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfTiNetapi">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowNA">
+                  <div class="rl" data-page-node-id="sfTiRlNA">
+                    <div class="rt" data-page-node-id="sfTiRtNA">NetAPI（netapi.com）</div>
+                    <div class="rd" data-page-node-id="sfTiRdNA">无需 API Key，免费查询域名是否在失陷情报库（过去 24 小时内被报即判当前恶意）。由扩展直连 netapi.com。</div>
+                  </div>
+                    <label class="switch" data-page-node-id="sfTiSwNA"><input type="checkbox" id="tiNetapiEnabled" data-page-node-id="sfTiCbNA"><span class="slider" data-page-node-id="sfTiSlNA"></span></label>
+                  </div>
+                </div>
+                <div class="ti-provider" data-page-node-id="sfTiGs">
+                  <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowGS">
+                    <div class="rl" data-page-node-id="sfTiRlGS">
+                      <div class="rt" data-page-node-id="sfTiRtGS">Google Safe Browsing（v4 Lookup API）</div>
+                      <div class="rd" data-page-node-id="sfTiRdGS">需自有 API Key。注意：Google Safe Browsing API v4 已被官方标记为「已淘汰（deprecated）」，建议改用 v4 的 Lookup API（即本功能所用）或迁移到 Web Risk。横幅仅作「疑似」提示，不断言网站已确认不安全。Key 以<b>密文</b>形式保存（AES-GCM 加密，非明文落盘）。创建 Key 时请勿限制 HTTP 来源（或放行 chrome-extension://），否则扩展请求会被拒。</div>
+                    </div>
+                    <label class="switch" data-page-node-id="sfTiSwGS"><input type="checkbox" id="tiGsEnabled" data-page-node-id="sfTiCbGS"><span class="slider" data-page-node-id="sfTiSlGS"></span></label>
+                  </div>
+                  <div id="tiGsKeyWrap" style="display:none;margin:4px 0 2px" data-page-node-id="sfTiGsKeyWrap">
+                    <input type="password" id="tiGsKey" class="ti-input" placeholder="粘贴你的 Google Safe Browsing API Key（保存时自动加密）" autocomplete="off" spellcheck="false" data-page-node-id="sfTiGsKey">
+                    <div class="hint" id="tiGsKeyHint" style="margin:6px 0 2px" data-page-node-id="sfTiGsKeyHint"></div>
+                  </div>
+                </div>
+              </div>
+          </div>
+        </div>
+        <div class="card" data-page-node-id="sfOpCard">
+          <div class="field" data-page-node-id="sfOpField">
+            <div class="rl" data-page-node-id="sfOpRl">
+              <div class="rt" data-page-node-id="sfOpRt">OpenPhish 本地钓鱼黑名单</div>
+              <div class="rd" data-page-node-id="sfOpRd">启用后，扩展每日自动从 OpenPhish 免费 feed 抓取最新钓鱼 URL 名单并保存在本地（chrome.storage.local，不上传）；访问网站时与本地静态名单（域名集合）实时比对，命中即渲染横幅「OpenPhish 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
             </div>
+            <label class="switch" data-page-node-id="sfOpSw"><input type="checkbox" id="openphishEnabled" data-page-node-id="sfOpCb"><span class="slider" data-page-node-id="sfOpSl"></span></label>
+          </div>
+          <div style="margin:10px 0 2px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+            <button id="openphishUpdateBtn" type="button" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:7px 14px; font-weight:600;">立即更新</button>
+            <span id="openphishStatus" class="hint" style="margin:0"></span>
           </div>
         </div>
         <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">
@@ -452,6 +496,7 @@
 
   <script src="../rules/iocs.js"></script>
   <script src="../rules/analyzer.js"></script>
+  <script src="../crypto-helper.js"></script>
   <script src="feedback-config.js?v=20261102"></script>
   <script src="options.js?v=20260822b"></script>
 </body>

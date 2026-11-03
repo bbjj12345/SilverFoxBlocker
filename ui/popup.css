@@ -94,7 +94,7 @@ html.font-smiley .recent-list li { font-size: calc(12.5px * var(--sf-scale)); }
 html.font-smiley .recent-empty { font-size: calc(12.5px * var(--sf-scale)); }
 html.font-smiley .settings-btn { font-size: calc(14.5px * var(--sf-scale)); }
 
-/* ===== 浅色主题：仅 html.theme-light 时生效（不改动上方深色样式） ===== */
+/* ===== 浅色主题：仅 html.theme-light 时生效（不改动上方的深色样式） ===== */
 html.theme-light body {
   color: #1b2333;
   background: radial-gradient(700px 360px at 80% -10%, rgba(80,140,255,.14), transparent 55%),

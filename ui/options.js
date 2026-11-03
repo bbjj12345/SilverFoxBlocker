@@ -1,7 +1,7 @@
 /* options.js — SilverFoxBlocker 设置控制面板逻辑（侧边栏分类版） */
 'use strict';
 
-// 360 系统急救箱官方下载直链（绿色版，无需安装）。现为「备用直链」：点击按钮时会自动抓取
+// 360 系统急救箱官方下载直链。现为「备用直链」：点击按钮时会自动抓取
 // 官网/软件宝库的最新 64 位独立版直链；仅当自动抓取失败时才回退到此处。
 const RESCUE_DOWNLOAD_URL = 'https://dl.360safe.com/360c0mpkill_5.1.64.1289-0701.zip';
 
@@ -34,11 +34,20 @@ const DEFAULTS = {
   aiScanFileAnalyse: false, // 子开关「借助云端AI分析扫描文件」（Max 下，银狐扫描可疑文件时发特征摘要给 AI 辅助研判）
   remindMode: 'normal',    // 扩展整体报毒识别/提醒偏好：'normal' 正常 | 'quiet' 安静（仅危险告警，不弹软提示卡）
   fontScale: 1,         // 0.85 ~ 1.40，界面字号缩放系数
-  // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
+  // 威胁情报 API（可选）：默认关闭；启用后扩展实时查询当前域名在第三方情报库的判定。
+  // VirusTotal 需用户自有 Key；URLhaus / NetAPI 无需 Key（免费公开接口）。
   threatIntel: {
     enabled: false,
-    providers: { virustotal: { enabled: false, apiKey: '' } }
+    providers: {
+      virustotal: { enabled: false, apiKey: '' },
+      urlhaus: { enabled: false },
+      netapi: { enabled: false },
+      // Google Safe Browsing：Key 以密文存储（crypto-helper 加密），settings 里读到的 apiKey 是密文
+      googlesafebrowsing: { enabled: false, apiKey: '' }
+    }
   },
+  // OpenPhish 本地钓鱼黑名单：免费 feed，无需 Key；默认每天自动更新，名单存于 storage.local
+  openphish: { enabled: false, lastUpdated: 0 },
   customTheme: null,    // 用户导入的自定义主题：{ name, theme:{ bgPrimary,bgSecondary,accent,accent2,text,surface,border,material,sidebar,control } }
   reduceMotion: false,  // 减弱动画效果：关闭全部过渡与动画
   layout: 'new',        // 设置页布局：'new'(新版 8 项分组导航，默认) | 'old'(旧版 11 项平铺导航)
@@ -49,6 +58,13 @@ const DEFAULTS = {
   },
   allowlist: [], customKeywords: [], customBadDomains: []
 };
+
+// Google Safe Browsing Key 加密存储相关 UI 状态
+let _gsKeySet = false;       // 设置页打开时是否已存在密文 Key（用户未改动则保留原密文）
+let _gsSavedCipher = '';     // 已保存的密文，用户留空时原样保留，避免误清空
+let _gsEncryptFailed = false;// 本次保存时加密是否失败（首次填写却加密失败 → 不存明文，提示用户重试）
+let _gsFieldDirty = false;   // 用户是否修改过 Key 输入框（聚焦后输入过）→ 决定保存时是否重新加密
+const GSB_MASK = '••••••••••••';  // 已保存 Key 的掩码显示（与 VT 同款圆点，绝不以明文/可识别密文暴露）
 
 function $(id) { return document.getElementById(id); }
 // 扩展环境才有 chrome.storage；浏览器直接预览时优雅退回默认值，不影响真实行为
@@ -657,6 +673,49 @@ function renderCategories(settings) {
   });
 }
 
+// 手动/自动触发 OpenPhish 名单更新：发指令后即返回，真正结果与状态由后台单向推送（见下方 onMessage 监听），
+// 避免「长连接 + MV3 后台被回收」导致的“消息端口已关闭”错误。
+function updateOpenPhish(statusEl) {
+  try {
+    const btn = $('openphishUpdateBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+    if (statusEl) statusEl.textContent = '正在抓取 OpenPhish 名单…';
+    chrome.runtime.sendMessage({ type: 'sf-openphish-update' }, function () {
+      // 此处仅收到后台 ACK（{started:true}）或端口异常；真正结果在 sf-openphish-updated 推送里
+      if (chrome.runtime.lastError) {
+        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+        if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
+      }
+    });
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '更新请求发送失败：' + ((e && e.message) || e);
+  }
+}
+
+// 接收后台抓取完成后的单向推送（无长连接，不受 MV3 SW 回收影响）
+chrome.runtime.onMessage.addListener(function (msg, _sender, _sendResponse) {
+  try {
+    if (!msg || msg.type !== 'sf-openphish-updated') return;
+    const r = msg.result || {};
+    const statusEl = $('openphishStatus');
+    const btn = $('openphishUpdateBtn');
+    if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+    if (!statusEl) return;
+    if (r.ok) {
+      const d = new Date();
+      const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      statusEl.textContent = '更新成功：' + ds + '（共 ' + (r.count || 0) + ' 条域名）';
+      statusEl.style.color = '';
+    } else if (r.skipped) {
+      statusEl.textContent = '更新跳过（24 小时内已更新，共 ' + (r.count || 0) + ' 条域名）';
+      statusEl.style.color = '';
+    } else {
+      statusEl.textContent = '更新失败：' + (r.error || '未知错误') + '（请检查网络能否访问 openphish.com）';
+      statusEl.style.color = '#c0392b';
+    }
+  } catch (e) {}
+});
+
 function bindControls(settings) {
   // 防护总览页已移除：不再绑定总开关 UI（底层 enabledGlobal 存储键保持默认开启，不影响防护）
   const egEl = $('enabledGlobal');
@@ -691,6 +750,79 @@ function bindControls(settings) {
     if (tiVtEnabled) tiVtEnabled.addEventListener('change', function () {
       if (tiVtKeyWrap) tiVtKeyWrap.style.display = tiVtEnabled.checked ? '' : 'none';
     });
+    const tiUrlhausEnabled = $('tiUrlhausEnabled');
+    if (tiUrlhausEnabled) tiUrlhausEnabled.checked = !!(ti.providers && ti.providers.urlhaus && ti.providers.urlhaus.enabled);
+    const tiNetapiEnabled = $('tiNetapiEnabled');
+    if (tiNetapiEnabled) tiNetapiEnabled.checked = !!(ti.providers && ti.providers.netapi && ti.providers.netapi.enabled);
+
+    // Google Safe Browsing：Key 以密文存储；已配置则在输入框「显示密文」（像 VirusTotal 显示已存 Key 一样），
+    // 让用户一眼可见「已保存」，而非留空造成「没存上」的误判；明文 Key 永不回显。
+    const gs = (ti.providers && ti.providers.googlesafebrowsing) || { enabled: false, apiKey: '' };
+    const tiGsEnabled = $('tiGsEnabled');
+    const tiGsKey = $('tiGsKey');
+    const tiGsKeyWrap = $('tiGsKeyWrap');
+    const tiGsKeyHint = $('tiGsKeyHint');
+    _gsKeySet = false; _gsSavedCipher = ''; _gsFieldDirty = false;
+    if (tiGsEnabled) tiGsEnabled.checked = !!gs.enabled;
+    if (tiGsKey) {
+      tiGsKey.value = '';
+      tiGsKey.type = 'password';
+      tiGsKey.onfocus = null; tiGsKey.oninput = null;
+      tiGsKey.placeholder = '粘贴你的 Google Safe Browsing API Key（保存时自动加密）';
+    }
+    if (tiGsKeyWrap) tiGsKeyWrap.style.display = (tiGsEnabled && tiGsEnabled.checked) ? '' : 'none';
+    if (tiGsKeyHint) { tiGsKeyHint.textContent = ''; tiGsKeyHint.style.color = ''; }
+    if (gs.apiKey && sfLooksEncrypted(gs.apiKey)) {
+      // 已加密保存：用「圆点掩码」显示（与 VT 同款，不暴露明文/可识别密文），点击输入框不会消失，
+      // 聚焦时全选、输入即替换，保存逻辑据此判断是「保留原密文」还是「重新加密新 Key」。
+      _gsKeySet = true; _gsSavedCipher = gs.apiKey; _gsFieldDirty = false;
+      if (tiGsKey) {
+        tiGsKey.type = 'password';
+        tiGsKey.value = GSB_MASK;
+        tiGsKey.placeholder = '已加密保存（显示为圆点，实际为密文，不可读取）。点击输入框可输入新 Key 替换。';
+        tiGsKey.onfocus = function () {
+          // 仍显示掩码时全选，使首次按键直接替换；不主动清空，避免「点击即消失」的困惑
+          if (tiGsKey.value === GSB_MASK) { try { tiGsKey.select(); } catch (_) {} }
+        };
+        tiGsKey.oninput = function () { _gsFieldDirty = true; };  // 用户已改动 → 保存时重新加密
+      }
+      if (tiGsKeyHint) {
+        tiGsKeyHint.textContent = '✓ 已配置并加密保存（显示为圆点，实际为密文，不可读取）。如需更换请直接输入新 Key；留空保存则保留原 Key。';
+        tiGsKeyHint.style.color = '#2e9e6b';
+      }
+    } else if (gs.apiKey) {
+      // 兼容：若意外存了非密文（理论不会发生），提示用户重新输入以重新加密
+      if (tiGsKeyHint) {
+        tiGsKeyHint.textContent = '检测到旧格式 Key（未加密），请重新输入以重新加密保存。';
+        tiGsKeyHint.style.color = '#c0392b';
+      }
+    }
+    if (tiGsEnabled) tiGsEnabled.addEventListener('change', function () {
+      if (tiGsKeyWrap) tiGsKeyWrap.style.display = tiGsEnabled.checked ? '' : 'none';
+    });
+
+    // OpenPhish 本地钓鱼黑名单：开关 + 立即更新按钮 + 状态显示
+    const opEnabled = $('openphishEnabled');
+    const opUpdateBtn = $('openphishUpdateBtn');
+    const opStatus = $('openphishStatus');
+    if (opEnabled) opEnabled.checked = !!(settings.openphish && settings.openphish.enabled);
+    // 读取本地名单元信息，显示「上次更新 / 条目数」
+    try {
+      chrome.storage.local.get({ sfOpenPhishMeta: { updated: 0, count: 0, error: '' } }, function (r) {
+        const m = r.sfOpenPhishMeta || {};
+        if (opStatus) {
+          if (m.updated) {
+            const d = new Date(m.updated);
+            const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+            opStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
+            opStatus.style.color = m.error ? '#c0392b' : '';
+          } else {
+            opStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
+          }
+        }
+      });
+    } catch (e) {}
+    if (opUpdateBtn) opUpdateBtn.addEventListener('click', function () { updateOpenPhish(opStatus); });
   }
 
   // 灵敏度分段（带滑动药丸动画）—— 防护总览页已移除，仅当控件存在时绑定
@@ -899,7 +1031,7 @@ function bindRescue() {
   } catch (e) {}
 }
 
-function collectSettings() {
+async function collectSettings() {
   const enabled = {};
   document.querySelectorAll('input[data-cat]').forEach((cb) => { enabled[cb.dataset.cat] = cb.checked; });
   // 权重：仅保存与默认不同的覆盖值（避免锁死后续默认权重变更）；无覆盖则不留 key
@@ -916,6 +1048,28 @@ function collectSettings() {
   const sensSeg = $('sensitivity');
   const sensBtn = sensSeg ? sensSeg.querySelector('button.active') : null;
   const activeFont = (document.querySelector('.font-opt.active') || { dataset: {} }).dataset;
+  // Google Safe Browsing：Key 加密后存储；用户未改动则保留原密文，绝不存明文/可识别密文
+  const gsInput = ($('tiGsKey') ? ($('tiGsKey').value || '').trim() : '');
+  let gsKeyEnc = '';
+  _gsEncryptFailed = false;
+  if (!_gsFieldDirty) {
+    // 用户未改动输入框（仅显示圆点掩码）→ 直接保留原密文，不要对掩码/密文二次加密
+    gsKeyEnc = _gsSavedCipher || '';
+  } else if (gsInput && gsInput !== GSB_MASK) {
+    const enc = await sfEncryptKey(gsInput);   // 加密失败返回 null → 不回退明文
+    if (enc) {
+      gsKeyEnc = enc;
+    } else if (_gsKeySet) {
+      gsKeyEnc = _gsSavedCipher || '';          // 加密异常但曾有密文 → 保留旧密文，绝不回退明文
+    } else {
+      // 首次填写却加密失败：绝不能存明文，置空并标记，交由 save handler 提示用户重试
+      gsKeyEnc = '';
+      _gsEncryptFailed = true;
+    }
+  } else {
+    // 用户聚焦/清空但未输入新值（或仍是掩码）→ 保留原密文，避免误清空
+    gsKeyEnc = _gsSavedCipher || '';
+  }
   return {
     enabledGlobal: (window.__sfSettings ? !!window.__sfSettings.enabledGlobal : true),
     showWarning: $('showWarning').checked,
@@ -942,8 +1096,21 @@ function collectSettings() {
         virustotal: {
           enabled: ($('tiVtEnabled') ? $('tiVtEnabled').checked : false),
           apiKey: ($('tiVtKey') ? ($('tiVtKey').value || '').trim() : '')
+        },
+        urlhaus: {
+          enabled: ($('tiUrlhausEnabled') ? $('tiUrlhausEnabled').checked : false)
+        },
+        netapi: {
+          enabled: ($('tiNetapiEnabled') ? $('tiNetapiEnabled').checked : false)
+        },
+        googlesafebrowsing: {
+          enabled: ($('tiGsEnabled') ? $('tiGsEnabled').checked : false),
+          apiKey: gsKeyEnc   // 密文（AES-GCM）；明文仅在后台 service worker 内解密
         }
       }
+    },
+    openphish: {
+      enabled: ($('openphishEnabled') ? $('openphishEnabled').checked : false)
     },
     enabled,
     weights,
@@ -1390,17 +1557,40 @@ async function init() {
 
   renderSponsors();
 
-  $('saveBtn').addEventListener('click', () => {
-    const patch = collectSettings();
-    // 保存成功后同步回写缓存，保证 window.__sfSettings 与已落盘的 sync 一致，
-    // 避免后续 applyAppearance / collectSettings 回退分支读到陈旧值。
-    if (window.__sfSettings) Object.assign(window.__sfSettings, patch);
-    // 自定义主题可能含大体积背景图，单独存 chrome.storage.local，避免 sync 8KB 配额静默失败
-    if (hasStorageLocal()) chrome.storage.local.set({ sfCustomThemes: (window.__sfSettings && Array.isArray(window.__sfSettings.customThemes)) ? window.__sfSettings.customThemes : [] });
-    if (hasStorage()) {
-      chrome.storage.sync.set(patch, () => { showToast(); loadStats(); });
-    } else {
-      showToast();
+  $('saveBtn').addEventListener('click', async () => {
+    try {
+      const patch = await collectSettings();
+      // 保存成功后同步回写缓存，保证 window.__sfSettings 与已落盘的 sync 一致，
+      // 避免后续 applyAppearance / collectSettings 回退分支读到陈旧值。
+      if (window.__sfSettings) Object.assign(window.__sfSettings, patch);
+      // 诊断日志：确认 GSB 配置是否进入 patch（用户在 DevTools 控制台可据此判断 Key 是否真的存上了）
+      const gsProv = (patch.threatIntel && patch.threatIntel.providers && patch.threatIntel.providers.googlesafebrowsing) || {};
+      console.log('[SilverFoxBlocker][设置] 保存威胁情报：'
+        + 'GSB 子开关=' + !!gsProv.enabled
+        + '，GSB 密文长度=' + ((gsProv.apiKey || '').length)
+        + (_gsEncryptFailed ? '，⚠ 本次 GSB Key 加密失败，未写入明文（已留空）' : ''));
+      // 自定义主题可能含大体积背景图，单独存 chrome.storage.local，避免 sync 8KB 配额静默失败
+      if (hasStorageLocal()) chrome.storage.local.set({ sfCustomThemes: (window.__sfSettings && Array.isArray(window.__sfSettings.customThemes)) ? window.__sfSettings.customThemes : [] });
+      if (_gsEncryptFailed) {
+        alert('Google Safe Browsing 的 API Key 本次加密失败，未保存。请重试；如反复失败请检查浏览器是否支持 Web Crypto（chrome-extension:// 页面默认可用）。');
+        return;
+      }
+      if (hasStorage()) {
+        chrome.storage.sync.set(patch, () => {
+          if (chrome.runtime.lastError) {
+            console.error('[SilverFoxBlocker][设置] sync.set 失败：', chrome.runtime.lastError);
+            alert('设置保存失败：' + (chrome.runtime.lastError && chrome.runtime.lastError.message || '未知错误') + '（常见于 sync 配额超限）');
+          } else {
+            showToast(); loadStats();
+          }
+        });
+      } else {
+        showToast();
+      }
+    } catch (e) {
+      // collectSettings 抛错（如 sfEncryptKey 未定义）时，明确提示而非静默失败
+      console.error('[SilverFoxBlocker][设置] 保存异常：', e);
+      alert('保存设置时发生异常：' + (e && e.message || e) + '。设置未保存，请刷新设置页后重试。');
     }
   });
 
