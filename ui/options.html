@@ -157,7 +157,35 @@
                 <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRow2">
                   <div class="rl" data-page-node-id="sfTiRl2">
                     <div class="rt" data-page-node-id="sfTiRt2">VirusTotal</div>
-                    <div class="rd" data-page-node-id="sfTiRd2">免费额度有限（每分钟约 4 次查询）。密钥仅保存在本地，扩展直连 virustotal.com，不经过任何中转服务器。</div>
+                    <div class="rd" data-page-node-id="sfTiRd2">免费额度有限（每分钟约 4 次查询）。密钥仅保存在本地，扩展直连 virustotal.com，不经过任何中转服务器。命中后按检出引擎的可信度分三档提示：仅小众引擎检出（或二级引擎少于 3 个）→「可能是误报」；1 个顶级引擎或 ≥3 个二级引擎检出 →「请保持谨慎，不要点击来路不明的链接」；≥2 个顶级引擎检出 →「请提高警惕」。</div>
+                    <div class="ti-guide" data-page-node-id="sfTiGuideVt">
+                      <button type="button" class="ti-guide-btn" aria-expanded="false" data-page-node-id="sfTiGuideBtnVt">如何获取 API？</button>
+                      <div class="ti-guide-body">
+                        <ol class="ti-guide-steps">
+                          <li>创建 VirusTotal 账号
+                            <ul class="ti-guide-sub">
+                              <li>打开浏览器，访问 VirusTotal 官方网站 <span class="ti-guide-url">https://www.virustotal.com/gui/home/upload</span>。</li>
+                              <li>点击页面右上角的注册按钮，填写必要的个人信息。</li>
+                              <li>验证邮箱地址后，完成账号创建。</li>
+                            </ul>
+                          </li>
+                          <li>查找你的 VirusTotal API 密钥
+                            <ul class="ti-guide-sub">
+                              <li>成功登录 VirusTotal 账号后，点击页面顶部导航栏中的「API」选项；</li>
+                              <li>在 API 页面中，找到「API Key」部分；</li>
+                              <li>复制显示的 64 位字符串，这就是你的 API 密钥。</li>
+                            </ul>
+                          </li>
+                          <li>添加 API Key
+                            <ul class="ti-guide-sub">
+                              <li>回到 SilverFoxBlocker 扩展的设置页，添加 VT API Key，保存设置即可。</li>
+                              <li>免费用户限额：每分钟 4 次、每日 500 次。</li>
+                            </ul>
+                          </li>
+                        </ol>
+                        <div class="ti-guide-note">注意：请妥善保管你的 API 密钥，不要分享给他人，以免账号被滥用。</div>
+                      </div>
+                    </div>
                   </div>
                   <label class="switch" data-page-node-id="sfTiSw2"><input type="checkbox" id="tiVtEnabled" data-page-node-id="sfTiCb2"><span class="slider" data-page-node-id="sfTiSl2"></span></label>
                 </div>
@@ -169,7 +197,7 @@
                 <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowUH">
                   <div class="rl" data-page-node-id="sfTiRlUH">
                     <div class="rt" data-page-node-id="sfTiRtUH">URLhaus（abuse.ch）</div>
-                    <div class="rd" data-page-node-id="sfTiRdUH">无需 API Key，免费查询域名/网址是否被收录为恶意样本投递源。由扩展直连 urlhaus-api.abuse.ch。</div>
+                    <div class="rd" data-page-node-id="sfTiRdUH">无需 API Key，免费查询域名/网址是否被收录为恶意样本投递源。只在存在<b>活跃证据</b>时断言风险：当前网址被收录且状态为 online，或该主机仍有在线恶意 URL；仅有历史（已离线）记录时只提示「曾被标记、目前无活跃记录」。威胁类型、在线/离线数量、最近记录时间可在横幅「详情」中查看。由扩展直连 urlhaus-api.abuse.ch。</div>
                   </div>
                   <label class="switch" data-page-node-id="sfTiSwUH"><input type="checkbox" id="tiUrlhausEnabled" data-page-node-id="sfTiCbUH"><span class="slider" data-page-node-id="sfTiSlUH"></span></label>
                 </div>
@@ -178,7 +206,7 @@
                 <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowNA">
                   <div class="rl" data-page-node-id="sfTiRlNA">
                     <div class="rt" data-page-node-id="sfTiRtNA">NetAPI（netapi.com）</div>
-                    <div class="rd" data-page-node-id="sfTiRdNA">无需 API Key，免费查询域名是否在失陷情报库（过去 24 小时内被报即判当前恶意）。由扩展直连 netapi.com。</div>
+                    <div class="rd" data-page-node-id="sfTiRdNA">无需 API Key，免费查询域名是否在失陷情报库。过去 24 小时内被报（listed_now）判为「当前在列」并提示谨慎；仅有历史记录（listed_ever）时，若最近一次在 1 年内则提示「历史记录，仅供参考」，超过 1 年不再打扰。横幅「详情」中可查看首次/最近记录、来源标签与匹配值。注意：域名在列不代表持有者恶意，很多站点是在不知情的情况下被入侵，扩展文案不会断言「该网站是恶意的」。由扩展直连 netapi.com。</div>
                   </div>
                     <label class="switch" data-page-node-id="sfTiSwNA"><input type="checkbox" id="tiNetapiEnabled" data-page-node-id="sfTiCbNA"><span class="slider" data-page-node-id="sfTiSlNA"></span></label>
                   </div>
@@ -187,7 +215,52 @@
                   <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowGS">
                     <div class="rl" data-page-node-id="sfTiRlGS">
                       <div class="rt" data-page-node-id="sfTiRtGS">Google Safe Browsing（v4 Lookup API）</div>
-                      <div class="rd" data-page-node-id="sfTiRdGS">需自有 API Key。注意：Google Safe Browsing API v4 已被官方标记为「已淘汰（deprecated）」，建议改用 v4 的 Lookup API（即本功能所用）或迁移到 Web Risk。横幅仅作「疑似」提示，不断言网站已确认不安全。Key 以<b>密文</b>形式保存（AES-GCM 加密，非明文落盘）。创建 Key 时请勿限制 HTTP 来源（或放行 chrome-extension://），否则扩展请求会被拒。</div>
+                      <div class="rd" data-page-node-id="sfTiRdGS">需自有 API Key。说明：Google 已为 Safe Browsing API 推出后继版本 v5（本地哈希列表方案），v4 仍可使用但官方主推 v5；本功能使用 v4 的 Lookup API。横幅仅作「疑似」提示，不断言网站已确认不安全。Key 以<b>密文</b>形式保存（AES-GCM 加密，非明文落盘）。创建 Key 时请勿限制 HTTP 来源（或放行 chrome-extension://），否则扩展请求会被拒。</div>
+                      <div class="ti-guide" data-page-node-id="sfTiGuideGs">
+                        <button type="button" class="ti-guide-btn" aria-expanded="false" data-page-node-id="sfTiGuideBtnGs">如何获取 API？</button>
+                        <div class="ti-guide-body">
+                          <ol class="ti-guide-steps">
+                            <li>登录 Google Cloud Console
+                              <ul class="ti-guide-sub">
+                                <li>使用 Google 账号登录：<span class="ti-guide-url">console.cloud.google.com</span></li>
+                                <li>如果没有账号，则先注册账号后登录。可以使用 QQ 邮箱、Gmail 邮箱等注册。</li>
+                              </ul>
+                            </li>
+                            <li>创建或选择项目
+                              <ul class="ti-guide-sub">
+                                <li>在控制台顶部选择项目；没有项目就新建一个。</li>
+                                <li>记住项目 ID，后面会用到。</li>
+                              </ul>
+                            </li>
+                            <li>启用 Safe Browsing API
+                              <ul class="ti-guide-sub">
+                                <li>进入左侧菜单「API 和服务」→「库」。</li>
+                                <li>搜索「Safe Browsing API」。</li>
+                                <li>点击进入后选择「启用」。</li>
+                              </ul>
+                            </li>
+                            <li>创建 API Key
+                              <ul class="ti-guide-sub">
+                                <li>进入「API 和服务」→「凭据」。</li>
+                                <li>点击「创建凭据」→「API 密钥」。</li>
+                                <li>复制生成的 Key，建议保存到文本文档，关闭弹窗后通常无法再查看完整值。</li>
+                              </ul>
+                            </li>
+                            <li>限制 API Key
+                              <ul class="ti-guide-sub">
+                                <li>在凭据页面打开刚创建的 Key。</li>
+                                <li>建议设置：API 限制只允许访问 Safe Browsing API；应用限制若走后端调用可限制服务器 IP，不要把这个 Key 放到浏览器扩展前端代码里。</li>
+                              </ul>
+                            </li>
+                            <li>添加 API Key
+                              <ul class="ti-guide-sub">
+                                <li>回到 SilverFoxBlocker 扩展的设置页，添加 GSB API Key，保存设置即可。</li>
+                                <li>启用后会有默认配额，可在 Google Cloud Console →「API 和服务」→「配额」查看和申请提升。</li>
+                              </ul>
+                            </li>
+                          </ol>
+                        </div>
+                      </div>
                     </div>
                     <label class="switch" data-page-node-id="sfTiSwGS"><input type="checkbox" id="tiGsEnabled" data-page-node-id="sfTiCbGS"><span class="slider" data-page-node-id="sfTiSlGS"></span></label>
                   </div>
@@ -210,6 +283,40 @@
           <div style="margin:10px 0 2px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
             <button id="openphishUpdateBtn" type="button" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:7px 14px; font-weight:600;">立即更新</button>
             <span id="openphishStatus" class="hint" style="margin:0"></span>
+          </div>
+        </div>
+        <div class="card" data-page-node-id="sfPdCard">
+          <div class="field" data-page-node-id="sfPdField">
+            <div class="rl" data-page-node-id="sfPdRl">
+              <div class="rt" data-page-node-id="sfPdRt">PhishDestroy 本地钓鱼黑名单</div>
+              <div class="rd" data-page-node-id="sfPdRd">与 OpenPhish 并列的第二个静态名单源（约 14 万条域名）。启用后扩展每日自动从 PhishDestroy Destroylist 抓取最新名单并保存在本地（chrome.storage.local，不上传）；浏览器启动时即载入内存常驻，访问网站时与本地名单（域名集合）实时比对，命中即渲染横幅「PhishDestroy 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
+            </div>
+            <label class="switch" data-page-node-id="sfPdSw"><input type="checkbox" id="phishdestroyEnabled" data-page-node-id="sfPdCb"><span class="slider" data-page-node-id="sfPdSl"></span></label>
+          </div>
+          <div style="margin:10px 0 2px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+            <button id="phishdestroyUpdateBtn" type="button" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:7px 14px; font-weight:600;">立即更新</button>
+            <span id="phishdestroyStatus" class="hint" style="margin:0"></span>
+          </div>
+        </div>
+        <div class="card" data-page-node-id="sfHgCard">
+          <div class="field" data-page-node-id="sfHgField">
+            <div class="rl" data-page-node-id="sfHgRl">
+              <div class="rt" data-page-node-id="sfHgRt">HaGeZi's Threat Intelligence Feeds 黑名单</div>
+              <div class="rd" data-page-node-id="sfHgRd">第三个静态名单源，规模约 181 万条域名（恶意软件、挖矿、诈骗、垃圾邮件与钓鱼）。启用后扩展每日自动从 hagezi/dns-blocklists 的 tif.txt 抓取，并以「布隆过滤器位图」形式保存在本地 IndexedDB（约 5MB，不上传、不保存明文域名）；浏览器启动时直接读取该位图常驻内存，访问网站时与本地名单实时比对（精确 + 父域回溯），命中即渲染横幅「HaGeZi's TIF 已将其拉黑」。也可随时手动「立即更新」，更新过程会实时显示下载进度。无需 API Key。误判率约 2.5e-5，且不会漏判。</div>
+            </div>
+            <label class="switch" data-page-node-id="sfHgSw"><input type="checkbox" id="hageziEnabled" data-page-node-id="sfHgCb"><span class="slider" data-page-node-id="sfHgSl"></span></label>
+          </div>
+          <div style="margin:10px 0 2px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+            <button id="hageziUpdateBtn" type="button" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:7px 14px; font-weight:600;">立即更新</button>
+            <span id="hageziStatus" class="hint" style="margin:0"></span>
+          </div>
+          <div style="margin:8px 0 2px; display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+            <label for="hageziVariant" style="font-size:13px">名单版本</label>
+            <select id="hageziVariant" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:6px 10px; font-weight:600;">
+              <option value="full">完整版（181 万条，约 36MB 下载，最全）</option>
+              <option value="medium">中等版（31.8 万条，约 6.6MB 下载，更轻快）</option>
+            </select>
+            <span class="hint" style="margin:0">切换版本后会自动重新抓取一次</span>
           </div>
         </div>
         <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">

@@ -57,7 +57,11 @@
       providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false },       googlesafebrowsing: { enabled: false, apiKey: '' } }
     },
     // OpenPhish 本地钓鱼黑名单：启用后与本地静态域名名单比对，命中即渲染横幅
-    openphish: { enabled: false, lastUpdated: 0 }
+    openphish: { enabled: false, lastUpdated: 0 },
+    // PhishDestroy 本地钓鱼黑名单：同上的第二个静态名单源（独立横幅、独立开关）
+    phishdestroy: { enabled: false, lastUpdated: 0 },
+    // HaGeZi's Threat Intelligence Feeds：第三个静态名单源（约 181 万条，独立横幅、独立开关）
+    hagezi: { enabled: false, lastUpdated: 0, variant: 'full' }
   };
 
   let lastResult = { analyzed: false };
@@ -1976,6 +1980,11 @@
   }
 
   async function run() {
+    // ★ 单次执行守卫：run() 有两个入口（DOMContentLoaded / 2 秒兜底 setTimeout），
+    //   原代码只声明了 didRun 却从未置位，导致两者都会执行 → 一次页面加载跑两遍 run()，
+    //   情报查询与本地黑名单查询各发两次，横幅就被 append 两遍（同文案上下两条）。
+    if (didRun) return;
+    didRun = true;
     // 注入得意黑 @font-face（供网页内横幅使用；字体文件经 manifest web_accessible_resources 对 <all_urls> 开放）
     if (!fontFaceInjected) {
       fontFaceInjected = true;
@@ -2037,6 +2046,42 @@
               renderOpenPhishBanner(_host);
             } else {
               console.log('[SilverFoxBlocker][OpenPhish] 未命中（本地名单数量=' + ((r && r.count) || 0) + '）');
+            }
+          } catch (e) {}
+        }).catch(function () {});
+      }
+    } catch (e) {}
+
+    // —— PhishDestroy 本地钓鱼黑名单：与 OpenPhish 并列的第二个静态名单，命中同样渲染横幅 ——
+    try {
+      const pd = (settings && settings.phishdestroy) || {};
+      if (pd.enabled && _host) {
+        console.log('[SilverFoxBlocker][PhishDestroy] 已启用，向后台查询本地黑名单：' + _host);
+        sendMsg({ type: 'sf-phishdestroy-check', hostname: _host }).then(function (r) {
+          try {
+            if (r && r.listed) {
+              console.log('[SilverFoxBlocker][PhishDestroy] 命中本地黑名单：' + _host + '，渲染横幅');
+              renderPhishDestroyBanner(_host);
+            } else {
+              console.log('[SilverFoxBlocker][PhishDestroy] 未命中（本地名单数量=' + ((r && r.count) || 0) + '）');
+            }
+          } catch (e) {}
+        }).catch(function () {});
+      }
+    } catch (e) {}
+
+    // —— HaGeZi's TIF 本地威胁情报黑名单：第三个静态名单（约 181 万条），命中同样渲染横幅 ——
+    try {
+      const hg = (settings && settings.hagezi) || {};
+      if (hg.enabled && _host) {
+        console.log('[SilverFoxBlocker][HaGeZi] 已启用，向后台查询本地黑名单：' + _host);
+        sendMsg({ type: 'sf-hagezi-check', hostname: _host }).then(function (r) {
+          try {
+            if (r && r.listed) {
+              console.log('[SilverFoxBlocker][HaGeZi] 命中本地威胁情报名单：' + _host + '，渲染横幅');
+              renderHaGeZiBanner(_host);
+            } else {
+              console.log('[SilverFoxBlocker][HaGeZi] 未命中（本地名单数量=' + ((r && r.count) || 0) + '）');
             }
           } catch (e) {}
         }).catch(function () {});
@@ -2122,18 +2167,91 @@
     stack.style.top = top + 'px';
   }
 
+  // 所有第三方情报 / 本地黑名单拦截横幅末尾统一附带的提醒语（VT、URLhaus、NetAPI、GSB、OpenPhish、PhishDestroy、HaGeZi TIF 共用）
+  const SAFETY_ADVICE = '请保持谨慎，不要点击来路不明的链接';
+
+  // 把提醒语追加到横幅末尾（独占一行的小字，不挤压正文与「知道了」按钮）
+  function appendSafetyAdvice(banner) {
+    if (!banner) return;
+    const tip = document.createElement('div');
+    tip.className = 'sf-ib-tip';
+    tip.textContent = SAFETY_ADVICE;
+    banner.appendChild(tip);
+  }
+
+  // VT 检出引擎明细（「详情」按钮展开）：引擎名 + 等级 + 检出类别，例「Kaspersky 顶级引擎 Phishing」
+  const VT_TIER_LABEL = { top: '顶级引擎', second: '二级引擎', niche: '小众引擎', other: '未分级引擎' };
+  const VT_CAT_LABEL = { malicious: '恶意', suspicious: '可疑' };
+
+  function vtEngineLine(e) {
+    const tier = VT_TIER_LABEL[(e && e.t) || ''] || '未分级引擎';
+    let kind = String((e && e.r) || '').trim();
+    if (kind) {
+      // VT 的 result 是英文类别（phishing / malware / malicious site…），首字母大写更易读
+      kind = kind.charAt(0).toUpperCase() + kind.slice(1);
+    } else {
+      kind = VT_CAT_LABEL[(e && e.c) || ''] || '检出';
+    }
+    return String((e && e.n) || '未知引擎') + ' ' + tier + ' ' + kind;
+  }
+
+  // 生成「详情」按钮 + 可折叠明细面板（VT 引擎清单 / URLhaus、NetAPI 的字段明细共用）
+  function buildDetailPanel(rows) {
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const panel = document.createElement('div');
+    panel.className = 'sf-ib-detail';
+    panel.setAttribute('role', 'region');
+    rows.forEach(function (line) {
+      const row = document.createElement('div');
+      row.className = 'sf-ib-detail-row';
+      row.textContent = line;
+      panel.appendChild(row);
+    });
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'sf-ib-detail-btn';
+    toggle.textContent = '详情';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.addEventListener('click', function (ev) {
+      try { ev.stopPropagation(); } catch (e) {}
+      const open = panel.classList.toggle('sf-ib-detail-open');
+      toggle.textContent = open ? '收起' : '详情';
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      // 展开后横幅变高，重新对齐容器位置（避免遮挡或与顶部提示条重叠）
+      const stack = document.getElementById('sfIntelStack');
+      if (stack) positionIntelStack(stack);
+    });
+    return { panel: panel, toggle: toggle };
+  }
+
+  // 汇总一条情报结果的明细行：VT 用逐引擎清单，URLhaus / NetAPI 用后台给的结构化字段说明
+  function detailRowsFor(r) {
+    if (Array.isArray(r.engines) && r.engines.length) return r.engines.map(vtEngineLine);
+    if (Array.isArray(r.facts) && r.facts.length) return r.facts.filter(Boolean);
+    return null;
+  }
+
   // 按结果顺序（后台已按 provider order 排序：VT→URLhaus→NetAPI）渲染一组情报横幅，
   // 每个检出源一条、自上而下堆叠在网页顶部居中；未检出的源不渲染，后续源自动上移补位（无空隙）。
   function renderIntelBanners(results) {
     if (!results || !results.length) return;
-    if (document.getElementById('sfIntelStack')) return;
-    const stack = document.createElement('div');
-    stack.id = 'sfIntelStack';
-    stack.className = 'sf-intel-stack' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+    // ★ 不能用「容器已存在」判重：OpenPhish / PhishDestroy / HaGeZi 的黑名单查询走内存，
+    //   通常比第三方情报先返回、先建好 #sfIntelStack；旧逻辑此时直接 return，
+    //   会把 VT / URLhaus / NetAPI / GSB 的横幅整批吞掉。改为按「来源 + 文案」逐条去重。
+    const stack = ensureIntelStack();
+    if (!stack) return;
+    if (!stack._sfKeys) stack._sfKeys = new Set();
 
     results.forEach(function (r) {
       const banner = document.createElement('div');
-      banner.className = 'sf-intel-banner' + (r.soft ? ' sf-soft' : '');
+      // 配色：VT「可能是误报」与「仅历史记录」（URLhaus / NetAPI 的 stale 结果）用琥珀色（低置信度）；
+      // VT「请提高警惕」用更深的警示红；其余（VT「请保持谨慎」/ URLhaus 活跃 / NetAPI 当前在列 / GSB）
+      // 统一用默认红粉。
+      const extraCls = [];
+      if (r.vtLevel === 'fp') extraCls.push('sf-soft');
+      if (r.stale) extraCls.push('sf-soft');
+      if (r.vtLevel === 'alert') extraCls.push('sf-vt-alert');
+      banner.className = 'sf-intel-banner' + (extraCls.length ? ' ' + extraCls.join(' ') : '');
       // VT 对「域名」与「网址」分开统计：若命中来自 URL 端点则说"该网址"，否则"该域名"
       const target = (r.src === '网址') ? '该网址' : '该域名';
       // 软判定源（如 Google Safe Browsing，其 v4 API 已标记淘汰）：必须用「疑似/可能」等限定词，
@@ -2141,9 +2259,16 @@
       const base = r.soft
         ? (r.name + '疑似将' + target + '标记为存在风险（仅供参考）')
         : (r.name + '已将' + target + '判定为恶意或存在风险');
+      // VT 三档结论（可能是误报 / 请保持谨慎 / 请提高警惕）由后台按引擎分级给出；
+      // 有 verdictText 时以它为主文案，评分等量化信息留在副行，避免正文过长。
+      const textStr = r.verdictText ? r.verdictText
+        : (r.hasScore ? (base + '，评分 ' + r.score + '/' + r.scoreMax) : base);
+      const key = 'intel|' + (r.name || '') + '|' + textStr + '|' + (r.detail || '');
+      if (stack._sfKeys.has(key)) return;   // 已渲染过同一结论 → 跳过，不重复追加
+      stack._sfKeys.add(key);
       const text = document.createElement('div');
       text.className = 'sf-ib-text';
-      text.textContent = r.hasScore ? (base + '，评分 ' + r.score + '/' + r.scoreMax) : base;
+      text.textContent = textStr;
       banner.appendChild(text);
       // 非评分源（URLhaus/NetAPI）以副行展示判定细节（无评分，仅给判断结果）
       if (r.detail) {
@@ -2156,7 +2281,23 @@
       btn.type = 'button';
       btn.className = 'sf-ib-close';
       btn.textContent = '知道了';
+      // 带明细的横幅（VT 逐引擎清单 / URLhaus、NetAPI 的结构化字段）额外给一个独立「详情」按钮，
+      // 放在「知道了」左侧，描边样式、视觉权重更低，不干扰主操作。
+      const det = buildDetailPanel(detailRowsFor(r));
+      if (det) banner.appendChild(det.toggle);
       banner.appendChild(btn);
+      if (det) banner.appendChild(det.panel);
+      // 提醒语独占末行（正文 + 按钮之上，整行铺满）。
+      // VT 的「请保持谨慎，不要点击来路不明的链接」本身已是正文，末尾不再重复同一句。
+      if (!(r.verdictText && r.verdictText.indexOf(SAFETY_ADVICE) >= 0)) appendSafetyAdvice(banner);
+      // Google Safe Browsing 服务条款要求：显示警告时须给出数据来源归因，并声明其可靠性与准确性无法保证。
+      // GSB 是当前唯一的软判定源（r.soft），故仅在其横幅追加这条免责声明。
+      if (r.soft) {
+        const note = document.createElement('div');
+        note.className = 'sf-ib-note';
+        note.textContent = '数据由 Google Safe Browsing 提供，Google 不保证该判定的可靠性与准确性，本扩展亦无法保证，请自行判断。';
+        banner.appendChild(note);
+      }
       btn.addEventListener('click', function () {
         banner.classList.add('sf-closing');
         setTimeout(function () {
@@ -2167,53 +2308,50 @@
       stack.appendChild(banner);
     });
 
-    const root = document.body || document.documentElement;
-    if (!root) return;
-    root.appendChild(stack);
+    // 容器本身、以及「跟随 .sf-banner/.sf-hint 下移」的观察器都由 ensureIntelStack() 负责，
+    // 这里只补充一次定位，避免重复建观察器。
+    positionIntelStack(stack);
+  }
 
-    // 危险横幅(.sf-banner)/温和条(.sf-hint)可能在情报栈之后才出现（本地检测需等页面稳定 + 5s），
-    // 故监听其创建并定期复检，把情报栈整体下移到其下方，避免重叠。
+  // 情报横幅容器（#sfIntelStack）：第三方情报源、OpenPhish、PhishDestroy、HaGeZi TIF 共用同一个容器，
+  // 保证所有横幅上下堆叠、共用同一套定位逻辑（跟随顶部 .sf-banner / .sf-hint 下移）。
+  function ensureIntelStack() {
+    let stack = document.getElementById('sfIntelStack');
+    if (stack) return stack;
+    stack = document.createElement('div');
+    stack.id = 'sfIntelStack';
+    stack.className = 'sf-intel-stack' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+    const root = document.body || document.documentElement;
+    if (!root) return null;
+    root.appendChild(stack);
     positionIntelStack(stack);
     try {
       const mo = new MutationObserver(function () { positionIntelStack(stack); });
       mo.observe(document.body, { childList: true });
-      stack._sfIntelMO = mo;
       let n = 0;
       const rechk = setInterval(function () {
         positionIntelStack(stack);
         if (++n >= 12) { clearInterval(rechk); try { mo.disconnect(); } catch (e) {} }
       }, 500);
-      stack._sfIntelRechk = rechk;
     } catch (e) {}
+    return stack;
   }
 
-  // OpenPhish 命中本地黑名单时渲染横幅「OpenPhish 已将其拉黑」。复用 #sfIntelStack 容器与定位逻辑，
-  // 与威胁情报横幅上下堆叠；样式用 .sf-openphish（深红，区别于 GSB 的「疑似」琥珀色）。
-  function renderOpenPhishBanner(host) {
-    let stack = document.getElementById('sfIntelStack');
-    if (!stack) {
-      stack = document.createElement('div');
-      stack.id = 'sfIntelStack';
-      stack.className = 'sf-intel-stack' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
-      const root = document.body || document.documentElement;
-      if (!root) return;
-      root.appendChild(stack);
-      positionIntelStack(stack);
-      try {
-        const mo = new MutationObserver(function () { positionIntelStack(stack); });
-        mo.observe(document.body, { childList: true });
-        let n = 0;
-        const rechk = setInterval(function () {
-          positionIntelStack(stack);
-          if (++n >= 12) { clearInterval(rechk); try { mo.disconnect(); } catch (e) {} }
-        }, 500);
-      } catch (e) {}
-    }
+  // 往堆叠容器里追加一条横幅（含「知道了」独立关闭按钮）
+  // 幂等：同一容器内相同 class + 相同文案只保留一条（run 重跑 / SPA 重判 / 多次情报回包
+  // 都不会再叠出两条一模一样的横幅）。用户点「知道了」关掉后也不会被再次打扰。
+  function appendIntelBanner(cls, textStr) {
+    const stack = ensureIntelStack();
+    if (!stack) return;
+    if (!stack._sfKeys) stack._sfKeys = new Set();
+    const key = cls + '|' + textStr;
+    if (stack._sfKeys.has(key)) return;
+    stack._sfKeys.add(key);
     const banner = document.createElement('div');
-    banner.className = 'sf-intel-banner sf-openphish';
+    banner.className = 'sf-intel-banner ' + cls;
     const text = document.createElement('div');
     text.className = 'sf-ib-text';
-    text.textContent = 'OpenPhish 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）';
+    text.textContent = textStr;
     banner.appendChild(text);
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -2227,7 +2365,23 @@
       }, 280);
     });
     stack.appendChild(banner);
+    appendSafetyAdvice(banner);   // OpenPhish / PhishDestroy / HaGeZi TIF 同样附带提醒语
     positionIntelStack(stack);
+  }
+
+  // OpenPhish 命中本地黑名单 → 横幅「OpenPhish 已将其拉黑」（.sf-openphish：深红）
+  function renderOpenPhishBanner(host) {
+    appendIntelBanner('sf-openphish', 'OpenPhish 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）');
+  }
+
+  // PhishDestroy 命中本地黑名单 → 横幅「PhishDestroy 已将其拉黑」（.sf-phishdestroy：紫罗兰，与上者区分）
+  function renderPhishDestroyBanner(host) {
+    appendIntelBanner('sf-phishdestroy', 'PhishDestroy 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）');
+  }
+
+  // HaGeZi TIF 命中本地威胁情报名单 → 横幅（.sf-hagezi：青蓝，与红色系、紫罗兰区分）
+  function renderHaGeZiBanner(host) {
+    appendIntelBanner('sf-hagezi', "HaGeZi's TIF 已将其拉黑（" + host + ' 命中本地威胁情报黑名单）');
   }
 
   // ===== 硬拦截钩子（document_start 即安装，抢在站点脚本之前） =====

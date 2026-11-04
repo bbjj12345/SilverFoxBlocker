@@ -48,6 +48,10 @@ const DEFAULTS = {
   },
   // OpenPhish 本地钓鱼黑名单：免费 feed，无需 Key；默认每天自动更新，名单存于 storage.local
   openphish: { enabled: false, lastUpdated: 0 },
+  // PhishDestroy 本地钓鱼黑名单：第二个静态名单源（约 14 万条域名），机制与 OpenPhish 完全一致
+  phishdestroy: { enabled: false, lastUpdated: 0 },
+  // HaGeZi's Threat Intelligence Feeds：第三个静态名单源（约 181 万条），本地以哈希索引保存
+  hagezi: { enabled: false, lastUpdated: 0, variant: 'full' },
   customTheme: null,    // 用户导入的自定义主题：{ name, theme:{ bgPrimary,bgSecondary,accent,accent2,text,surface,border,material,sidebar,control } }
   reduceMotion: false,  // 减弱动画效果：关闭全部过渡与动画
   layout: 'new',        // 设置页布局：'new'(新版 8 项分组导航，默认) | 'old'(旧版 11 项平铺导航)
@@ -695,27 +699,130 @@ function updateOpenPhish(statusEl) {
   }
 }
 
-// 接收后台抓取完成后的单向推送（无长连接，不受 MV3 SW 回收影响）
+function updatePhishDestroy(statusEl) {
+  try {
+    const btn = $('phishdestroyUpdateBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+    if (statusEl) statusEl.textContent = '正在抓取 PhishDestroy 名单（约 14 万条，首次略慢）…';
+    chrome.runtime.sendMessage({ type: 'sf-phishdestroy-update' }, function () {
+      // 仅收到后台 ACK；真正结果在 sf-phishdestroy-updated 推送里
+      if (chrome.runtime.lastError) {
+        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+        if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
+      }
+    });
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '更新请求发送失败：' + ((e && e.message) || e);
+  }
+}
+
+function updateHaGeZi(statusEl) {
+  try {
+    const btn = $('hageziUpdateBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+    if (statusEl) statusEl.textContent = '正在抓取 HaGeZi TIF 名单（约 181 万条、36MB，首次约需 10~60 秒）…';
+    chrome.runtime.sendMessage({ type: 'sf-hagezi-update' }, function () {
+      // 仅收到后台 ACK；真正结果在 sf-hagezi-updated 推送里
+      if (chrome.runtime.lastError) {
+        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+        if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
+      }
+    });
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '更新请求发送失败：' + ((e && e.message) || e);
+  }
+}
+
+// 下载进度（后台流式读取时每 4MB 回推一次），让「更新中」有可见进展而不是像卡死
+chrome.runtime.onMessage.addListener(function (msg) {
+  try {
+    if (!msg || msg.type !== 'sf-hagezi-progress') return;
+    const statusEl = $('hageziStatus');
+    const btn = $('hageziUpdateBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+    if (!statusEl) return;
+    const got = msg.received || 0;
+    // total：服务端 content-length，仅在「未压缩传输」时才可信（压缩传输时是压缩后大小，
+    // 与后台实际收到的解压字节不可比，后台会置 0）；expected：该名单版本的参考体积。
+    const total = msg.total || 0;
+    const expected = msg.expected || 0;
+    const mb = function (n) { return (n / 1048576).toFixed(1) + 'MB'; };
+    if (msg.stage === 'build') {
+      statusEl.textContent = '名单已下载（' + mb(got) + '），正在建立索引…';
+    } else if (!got) {
+      statusEl.textContent = '正在连接下载源…';
+    } else if (total && got <= total * 1.02) {
+      const pct = Math.min(100, Math.round(got / total * 100));
+      statusEl.textContent = '正在下载名单：' + mb(got) + ' / ' + mb(total) + '（' + pct + '%）';
+    } else if (expected) {
+      // 压缩传输 / 无 content-length：按参考体积估算，分母不小于实际值，百分比封顶 99%
+      const denom = Math.max(expected, got);
+      const pct = Math.min(99, Math.round(got / denom * 100));
+      statusEl.textContent = '正在下载名单：' + mb(got) + ' / 约 ' + mb(denom) + '（' + pct + '%）';
+    } else {
+      statusEl.textContent = '正在下载名单：已接收 ' + mb(got);
+    }
+    statusEl.style.color = '';
+  } catch (e) {}
+});
+
+// 接收后台抓取完成后的单向推送（无长连接，不受 MV3 SW 回收影响）。
+// OpenPhish 与 PhishDestroy 共用同一套渲染逻辑，只按来源切换元素与文案。
 chrome.runtime.onMessage.addListener(function (msg, _sender, _sendResponse) {
   try {
-    if (!msg || msg.type !== 'sf-openphish-updated') return;
+    if (!msg) return;
+    const isOp = msg.type === 'sf-openphish-updated';
+    const isPd = msg.type === 'sf-phishdestroy-updated';
+    if (!isOp && !isPd) return;
     const r = msg.result || {};
-    const statusEl = $('openphishStatus');
-    const btn = $('openphishUpdateBtn');
+    const name = isOp ? 'OpenPhish' : 'PhishDestroy';
+    const statusEl = $(isOp ? 'openphishStatus' : 'phishdestroyStatus');
+    const btn = $(isOp ? 'openphishUpdateBtn' : 'phishdestroyUpdateBtn');
     if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
     if (!statusEl) return;
     if (r.ok) {
       const d = new Date();
       const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
       const s = r.source || '';
-      const srcNote = s ? ('，源：' + (s.indexOf('gh-proxy') >= 0 ? 'GitHub 反代' : (s.indexOf('jsdelivr') >= 0 ? 'jsDelivr 镜像' : (s.indexOf('raw.githubusercontent') >= 0 ? 'GitHub raw' : 'openphish 官方')))) : '';
+      const srcNote = s ? ('，源：' + (s.indexOf('gh-proxy') >= 0 ? 'GitHub 反代' : (s.indexOf('jsdelivr') >= 0 ? 'jsDelivr 镜像' : (s.indexOf('raw.githubusercontent') >= 0 ? 'GitHub raw' : name + ' 官方')))) : '';
       statusEl.textContent = '更新成功：' + ds + '（共 ' + (r.count || 0) + ' 条域名' + srcNote + '）';
       statusEl.style.color = '';
     } else if (r.skipped) {
       statusEl.textContent = '更新跳过（24 小时内已更新，共 ' + (r.count || 0) + ' 条域名）';
       statusEl.style.color = '';
     } else {
-      statusEl.textContent = '更新失败（全部镜像源均不可达）：' + (r.error || '未知错误');
+      statusEl.textContent = '更新失败（全部源均不可达）：' + (r.error || '未知错误');
+      statusEl.style.color = '#c0392b';
+    }
+  } catch (e) {}
+});
+
+// HaGeZi TIF 的更新结果推送（抓取体量大、耗时长，同样走单向消息）
+chrome.runtime.onMessage.addListener(function (msg) {
+  try {
+    if (!msg || msg.type !== 'sf-hagezi-updated') return;
+    const r = msg.result || {};
+    const statusEl = $('hageziStatus');
+    const btn = $('hageziUpdateBtn');
+    if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+    if (!statusEl) return;
+    const fmt = function (ts) {
+      const d = new Date(ts);
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    };
+    if (r.ok) {
+      const s = r.source || '';
+      const srcNote = s ? ('，源：' + (s.indexOf('gh-proxy') >= 0 ? 'GitHub 反代' : (s.indexOf('jsdelivr') >= 0 ? 'jsDelivr 镜像' : (s.indexOf('raw.githubusercontent') >= 0 ? 'GitHub raw' : '官方源')))) : '';
+      statusEl.textContent = '更新成功：' + fmt(Date.now()) + '（共 ' + (r.count || 0) + ' 条域名' + srcNote + '）';
+      statusEl.style.color = '';
+    } else if (r.busy) {
+      statusEl.textContent = '已有更新任务正在进行，请等它结束（状态行会实时显示下载进度）';
+      statusEl.style.color = '';
+    } else if (r.skipped) {
+      statusEl.textContent = '更新跳过（24 小时内已成功更新，或距上次失败不足 30 分钟）';
+      statusEl.style.color = '';
+    } else {
+      statusEl.textContent = '更新失败（全部源均不可达，已保留本地旧名单）：' + (r.error || '未知错误');
       statusEl.style.color = '#c0392b';
     }
   } catch (e) {}
@@ -829,6 +936,53 @@ function bindControls(settings) {
       });
     } catch (e) {}
     if (opUpdateBtn) opUpdateBtn.addEventListener('click', function () { updateOpenPhish(opStatus); });
+
+    // PhishDestroy 本地钓鱼黑名单：与 OpenPhish 完全同构的「开关 + 立即更新 + 状态」
+    const pdEnabled = $('phishdestroyEnabled');
+    const pdUpdateBtn = $('phishdestroyUpdateBtn');
+    const pdStatus = $('phishdestroyStatus');
+    if (pdEnabled) pdEnabled.checked = !!(settings.phishdestroy && settings.phishdestroy.enabled);
+    try {
+      chrome.storage.local.get({ sfPhishDestroyMeta: { updated: 0, count: 0, error: '' } }, function (r) {
+        const m = r.sfPhishDestroyMeta || {};
+        if (!pdStatus) return;
+        if (m.updated) {
+          const d = new Date(m.updated);
+          const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+          pdStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
+          pdStatus.style.color = m.error ? '#c0392b' : '';
+        } else {
+          pdStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
+        }
+      });
+    } catch (e) {}
+    if (pdUpdateBtn) pdUpdateBtn.addEventListener('click', function () { updatePhishDestroy(pdStatus); });
+
+    // HaGeZi's TIF：与前两者同构的「开关 + 立即更新 + 状态」
+    const hgEnabled = $('hageziEnabled');
+    const hgUpdateBtn = $('hageziUpdateBtn');
+    const hgStatus = $('hageziStatus');
+    if (hgEnabled) hgEnabled.checked = !!(settings.hagezi && settings.hagezi.enabled);
+    const hgVariant = $('hageziVariant');
+    if (hgVariant) hgVariant.value = (settings.hagezi && settings.hagezi.variant === 'medium') ? 'medium' : 'full';
+    try {
+      chrome.storage.local.get({ sfHaGeZiTifMeta: { updated: 0, count: 0, error: '' } }, function (r) {
+        const m = r.sfHaGeZiTifMeta || {};
+        if (!hgStatus) return;
+        if (m.updated) {
+          const d = new Date(m.updated);
+          const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+          hgStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
+          hgStatus.style.color = m.error ? '#c0392b' : '';
+        } else if (m.error) {
+          hgStatus.textContent = '本地名单尚未更新；上次更新失败：' + m.error;
+          hgStatus.style.color = '#c0392b';
+        } else {
+          hgStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
+        }
+      });
+    } catch (e) {}
+    if (hgUpdateBtn) hgUpdateBtn.addEventListener('click', function () { updateHaGeZi(hgStatus); });
   }
 
   // 灵敏度分段（带滑动药丸动画）—— 防护总览页已移除，仅当控件存在时绑定
@@ -1127,6 +1281,13 @@ async function collectSettings() {
     },
     openphish: {
       enabled: ($('openphishEnabled') ? $('openphishEnabled').checked : false)
+    },
+    phishdestroy: {
+      enabled: ($('phishdestroyEnabled') ? $('phishdestroyEnabled').checked : false)
+    },
+    hagezi: {
+      enabled: ($('hageziEnabled') ? $('hageziEnabled').checked : false),
+      variant: ($('hageziVariant') && $('hageziVariant').value === 'medium') ? 'medium' : 'full'
     },
     enabled,
     weights,
@@ -1622,3 +1783,14 @@ async function init() {
 
 init();
 
+// 「如何获取 API？」折叠教程：事件委托，后续新增教程块无需再绑定
+document.addEventListener('click', function (e) {
+  const t = e.target;
+  const btn = (t && t.closest) ? t.closest('.ti-guide-btn') : null;
+  if (!btn) return;
+  const wrap = btn.closest('.ti-guide');
+  if (!wrap) return;
+  const open = wrap.classList.toggle('open');
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.textContent = open ? '收起教程' : '如何获取 API？';
+});

@@ -15,7 +15,9 @@ const DEFAULTS = {
     enabled: false,
     providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false }, googlesafebrowsing: { enabled: false, apiKey: '' } }
   },
-  openphish: { enabled: false, lastUpdated: 0 }
+  openphish: { enabled: false, lastUpdated: 0 },
+  phishdestroy: { enabled: false, lastUpdated: 0 },
+  hagezi: { enabled: false, lastUpdated: 0, variant: 'full' }
 };
 
 function $(id) { return document.getElementById(id); }
@@ -188,6 +190,9 @@ async function init() {
 
   const ppMore = $('ppMore');
   if (ppMore) ppMore.addEventListener('click', () => chrome.tabs.create({ url: base + '#sec=stats' }));
+  // 左下角：跳转「规则与白名单」页（信任域名 / 自定义关键词 / 黑名单 / 威胁情报 API）
+  const ppRules = $('ppRules');
+  if (ppRules) ppRules.addEventListener('click', () => chrome.tabs.create({ url: base + '#sec=rules' }));
 }
 
 init();

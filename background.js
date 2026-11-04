@@ -104,7 +104,12 @@ const DEFAULTS = {
   },
   // OpenPhish 本地钓鱼黑名单：免费 feed.txt（无需 API Key），默认每天自动更新一次，
   // 名单保存在 chrome.storage.local；访问网站时与本地静态名单（域名集合）比对，命中即渲染横幅。
-  openphish: { enabled: false, lastUpdated: 0 }
+  openphish: { enabled: false, lastUpdated: 0 },
+  // PhishDestroy 本地钓鱼黑名单：与 OpenPhish 并列的第二个静态名单源（约 14 万条裸域名），
+  // 同样是「每日自动更新 + 手动更新 → 落盘 storage.local → 启动即载入内存常驻」。
+  phishdestroy: { enabled: false, lastUpdated: 0 },
+  // HaGeZi's Threat Intelligence Feeds（TIF）：AdBlock 语法，约 181 万条，机制同上但改用哈希索引
+  hagezi: { enabled: false, lastUpdated: 0, variant: 'full' }
 };
 
 // ===== 威胁情报 API 注册表（框架化）=====
@@ -124,6 +129,262 @@ function base64urlEncode(str) {
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   } catch (e) { return null; }
+}
+
+// ===== VirusTotal 引擎分级（顶级 / 二级 / 小众）=====
+// 名单由用户提供；比对前做归一化（小写，去掉空格/点/下划线/连字符/括号），
+// 以兼容 VT 引擎名的写法差异（例如 "Google Safe Browsing" 与 "Google Safebrowsing"）。
+// 归类优先级：顶级 > 小众 > 二级（二级与小众名单有重叠引擎时按更弱的「小众」计，
+// 这样「三检查出」不会被不可信引擎凑数）。
+function vtNormEngine(s) {
+  return String(s || '').toLowerCase().replace(/[\s._\-()（）]/g, '');
+}
+
+const VT_TOP_NAMES = [
+  'BitDefender',
+  'Kaspersky',
+  'ESET',
+  'Fortinet',
+  'Sophos',
+  'Google Safe Browsing',
+  'Dr.Web',
+  'Emsisoft',
+  'G-Data',
+  'VIPRE',
+  'Webroot',
+  'Quick Heal',
+  'Yandex Safebrowsing',
+  'AlienVault',
+  'Juniper Networks',
+  'LevelBlue',
+  'EmergingThreats',
+  'URLhaus',
+  'Phishtank',
+  'OpenPhish'
+];
+
+const VT_SECOND_NAMES = [
+  'alphaMountain.ai',
+  'Cluster25',
+  'CRDF',
+  'CyRadar',
+  'Forcepoint ThreatSeeker',
+  'Lionic',
+  'Rising',
+  'Seclookup',
+  'SOCRadar',
+  'URLQuery',
+  'DNS8',
+  'Gridinsoft',
+  'Abusix',
+  'Acronis',
+  'ADMINUSLabs',
+  'AILabs (MONITORAPP)',
+  'Antiy-AVL',
+  'BlockList',
+  'Blueliv',
+  'Certego',
+  'Chong Lua Dao',
+  'CINS Army',
+  'CTX AI',
+  'Cyble',
+  'desenmascara.me',
+  'ESTsecurity',
+  'GreenSnow',
+  'Heimdal Security',
+  'IPsum',
+  'Malwared',
+  'MalwarePatrol',
+  'Phishing Database',
+  'PREBYTES',
+  'Quttera',
+  'Sangfor',
+  'Scantitan',
+  'SCUMWARE.org',
+  'StopForumSpam',
+  'Sucuri SiteCheck',
+  'ThreatHive',
+  'Viettel Threat Intelligence',
+  'ViriBack',
+  'VX Vault',
+  'ZeroCERT',
+  '0xSI_f33d',
+  'AlphaSOC',
+  'ArcSight Threat Intelligence',
+  'AutoShun',
+  'Bfore.Ai PreCrime',
+  'ChainPatrol',
+  'Criminal IP',
+  'CSIS Security Group',
+  'Cyan',
+  'Ermes',
+  'Fortra',
+  'GCP Abuse Intelligence',
+  'GreyNoise',
+  'Guardpot',
+  'Hunt.io Intelligence',
+  'K7AntiVirus',
+  'Lumu',
+  'MalwareURL',
+  'Mimecast',
+  'Netcraft',
+  'Orcapot',
+  'PhishFort',
+  'PrecisionSec',
+  'SafeToOpen',
+  'Sansec eComscan',
+  'Snort IP sample list',
+  'Synthient',
+  'Xcitium Verdict Cloud',
+  'ZeroFox'
+];
+
+const VT_NICHE_NAMES = [
+  'Bkav',
+  'Blueliv',
+  'CINS Army',
+  'IPsum',
+  'Malwared',
+  'SCUMWARE.org',
+  'StopForumSpam',
+  'ViriBack',
+  'VX Vault',
+  '0xSI_f33d',
+  'AutoShun',
+  'Guardpot',
+  'Orcapot',
+  'Snort IP sample list',
+  'Synthient'
+];
+
+const VT_TOP_SET = new Set(VT_TOP_NAMES.map(vtNormEngine));
+const VT_SECOND_SET = new Set(VT_SECOND_NAMES.map(vtNormEngine));
+const VT_NICHE_SET = new Set(VT_NICHE_NAMES.map(vtNormEngine));
+
+// 按「检出引擎落在哪一档」给出三档结论：
+//   顶级 >= 2              → alert   请提高警惕
+//   顶级 == 1 或 二级 >= 3 → caution 请保持谨慎，不要点击来路不明的链接
+//   其余（仅小众/二级<3）  → fp      可能是误报
+// 仅统计 category 为 malicious / suspicious 的引擎（harmless / undetected / timeout 不算检出）。
+function vtClassifyEngines(lastResults) {
+  if (!lastResults || typeof lastResults !== 'object') return null;
+  const hits = { top: [], second: [], niche: [], other: [] };
+  // 逐引擎明细：供内容脚本「详情」按钮展开显示（引擎名 + 等级 + 检出类别）。
+  // 用短键 n/t/r/c 压缩体积（一次最多几十条，随消息传给内容脚本）。
+  const engines = [];
+  const seen = new Set();   // 域名端点与 URL 端点可能返回同一引擎，按归一化名称去重
+  Object.keys(lastResults).forEach(function (k) {
+    const v = lastResults[k] || {};
+    const cat = String(v.category || '').toLowerCase();
+    if (cat !== 'malicious' && cat !== 'suspicious') return;
+    const name = String(v.engine_name || k || '').trim();
+    if (!name) return;
+    const n = vtNormEngine(name);
+    if (seen.has(n)) return;
+    seen.add(n);
+    let tier = 'other';
+    if (VT_TOP_SET.has(n)) { hits.top.push(name); tier = 'top'; }
+    else if (VT_NICHE_SET.has(n)) { hits.niche.push(name); tier = 'niche'; }
+    else if (VT_SECOND_SET.has(n)) { hits.second.push(name); tier = 'second'; }
+    else hits.other.push(name);
+    engines.push({ n: name, t: tier, r: String(v.result || '').trim(), c: cat });
+  });
+  // 明细按「顶级 → 二级 → 小众 → 未分级」排序，同级按引擎名字母序，与横幅结论的严重度顺序一致
+  const TIER_RANK = { top: 0, second: 1, niche: 2, other: 3 };
+  engines.sort(function (a, b) {
+    const d = (TIER_RANK[a.t] || 0) - (TIER_RANK[b.t] || 0);
+    return d !== 0 ? d : String(a.n).localeCompare(String(b.n));
+  });
+  const fmt = function (a) {
+    if (!a.length) return '';
+    const head = a.slice(0, 4).join('、');
+    return a.length > 4 ? (head + ' 等 ' + a.length + ' 个') : head;
+  };
+  const topHits = hits.top, secHits = hits.second, nicheHits = hits.niche, otherHits = hits.other;
+  let level = 'fp', text = '';
+  if (topHits.length >= 2) {
+    level = 'alert';
+    text = 'VirusTotal：请提高警惕（顶级引擎 ' + topHits.length + ' 个检出：' + fmt(topHits) + '）';
+  } else if (topHits.length === 1 || secHits.length >= 3) {
+    level = 'caution';
+    const why = [];
+    if (topHits.length === 1) why.push('顶级引擎检出：' + topHits[0]);
+    if (secHits.length) {
+      why.push('二级引擎 ' + secHits.length + ' 个检出' + (secHits.length <= 4 ? '：' + fmt(secHits) : ''));
+    }
+    text = 'VirusTotal：请保持谨慎，不要点击来路不明的链接（' + why.join('；') + '）';
+  } else if (nicheHits.length) {
+    text = 'VirusTotal：可能是误报（仅 ' + nicheHits.length + ' 个小众引擎检出：' + fmt(nicheHits) + '）';
+  } else if (secHits.length) {
+    text = 'VirusTotal：可能是误报（仅 ' + secHits.length + ' 个二级引擎检出：' + fmt(secHits) + '）';
+  } else if (otherHits.length) {
+    text = 'VirusTotal：可能是误报（仅 ' + otherHits.length + ' 个未分级引擎检出：' + fmt(otherHits) + '）';
+  } else {
+    text = 'VirusTotal：可能是误报（检出引擎均不在分级名单内）';
+  }
+  return { level: level, text: text, top: topHits, second: secHits, niche: nicheHits, other: otherHits, engines: engines };
+}
+
+// ===== 情报源字段中文化 / 日期规整（URLhaus、NetAPI 共用）=====
+// URLhaus 的 threat 标签是英文机器值（malware_download 等），直接展示对普通用户不可读，
+// 这里做中文映射；未收录的标签原样显示，保证新增类型不会丢信息。
+const URLHAUS_THREAT_LABELS = {
+  malware_download: '恶意软件下载',
+  malware_upload: '恶意软件上传',
+  malware: '恶意软件',
+  malware_distribution: '恶意软件分发',
+  phishing: '钓鱼站点',
+  botnet_cc: '僵尸网络 C2',
+  botnet: '僵尸网络',
+  c2: 'C2 服务器',
+  ransomware: '勒索软件',
+  loader: '加载器',
+  dropper: '释放器',
+  exploit: '漏洞利用',
+  'exploit kit': '漏洞利用套件',
+  scam: '诈骗',
+  spam: '垃圾邮件',
+  ddos: 'DDoS 攻击源',
+  'malicious url': '恶意网址'
+};
+function urlhausThreatLabel(t) {
+  const raw = String(t || '').trim();
+  if (!raw) return '';
+  return URLHAUS_THREAT_LABELS[raw.toLowerCase()] || raw;
+}
+
+// NetAPI 的 block_reason 同样返回英文来源标签，映射成中文并保留原值对照
+const NETAPI_REASON_LABELS = {
+  phishing: '钓鱼',
+  malware: '恶意软件',
+  malware_distribution: '恶意软件分发',
+  c2: '命令与控制服务器',
+  botnet: '僵尸网络',
+  ransomware: '勒索软件',
+  exploit: '漏洞利用',
+  spam: '垃圾邮件',
+  scam: '诈骗',
+  brute_force: '暴力破解',
+  scanning: '扫描探测',
+  compromised: '站点失陷'
+};
+function netapiReasonLabel(r) {
+  const raw = String(r || '').trim();
+  if (!raw) return '';
+  return NETAPI_REASON_LABELS[raw.toLowerCase()] || raw;
+}
+
+// 把接口返回的时间串统一成 YYYY-MM-DD（无法识别时截断原值，避免超长打乱横幅布局）
+function fmtIntelDate(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) return m[1];
+  const t = Date.parse(s);
+  if (isFinite(t)) {
+    try { return new Date(t).toISOString().slice(0, 10); } catch (e) {}
+  }
+  return s.slice(0, 20);
 }
 
 const THREAT_INTEL_PROVIDERS = [
@@ -154,43 +415,54 @@ const THREAT_INTEL_PROVIDERS = [
       const domRes = settled[0];
       const urlRes = settled[1];
 
-      // 解析域名端点
-      let domStats = null, domErr = null;
+      // 解析域名端点（attributes 里同时含 last_analysis_stats 与 last_analysis_results，
+      // 后者是逐引擎判定，用于按「顶级/二级/小众引擎」分级——只留 stats 就无法分级）
+      let domAttr = null, domErr = null;
       if (domRes && domRes.status === 'fulfilled') {
         const r = domRes.value;
         if (r.status === 401 || r.status === 403) return { error: true, status: r.status, reason: 'auth', detail: 'API Key 无效或权限不足' };
         if (!r.ok) domErr = { status: r.status };
-        else { const j = await r.json().catch(() => null); domStats = (j && j.data && j.data.attributes && j.data.attributes.last_analysis_stats) || null; }
+        else { const j = await r.json().catch(() => null); domAttr = (j && j.data && j.data.attributes) || null; }
       } else { domErr = { status: 0, reason: 'network' }; }
 
       // 解析网址端点
-      let urlStats = null, urlErr = null;
+      let urlAttr = null, urlErr = null;
       if (urlId && urlRes && urlRes.status === 'fulfilled') {
         const r = urlRes.value;
         if (r.status === 401 || r.status === 403) return { error: true, status: r.status, reason: 'auth', detail: 'API Key 无效或权限不足' };
         if (!r.ok) urlErr = { status: r.status };
-        else { const j = await r.json().catch(() => null); urlStats = (j && j.data && j.data.attributes && j.data.attributes.last_analysis_stats) || null; }
+        else { const j = await r.json().catch(() => null); urlAttr = (j && j.data && j.data.attributes) || null; }
       }
+      const domStats = (domAttr && domAttr.last_analysis_stats) || null;
+      const urlStats = (urlAttr && urlAttr.last_analysis_stats) || null;
 
       // 合并：优先采用被标红的来源（URL 或 域名）
       const flaggedOf = function (s) { if (!s) return 0; return (s.malicious || 0) + (s.suspicious || 0); };
       const totalOf = function (s) { if (!s) return 0; return (s.malicious || 0) + (s.suspicious || 0) + (s.harmless || 0) + (s.undetected || 0) + (s.timeout || 0); };
       const flaggedDom = flaggedOf(domStats), flaggedUrl = flaggedOf(urlStats);
-      let stats = null, srcLabel = '';
-      if (flaggedUrl > 0) { stats = urlStats; srcLabel = '网址'; }
-      else if (flaggedDom > 0) { stats = domStats; srcLabel = '域名'; }
+      let stats = null, srcLabel = '', attr = null;
+      if (flaggedUrl > 0) { stats = urlStats; attr = urlAttr; srcLabel = '网址'; }
+      else if (flaggedDom > 0) { stats = domStats; attr = domAttr; srcLabel = '域名'; }
 
       if (stats) {
         const malicious = stats.malicious || 0;
         const suspicious = stats.suspicious || 0;
         const total = totalOf(stats) || 1;
         const flagged = malicious + suspicious;
+        // 逐引擎分级：决定横幅走「可能是误报 / 请保持谨慎 / 请提高警惕」哪一档
+        const cls = vtClassifyEngines(attr && attr.last_analysis_results);
+        const tierNote = cls
+          ? '（顶级 ' + cls.top.length + ' / 二级 ' + cls.second.length + ' / 小众 ' + cls.niche.length + ' / 未分级 ' + cls.other.length + '）'
+          : '';
         return {
           malicious: true,
           score: flagged,
           scoreMax: total,
           src: srcLabel,
-          detail: '来源=' + srcLabel + '，恶意 ' + malicious + ' / 可疑 ' + suspicious + ' / 共 ' + total + ' 个引擎'
+          vtLevel: cls ? cls.level : '',
+          verdictText: cls ? cls.text : '',
+          engines: (cls && Array.isArray(cls.engines)) ? cls.engines : [],
+          detail: '来源=' + srcLabel + '，恶意 ' + malicious + ' / 可疑 ' + suspicious + ' / 共 ' + total + ' 个引擎，评分 ' + flagged + '/' + total + tierNote
         };
       }
 
@@ -202,7 +474,12 @@ const THREAT_INTEL_PROVIDERS = [
       return { malicious: false };
     }
   },
-  // —— URLhaus（abuse.ch，无需 Key）：并行查询「主机」与「当前 URL」是否被收录为恶意样本投递源 ——
+  // —— URLhaus（abuse.ch，无需 Key）：并行查询「主机」与「当前 URL」——
+  // 判定标准（2026-11 细化）：只有存在「活跃证据」才判为当前恶意——
+  //   · 精确 URL 命中且 url_status === 'online'；或
+  //   · 主机在线恶意 URL 数（urls_online 或 urls 里 status=online 的条数）> 0。
+  // 仅有历史记录（全部 offline）时降级为 stale：仍然提示「曾被标记」，但用「历史记录 / 目前无活跃记录」
+  // 的限定措辞，配色也降到琥珀档，避免把早已下线的旧记录说成「该网站是恶意的」。
   {
     id: 'urlhaus',
     name: 'URLhaus',
@@ -211,30 +488,99 @@ const THREAT_INTEL_PROVIDERS = [
     async query(domain, apiKey, pageUrl) {
       const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
       const tasks = [
-        fetch('https://urlhaus-api.abuse.ch/v1/host/', { method: 'POST', headers: headers, body: 'host=' + encodeURIComponent(domain) })
+        { kind: 'host', p: fetch('https://urlhaus-api.abuse.ch/v1/host/', { method: 'POST', headers: headers, body: 'host=' + encodeURIComponent(domain) }) }
       ];
       if (pageUrl && /^https?:\/\//i.test(pageUrl)) {
-        tasks.push(fetch('https://urlhaus-api.abuse.ch/v1/url/', { method: 'POST', headers: headers, body: 'url=' + encodeURIComponent(pageUrl) }));
+        tasks.push({ kind: 'url', p: fetch('https://urlhaus-api.abuse.ch/v1/url/', { method: 'POST', headers: headers, body: 'url=' + encodeURIComponent(pageUrl) }) });
       }
-      const settled = await Promise.allSettled(tasks);
-      for (const s of settled) {
-        if (s.status !== 'fulfilled') continue;
+      const settled = await Promise.allSettled(tasks.map(function (t) { return t.p; }));
+      let hostHit = null, urlHit = null;
+      for (let i = 0; i < settled.length; i++) {
+        const s = settled[i];
+        if (!s || s.status !== 'fulfilled') continue;
         let j = null;
         try { j = await s.value.json(); } catch (e) { continue; }
         // query_status: "ok" 表示命中；"no_results"/"invalid_host" 等表示未命中
-        if (j && j.query_status === 'ok' && Array.isArray(j.urls) && j.urls.length > 0) {
-          const threats = j.urls.map(function (u) { return u.threat; }).filter(Boolean);
-          const uniq = threats.filter(function (t, i) { return threats.indexOf(t) === i; });
-          return {
-            malicious: true,
-            detail: 'URLhaus 检出 ' + j.urls.length + ' 条恶意 URL' + (uniq.length ? '（' + uniq.join('/') + '）' : '')
-          };
-        }
+        if (!j || j.query_status !== 'ok') continue;
+        if (tasks[i].kind === 'url') urlHit = j; else hostHit = j;
       }
-      return { malicious: false };
+      if (!hostHit && !urlHit) return { malicious: false };
+
+      const threats = [];
+      const addThreat = function (t) {
+        const v = String(t || '').trim();
+        if (v && threats.indexOf(v) < 0) threats.push(v);
+      };
+      const dates = [];
+      let onlineCount = 0, offlineCount = 0, exactOnline = false, exactOffline = false;
+
+      if (hostHit) {
+        const list = Array.isArray(hostHit.urls) ? hostHit.urls : [];
+        list.forEach(function (u) {
+          if (!u) return;
+          const st = String(u.url_status || '').toLowerCase();
+          if (st === 'online') onlineCount++; else if (st) offlineCount++;
+          addThreat(u.threat);
+          if (u.date_added) dates.push(String(u.date_added));
+        });
+        // 接口可能只回传部分 url 明细，但汇总字段更准：取两者较大值
+        const rep = Number(hostHit.urls_online);
+        if (isFinite(rep) && rep > onlineCount) onlineCount = rep;
+        const totalRep = Number(hostHit.url_count);
+        if (isFinite(totalRep) && totalRep > onlineCount + offlineCount) offlineCount = totalRep - onlineCount;
+        if (hostHit.firstseen) dates.push(String(hostHit.firstseen));
+      }
+      if (urlHit) {
+        const st = String(urlHit.url_status || '').toLowerCase();
+        if (st === 'online') exactOnline = true; else if (st) exactOffline = true;
+        addThreat(urlHit.threat);
+        if (urlHit.date_added) dates.push(String(urlHit.date_added));
+      }
+
+      const onlineTotal = onlineCount + (exactOnline && onlineCount === 0 ? 1 : 0);
+      const active = onlineTotal > 0;
+      const totalCount = onlineTotal + offlineCount;
+      // ISO / "YYYY-MM-DD HH:MM:SS" 串的字典序即时间序，取最大即最近记录
+      const recent = dates.slice().sort().slice(-1)[0] || '';
+      const recentStr = fmtIntelDate(recent);
+      const threatStr = threats.map(urlhausThreatLabel).filter(Boolean).join('、');
+      const targetLabel = (exactOnline || exactOffline) ? '精确 URL' : '主机';
+
+      const facts = [
+        '数据来源：URLhaus（abuse.ch）',
+        '查询目标：' + targetLabel,
+        '在线恶意 URL：' + onlineTotal + ' 条' + (exactOnline ? '（当前网址在列）' : ''),
+        '历史记录（已离线）：' + offlineCount + ' 条',
+        '威胁类型：' + (threatStr || '未标注'),
+        recentStr ? '最近记录：' + recentStr : ''
+      ].filter(Boolean);
+
+      if (active) {
+        return {
+          malicious: true,
+          active: true,
+          stale: false,
+          verdictText: 'URLhaus：当前存在活跃的恶意内容关联记录（在线 ' + onlineTotal + ' 条）',
+          detail: '在线 ' + onlineTotal + ' / 已离线 ' + offlineCount + ' 条' + (threatStr ? '，' + threatStr : '') + (recentStr ? '，最近 ' + recentStr : ''),
+          facts: facts
+        };
+      }
+      return {
+        malicious: true,
+        active: false,
+        stale: true,          // 仅历史记录：内容脚本据此降级为琥珀配色 + 限定措辞
+        verdictText: 'URLhaus：该地址曾被标记为恶意内容分发（最后记录于 ' + (recentStr || '未知日期') + '），目前无活跃记录，仅供参考',
+        detail: '仅历史记录 ' + (totalCount || 1) + ' 条（均已离线）' + (threatStr ? '，' + threatStr : ''),
+        facts: facts
+      };
     }
   },
-  // —— NetAPI（netapi.com，免费方法无需 Key）：查询域名是否在失陷情报库（过去 24h 内被报 = 当前恶意）——
+  // —— NetAPI（netapi.com，免费方法无需 Key）：查询域名是否在失陷情报库 ——
+  // 判定标准（2026-11 细化）：listed_now=true（24h 内在列）= 当前失陷，判为 malicious 并提示「请谨慎」；
+  // listed_ever 仅为历史记录：不判「当前恶意」，但最近一次记录在 1 年内时以「历史记录」口径轻提示一次
+  // （超过 1 年的旧记录噪音太大，直接忽略，避免耽误用户）。
+  // NetAPI 官方明确说明：域名在列不代表持有者存在恶意意图，很多站点是在不知情的情况下被入侵托管了钓鱼页，
+  // 故文案一律使用「可能为被入侵的受害者站点」等限定措辞，绝不断言「该网站是恶意的」。
   {
     id: 'netapi',
     name: 'NetAPI',
@@ -256,14 +602,51 @@ const THREAT_INTEL_PROVIDERS = [
       if (j && j.error) {
         return { error: true, reason: 'api', detail: (j.error && j.error.message) || 'NetAPI 查询错误' };
       }
-      // listed_now=true：过去 24h 内被报（当前失陷）；listed_ever 仅历史记录，不视为当前恶意，避免误报
-      if (j && j.listed_now === true) {
+      if (!j) return { malicious: false };
+
+      const listedNow = j.listed_now === true;
+      const listedEver = j.listed_ever === true;
+      if (!listedNow && !listedEver) return { malicious: false };
+
+      const firstStr = fmtIntelDate(j.first_seen);
+      const lastStr = fmtIntelDate(j.last_seen);
+      const reasonRaw = String(j.block_reason || '').trim();
+      const reasonZh = netapiReasonLabel(reasonRaw);
+      const matched = String(j.matched_value || '').trim();
+
+      const facts = [
+        '数据来源：NetAPI（compromised-check）',
+        '监控状态：' + (listedNow ? '当前在列（24 小时内被报告）' : '仅历史记录（当前未在列表中）'),
+        firstStr ? '首次记录：' + firstStr : '',
+        lastStr ? '最近记录：' + lastStr : '',
+        reasonRaw ? ('来源标签：' + reasonZh + (reasonZh !== reasonRaw ? '（' + reasonRaw + '）' : '')) : '',
+        (matched && matched.toLowerCase() !== String(domain || '').toLowerCase()) ? ('匹配值：' + matched) : '',
+        '说明：域名出现在失陷名单中，可能是站点被入侵后被动托管了恶意内容，不代表持有者存在恶意意图'
+      ].filter(Boolean);
+
+      if (listedNow) {
         return {
           malicious: true,
-          detail: 'NetAPI 失陷情报库当前标记（last_seen=' + (j.last_seen || '未知') + '，原因=' + (j.block_reason || '未说明') + '）'
+          active: true,
+          stale: false,
+          verdictText: 'NetAPI：该域名近期（24 小时内）出现在威胁情报监控列表中，可能为被入侵的受害者站点，请谨慎',
+          detail: '当前在列' + (reasonZh ? '，来源标签：' + reasonZh : '') + (lastStr ? '，最近记录 ' + lastStr : ''),
+          facts: facts
         };
       }
-      return { malicious: false };
+
+      // 仅历史记录：最近一次在 1 年内才提示
+      const ts = Date.parse(String(j.last_seen || '')) || Date.parse(String(j.first_seen || ''));
+      const withinYear = isFinite(ts) && (Date.now() - ts) < 365 * 24 * 3600 * 1000;
+      if (!withinYear) return { malicious: false };
+      return {
+        malicious: true,
+        active: false,
+        stale: true,
+        verdictText: 'NetAPI：该域名有历史失陷记录（最近一次 ' + (lastStr || '未知日期') + '），当前未在监控列表中，仅供参考',
+        detail: '仅历史记录，当前未在列' + (reasonZh ? '，来源标签：' + reasonZh : ''),
+        facts: facts
+      };
     }
   },
   // —— Google Safe Browsing（v4 Lookup API，需自有 API Key；Key 以密文存储，见 background 解密分支）——
@@ -368,24 +751,28 @@ async function loadOpenPhishDomains() {
   return _opDomains;
 }
 
-// 域名是否命中本地名单：先精确匹配，再逐级回溯父域（www.a.evil.com → a.evil.com → evil.com）。
-// 实测 4 万条名单下每级 has() 约 15ns，整轮 <0.2µs，可忽略。
-function openPhishHit(host) {
-  if (!_opDomains || !_opDomains.size) return false;
+// 通用：域名是否命中某个本地名单 Set —— 先精确匹配，再逐级回溯父域
+// （www.a.evil.com → a.evil.com → evil.com）。实测 14 万条名单下每级 has() 约 15ns，整轮 <0.2µs。
+function domainListHit(set, host) {
+  if (!set || !set.size) return false;
   let d = String(host || '').toLowerCase();
   if (d.charAt(d.length - 1) === '.') d = d.slice(0, -1);
   while (d) {
-    if (_opDomains.has(d)) return true;
+    if (set.has(d)) return true;
     const i = d.indexOf('.');
     if (i < 0) return false;
     d = d.slice(i + 1);
   }
   return false;
 }
+function openPhishHit(host) { return domainListHit(_opDomains, host); }
 
 // 将 feed 文本解析为去重域名数组（仅收录含点、无空格/端口冒号的「域名形态」，避免把异常行当域名污染名单）
 function extractOpenPhishDomains(text) {
-  const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // 跳过 # 开头的注释行：PhishDestroy 的 domains.txt 头部有
+  // "# Destroylist ... | 142,347 domains ..." 与 "# https://github.com/..."，
+  // 不过滤的话后者会被解析成 github.com 混进名单。
+  const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l.charAt(0) !== '#');
   const domains = new Set();
   for (const u of lines) {
     try {
@@ -464,7 +851,7 @@ async function maybeUpdateOpenPhish(force) {
 // OpenPhish 每日自动更新（仅启用时由后台 alarm 触发）；手动更新复用一次性 alarm，保证 SW 在抓取期间存活
 function notifyOpenPhishUpdated(r) {
   // 单向推送结果给设置页（无长连接，不受 MV3 SW 回收影响）；结果同时已写入 storage.local，设置页打开时会回读
-  try { chrome.runtime.sendMessage({ type: 'sf-openphish-updated', result: (r || { ok: true }) }); } catch (_) {}
+  sfBroadcast({ type: 'sf-openphish-updated', result: (r || { ok: true }) });
 }
 try {
   chrome.alarms.create('sfOpenPhishDaily', { periodInMinutes: 1440 });
@@ -483,6 +870,499 @@ try {
       }
     } catch (e) {
       notifyOpenPhishUpdated({ ok: false, error: String((e && e.message) || e) });
+    }
+  });
+} catch (e) {}
+
+// ===== PhishDestroy 本地钓鱼黑名单（与 OpenPhish 并列的第二个静态名单源）=====
+// 数据源：phishdestroy/destroylist 的 primary_active/domains.txt —— 约 14 万条「裸域名」，逐行一条，
+//   文件头部有 2 行 # 注释。抓取顺序按需求排定：jsDelivr CDN → GitHub raw(domains.txt) → GitHub raw(list.txt)，
+//   其后追加同内容的 jsDelivr 备用镜像与 GitHub 反代（与 OpenPhish 相同的可达性兜底策略）。
+// 落盘：chrome.storage.local
+//   · sfPhishDestroyDomains：整个名单压成「每行一个域名」的**字符串**（14 万条实测约 3~4MB，
+//     比字符串数组省一半配额与序列化开销）；
+//   · sfPhishDestroyMeta：{ updated, count, error, source }。
+// 常驻：解析成 Set 缓存在 service worker 内存（_pdDomains），访问网站时 O(1) 比对（含父域回溯），不再读盘。
+const PD_FEED_SOURCES = [
+  'https://cdn.jsdelivr.net/gh/phishdestroy/destroylist@main/rootlist/formats/primary_active/domains.txt',
+  'https://raw.githubusercontent.com/phishdestroy/destroylist/main/rootlist/formats/primary_active/domains.txt',
+  'https://raw.githubusercontent.com/phishdestroy/destroylist/main/list.txt',
+  'https://fastly.jsdelivr.net/gh/phishdestroy/destroylist@main/rootlist/formats/primary_active/domains.txt',
+  'https://gcore.jsdelivr.net/gh/phishdestroy/destroylist@main/rootlist/formats/primary_active/domains.txt',
+  'https://testingcf.jsdelivr.net/gh/phishdestroy/destroylist@main/rootlist/formats/primary_active/domains.txt',
+  'https://gh-proxy.com/https://raw.githubusercontent.com/phishdestroy/destroylist/main/rootlist/formats/primary_active/domains.txt'
+];
+const PD_DOMAINS_KEY = 'sfPhishDestroyDomains';
+const PD_META_KEY = 'sfPhishDestroyMeta';
+let _pdDomains = null;   // 内存缓存 Set（常驻）
+let _pdMeta = null;      // 内存缓存 meta（避免每次导航读 storage.local）
+
+async function loadPhishDestroyDomains() {
+  try {
+    const r = await new Promise((res) => chrome.storage.local.get({ [PD_DOMAINS_KEY]: '', [PD_META_KEY]: null }, res));
+    const raw = typeof r[PD_DOMAINS_KEY] === 'string' ? r[PD_DOMAINS_KEY] : '';
+    _pdDomains = new Set(raw ? raw.split('\n') : []);
+    _pdMeta = r[PD_META_KEY] || { updated: 0, count: _pdDomains.size, error: '' };
+  } catch (e) { _pdDomains = new Set(); _pdMeta = { updated: 0, count: 0, error: '' }; }
+  return _pdDomains;
+}
+
+function phishDestroyHit(host) { return domainListHit(_pdDomains, host); }
+
+async function fetchPhishDestroyFeed() {
+  const failures = [];
+  for (const src of PD_FEED_SOURCES) {
+    try {
+      // 14 万行、约 3.5MB，超时放宽到 40s（仍远小于 MV3 对 fetch 的容忍度，且 alarm 期间 SW 不会被回收）
+      const ctrl = new AbortController();
+      const to = setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, 40000);
+      let res;
+      try {
+        res = await fetch(src, { method: 'GET', cache: 'no-store', signal: ctrl.signal, redirect: 'follow' });
+      } finally {
+        clearTimeout(to);
+      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      const arr = extractOpenPhishDomains(text);   // 同一解析器：# 注释行与非域名行自动丢弃
+      if (arr.length === 0) throw new Error('内容非名单（无可解析域名）');
+      const meta = { updated: Date.now(), count: arr.length, error: '', source: src };
+      await new Promise((res2) => chrome.storage.local.set({
+        [PD_DOMAINS_KEY]: arr.join('\n'),   // 压成字符串落盘，省配额
+        [PD_META_KEY]: meta
+      }, res2));
+      _pdDomains = new Set(arr);
+      _pdMeta = meta;
+      return { ok: true, count: arr.length, source: src };
+    } catch (e) {
+      const host = (function () { try { return new URL(src).host; } catch (_) { return src; } })();
+      failures.push(host + ': ' + ((e && e.message) || String(e)));
+    }
+  }
+  const brief = failures.map(function (s) { return s.replace('Failed to fetch', '网络不可达'); }).join('；');
+  const errMsg = brief || '所有更新源均失败';
+  try {
+    _pdMeta = { updated: Date.now(), count: (_pdDomains ? _pdDomains.size : 0), error: errMsg };
+    await new Promise((res) => chrome.storage.local.set({ [PD_META_KEY]: _pdMeta }, res));
+  } catch (_) {}
+  return { ok: false, error: errMsg, attempts: failures.length };
+}
+
+async function maybeUpdatePhishDestroy(force) {
+  const s = await getSettings();
+  const pd = (s && s.phishdestroy) || {};
+  if (!pd.enabled && !force) return { ok: false, skipped: true };
+  let last = (_pdMeta && _pdMeta.updated) || 0;
+  if (!last) {
+    const meta = await new Promise((res) => chrome.storage.local.get({ [PD_META_KEY]: { updated: 0 } }, res));
+    last = (meta[PD_META_KEY] && meta[PD_META_KEY].updated) || 0;
+    if (!_pdMeta && meta[PD_META_KEY]) _pdMeta = meta[PD_META_KEY];
+  }
+  // 非强制：24 小时内已更新则跳过（每日自动更新即靠这条幂等约束，避免 SW 重启反复抓取）
+  if (!force && (Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: (_pdDomains ? _pdDomains.size : 0) };
+  return fetchPhishDestroyFeed();
+}
+
+function notifyPhishDestroyUpdated(r) {
+  sfBroadcast({ type: 'sf-phishdestroy-updated', result: (r || { ok: true }) });
+}
+
+try {
+  // 只在不存在时创建：避免 SW 每次冷启动都把周期的起点重置（OpenPhish 用的是无条件 create，这里改成幂等）
+  chrome.alarms.get('sfPhishDestroyDaily', function (a) {
+    if (!a) { try { chrome.alarms.create('sfPhishDestroyDaily', { periodInMinutes: 1440 }); } catch (e) {} }
+  });
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (!alarm) return;
+    try {
+      if (alarm.name === 'sfPhishDestroyDaily') {
+        const s = await getSettings();
+        const pd = (s && s.phishdestroy) || {};
+        if (!pd.enabled) return;                       // 未启用则不抓取
+        notifyPhishDestroyUpdated(await maybeUpdatePhishDestroy(false));
+      } else if (alarm.name === 'sfPhishDestroyManual') {
+        notifyPhishDestroyUpdated(await maybeUpdatePhishDestroy(true));   // 手动更新：强制抓取
+      }
+    } catch (e) {
+      notifyPhishDestroyUpdated({ ok: false, error: String((e && e.message) || e) });
+    }
+  });
+} catch (e) {}
+
+// ===== HaGeZi's Threat Intelligence Feeds（TIF）本地威胁情报黑名单 =====
+// 数据源：hagezi/dns-blocklists 的 adblock/tif.txt —— AdBlock 语法（||domain^），
+//   头部注释声明 181 万条，文本约 36MB，是 OpenPhish/PhishDestroy 的十几倍体量。
+//
+// ★ 2026-11-04 重写（上一版「180 万条双哈希 + 有序数组」实测导致扩展卡死、硬盘灯常亮）：
+//   上一版把 14.5MB 的 Uint32 表 base64 成 18.5MB 存进 storage.local，而 MV3 的 service worker
+//   空闲 30 秒就会被回收 —— 于是**每打开一个页面**、SW 被唤醒一次，就要重读 18.5MB JSON 字符串、
+//   atob 解码、再跑 1800 万次 charCodeAt 重建数组。一次导航就要几百 MB 的临时分配，
+//   浏览器表现为内存暴涨 + 磁盘狂读；再叠加几十 MB 名单的下载，就成了「更新 5 分钟不动」。
+//
+//   现在改用「布隆过滤器（Bloom Filter）+ IndexedDB 原始二进制」：
+//   · 构建：单次顺序扫描，边解析边置位 —— 不排序、不产生 180 万条字符串、不用 BigInt；
+//     181 万条 → 约 5MB 位图（22 bit/条目，15 个哈希，误判率约 2.5e-5，且**绝无漏判**）。
+//   · 落盘：位图以 ArrayBuffer 存进 IndexedDB（不经 JSON、不经 base64）。
+//   · 唤醒：SW 冷启动只需 1 次 IDB 读取（约 10~20ms）拿到 5MB 位图，**无需解码**。
+//   · 比对：15 次位测试，单域名约 3~5µs（含父域回溯）。
+//   · 下载：流式读取 + 进度回推（设置页能看到已下载 MB 数），单源 90s、总预算 4 分钟；
+//     同一时刻只允许一个更新任务（_hgUpdating 单飞），避免多个 alarm 同时抓大名单。
+//   代价：布隆过滤器有约 2.5e-5 的误判（约 4 万次访问可能出现 1 次误报），但不会有漏报；
+//   且本地不再保存明文域名（离线不可还原清单）。
+// 名单版本：full = tif.txt（181 万条 / 约 36MB）；medium = tif.medium.txt（31.8 万条 / 约 6.6MB，下载更快、误报更少）
+function hgFeedSources(variant) {
+  const file = (variant === 'medium') ? 'tif.medium.txt' : 'tif.txt';
+  return [
+    'https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/' + file,
+    'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/' + file,
+    'https://fastly.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/' + file,
+    'https://gcore.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/' + file,
+    'https://testingcf.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/' + file,
+    'https://gh-proxy.com/https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/' + file
+  ];
+}
+// 名单体积参考值（解压后的字节数）。CDN 通常以 gzip/br 传输，此时 content-length 是
+// **压缩后**的大小（36MB 的 tif.txt 压缩后约 8.3MB）。若直接拿它当进度分母，就会出现
+// 「20.0MB / 8.3MB（241%）」这种荒谬显示 —— 压缩传输时一律改用这里的参考值估算。
+const HG_EXPECTED_BYTES = { full: 37649904, medium: 6934911 };
+const HG_META_KEY = 'sfHaGeZiTifMeta';          // 只存「小字段」meta，供设置页展示
+const HG_LEGACY_KEYS = ['sfHaGeZiTifHashes'];   // 旧版 18.5MB base64 键，升级时清理
+const HG_DB_NAME = 'sfLocalLists';
+const HG_DB_STORE = 'lists';
+const HG_IDB_KEY = 'hagezi-tif';
+const HG_BITS_PER_ENTRY = 22;                   // m/n
+const HG_K = 15;                                // 哈希个数 → 误判率 ≈ 2.5e-5
+
+let _hgBits = null;        // Uint8Array 位图（约 5MB 常驻）
+let _hgM = 0;              // 位图总位数
+let _hgCount = 0;          // 名单条数
+let _hgMeta = null;        // { updated, count, error, source, lastAttempt }
+let _hgUpdating = false;   // 单飞锁：同一时刻只跑一个更新任务
+let _hgDbPromise = null;   // IDB 连接缓存
+let _hgLoadTried = false;  // 本次 SW 生命周期内是否已尝试过读取（没有名单时不必每个页面都重试）
+
+// ---------- IndexedDB：位图直接以 ArrayBuffer 存取（不经过 JSON / base64） ----------
+function hgOpenDB() {
+  if (_hgDbPromise) return _hgDbPromise;
+  _hgDbPromise = new Promise(function (resolve, reject) {
+    try {
+      if (typeof indexedDB === 'undefined') { reject(new Error('当前环境不支持 IndexedDB')); return; }
+      const req = indexedDB.open(HG_DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(HG_DB_STORE)) db.createObjectStore(HG_DB_STORE);
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { _hgDbPromise = null; reject(req.error || new Error('打开 IndexedDB 失败')); };
+      req.onblocked = function () { _hgDbPromise = null; reject(new Error('IndexedDB 被占用')); };
+    } catch (e) { _hgDbPromise = null; reject(e); }
+  });
+  return _hgDbPromise;
+}
+
+function hgIdbGet(key) {
+  return hgOpenDB().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      const tx = db.transaction(HG_DB_STORE, 'readonly');
+      const req = tx.objectStore(HG_DB_STORE).get(key);
+      req.onsuccess = function () { resolve(req.result || null); };
+      req.onerror = function () { reject(req.error || new Error('读取失败')); };
+    });
+  });
+}
+
+function hgIdbPut(key, value) {
+  return hgOpenDB().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      const tx = db.transaction(HG_DB_STORE, 'readwrite');
+      tx.objectStore(HG_DB_STORE).put(value, key);
+      tx.oncomplete = function () { resolve(true); };
+      tx.onerror = function () { reject(tx.error || new Error('写入失败')); };
+      tx.onabort = function () { reject(tx.error || new Error('写入被中止')); };
+    });
+  });
+}
+
+// ---------- 哈希：单趟扫描字符区间，顺便做 A-Z→a-z 折叠（不产生任何子串） ----------
+let _hgH1 = 0, _hgH2 = 0;
+function hgHashRange(s, start, end) {
+  let h1 = 0x811c9dc5, h2 = 0x27d4eb2d;
+  for (let i = start; i < end; i++) {
+    let c = s.charCodeAt(i);
+    if (c >= 65 && c <= 90) c += 32;
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h2 = Math.imul(h2, 2246822519) >>> 0;
+    h2 = (h2 ^ (h2 >>> 13)) >>> 0;
+  }
+  _hgH1 = h1 >>> 0; _hgH2 = h2 >>> 0;
+}
+
+// 15 个位置由 (h1 + i*h2) 派生（Kirsch–Mitzenmacher），只算一次哈希，避免逐字符 ×15
+function hgBloomTestRange(s, start, end) {
+  if (!_hgBits || !_hgM) return false;
+  hgHashRange(s, start, end);
+  const a = _hgH1, b = (_hgH2 | 1) >>> 0;
+  const bits = _hgBits, m = _hgM;
+  for (let i = 0; i < HG_K; i++) {
+    const idx = ((a + Math.imul(i, b)) >>> 0) % m;
+    if ((bits[idx >>> 3] & (1 << (idx & 7))) === 0) return false;
+  }
+  return true;
+}
+
+// 域名是否命中：精确 + 逐级回溯父域（与 OpenPhish / PhishDestroy 的连坐口径一致）
+function haGeZiHit(host) {
+  if (!_hgBits || !_hgM) return false;
+  let d = String(host || '').toLowerCase();
+  if (d.charAt(d.length - 1) === '.') d = d.slice(0, -1);
+  while (d) {
+    if (hgBloomTestRange(d, 0, d.length)) return true;
+    const i = d.indexOf('.');
+    if (i < 0) return false;
+    d = d.slice(i + 1);
+  }
+  return false;
+}
+
+// ---------- 构建：单趟扫描 AdBlock 规则 → 直接置位（分段让出主线程，避免 SW 被判定无响应） ----------
+async function buildHaGeZiBloom(text) {
+  const src = String(text);
+  const len = src.length;
+
+  // 规模：优先用头部 "! Number of entries: 1814363"，否则按 200 万估
+  let expect = 0;
+  const head = src.slice(0, Math.min(len, 4096));
+  const mm = head.match(/Number of entries:\s*([\d,]+)/i);
+  if (mm) expect = parseInt(mm[1].replace(/,/g, ''), 10) || 0;
+  const n = expect > 0 ? expect : 2000000;
+  const mBits = Math.ceil(n * HG_BITS_PER_ENTRY / 8) * 8;
+  const bits = new Uint8Array(mBits >>> 3);
+  const m = mBits;
+
+  let count = 0;
+  let start = 0;
+  let lastYield = 0;
+
+  for (let i = 0; i <= len; i++) {
+    if (i !== len && src.charCodeAt(i) !== 10) continue;
+    const s0 = start; start = i + 1;
+    if (i - lastYield > 4000000) {                 // 每约 4MB 让出一次事件循环
+      lastYield = i;
+      await new Promise(function (r) { setTimeout(r, 0); });
+    }
+    let p = s0;
+    // 行首空白
+    while (p < i && (src.charCodeAt(p) === 32 || src.charCodeAt(p) === 9 || src.charCodeAt(p) === 13)) p++;
+    if (p >= i) continue;
+    const c0 = src.charCodeAt(p);
+    if (c0 === 33 /* ! */ || c0 === 35 /* # */ || c0 === 91 /* [ */ || c0 === 47 /* / */ || c0 === 64 /* @ */) continue;
+    if (c0 !== 124 /* | */ || src.charCodeAt(p + 1) !== 124) continue;   // 只接受 ||domain^ 形态
+    p += 2;
+    // 扫描到 ^ / $ / / / | 为止，并顺带校验字符集
+    let e = p, dot = -1, bad = false, lastDot = -1;
+    for (; e < i; e++) {
+      const c = src.charCodeAt(e);
+      if (c === 94 /* ^ */ || c === 36 /* $ */ || c === 47 /* / */ || c === 124 /* | */) break;
+      if (c === 46 /* . */) { dot = e; lastDot = e; }
+      else if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 45 /* - */) { /* ok */ }
+      else { bad = true; break; }                  // * ~ _ 等异常字符直接丢弃
+    }
+    if (bad || dot < 0) continue;
+    let end = e;
+    if (src.charCodeAt(end - 1) === 46) end--;     // 结尾多余的点
+    if (end - p < 4) continue;
+    // 顶级域至少 2 个字符（lastDot 之后）
+    if (end - lastDot - 1 < 2) continue;
+    hgHashRange(src, p, end);
+    const a = _hgH1, b = (_hgH2 | 1) >>> 0;
+    for (let t = 0; t < HG_K; t++) {
+      const idx = ((a + Math.imul(t, b)) >>> 0) % m;
+      bits[idx >>> 3] |= (1 << (idx & 7));
+    }
+    count++;
+  }
+  return { bits: bits, m: m, count: count };
+}
+
+// ---------- 读写 ----------
+async function loadHaGeZiFilter(force) {
+  if (_hgBits && !force) return true;
+  if (_hgLoadTried && !force) return false;
+  _hgLoadTried = true;
+  try {
+    const rec = await hgIdbGet(HG_IDB_KEY);
+    if (rec && rec.bits && rec.m) {
+      _hgBits = new Uint8Array(rec.bits);
+      _hgM = rec.m;
+      _hgCount = rec.count || 0;
+      return true;
+    }
+  } catch (e) {}
+  // 没有新格式记录：清掉旧版 18.5MB 的 base64 键（释放配额与磁盘），并把 meta 复位
+  if (!_hgBits) {
+    try {
+      await new Promise(function (r) { chrome.storage.local.remove(HG_LEGACY_KEYS, r); });
+      const cur = await new Promise(function (r) { chrome.storage.local.get({ [HG_META_KEY]: null }, r); });
+      const meta = cur[HG_META_KEY];
+      if (meta && meta.updated && !(meta.error && meta.lastAttempt)) {
+        await new Promise(function (r) { chrome.storage.local.set({ [HG_META_KEY]: { updated: 0, count: 0, error: '旧版名单已被移除，请重新更新' } }, r); });
+      }
+    } catch (e) {}
+  }
+  return false;
+}
+
+// 统一的安全广播：chrome.runtime.sendMessage 在没有接收方（设置页已关闭）时会返回一个
+// **被拒绝的 Promise**（"Could not establish connection. Receiving end does not exist."）。
+// 原来的 try/catch 抓不到 Promise 拒绝，于是后台控制台不断出现 Uncaught (in promise)。
+// 这里改用回调式调用并读取 lastError：既不会产生未处理的拒绝，也不会打印告警。
+function sfBroadcast(msg) {
+  try {
+    chrome.runtime.sendMessage(msg, function () { void chrome.runtime.lastError; });
+  } catch (_) {}
+}
+
+function notifyHaGeZiUpdated(r) {
+  sfBroadcast({ type: 'sf-hagezi-updated', result: (r || { ok: true }) });
+}
+function notifyHaGeZiProgress(received, total, expected, stage) {
+  sfBroadcast({ type: 'sf-hagezi-progress', received: received, total: total, expected: expected || 0, stage: stage || 'download' });
+}
+
+// 流式读取响应体：边下边回报进度（约 36MB 静态名单，用户需要看到「有在动」）
+async function readBodyWithProgress(res, variant) {
+  try {
+    if (!res || !res.body || typeof res.body.getReader !== 'function') return await res.text();
+    const hdr = function (n) {
+      try { return (res.headers && res.headers.get && res.headers.get(n)) || ''; } catch (_) { return ''; }
+    };
+    const expected = HG_EXPECTED_BYTES[(variant === 'medium') ? 'medium' : 'full'] || 0;
+    let total = Number(hdr('content-length') || 0);
+    // ★ 压缩传输时 content-length 是压缩后的字节数，与实际收到的解压字节不可比 → 判为未知。
+    if (!(total > 0) || /gzip|br|deflate/i.test(hdr('content-encoding'))) total = 0;
+    // ★ 兜底：个别 CDN/代理会剥掉 content-encoding 却仍返回压缩尺寸的 content-length
+    //   （8.3MB vs 实际 36MB）。凡是明显小于该版本参考体积的，一律视为不可信。
+    if (total && expected && total < expected * 0.6) total = 0;
+    const reader = res.body.getReader();
+    const chunks = [];
+    let received = 0, lastNotify = 0;
+    for (;;) {
+      const step = await reader.read();
+      if (step.done) break;
+      const v = step.value;
+      chunks.push(v);
+      received += v.length;
+      // 兜底：即便 header 声称未压缩，只要实际字节超出（说明 header 不可信），立刻停用百分比
+      if (total && received > total * 1.02) total = 0;
+      if (received - lastNotify >= 4 * 1024 * 1024) { lastNotify = received; notifyHaGeZiProgress(received, total, expected); }
+    }
+    notifyHaGeZiProgress(received, total, expected);
+    const all = new Uint8Array(received);
+    let off = 0;
+    for (let i = 0; i < chunks.length; i++) { all.set(chunks[i], off); off += chunks[i].length; }
+    return new TextDecoder('utf-8').decode(all);
+  } catch (e) {
+    return await res.text();
+  }
+}
+
+async function fetchHaGeZiFeed(variant) {
+  const failures = [];
+  const startedAt = Date.now();
+  const sources = hgFeedSources(variant);
+  for (let si = 0; si < sources.length; si++) {
+    const src = sources[si];
+    if (Date.now() - startedAt > 240000) { failures.push('已超过本次更新总时限（4 分钟）'); break; }
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, 90000);
+      let res;
+      try {
+        res = await fetch(src, { method: 'GET', cache: 'no-store', signal: ctrl.signal, redirect: 'follow' });
+      } finally {
+        clearTimeout(to);
+      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      notifyHaGeZiProgress(0, 0, 0);                     // 「开始下载」信号
+      const text = await readBodyWithProgress(res, variant);
+      // 下载完后仍有几秒在解析置位：单独报一个阶段，避免用户以为卡在 99%
+      notifyHaGeZiProgress(text.length, 0, 0, 'build');
+      const built = await buildHaGeZiBloom(text);        // 边解析边置位，无排序、无 BigInt
+      if (!built.count) throw new Error('内容非名单（未解析到 ||domain^ 规则）');
+
+      await hgIdbPut(HG_IDB_KEY, { bits: built.bits.buffer, m: built.m, count: built.count, updated: Date.now(), source: src });
+      _hgBits = built.bits; _hgM = built.m; _hgCount = built.count;
+
+      const meta = { updated: Date.now(), count: built.count, bytes: text.length, error: '', source: src, variant: variant || 'full' };
+      _hgMeta = meta;
+      await new Promise(function (r) { chrome.storage.local.set({ [HG_META_KEY]: meta }, r); });
+      // 顺手清理旧版 18.5MB base64
+      try { chrome.storage.local.remove(HG_LEGACY_KEYS); } catch (e) {}
+      return { ok: true, count: built.count, source: src, bytes: text.length, ms: Date.now() - startedAt };
+    } catch (e) {
+      const h = (function () { try { return new URL(src).host; } catch (_) { return src; } })();
+      failures.push(h + ': ' + ((e && e.message) || String(e)));
+    }
+  }
+  const brief = failures.map(function (s) { return s.replace('Failed to fetch', '网络不可达'); }).join('；');
+  const errMsg = brief || '所有更新源均失败';
+  try {
+    const prev = (_hgMeta && _hgMeta.updated) || 0;     // 失败保留旧位图，不推进 updated
+    _hgMeta = { updated: prev, count: _hgCount, error: errMsg, lastAttempt: Date.now() };
+    await new Promise(function (r) { chrome.storage.local.set({ [HG_META_KEY]: _hgMeta }, r); });
+  } catch (_) {}
+  return { ok: false, error: errMsg, attempts: failures.length };
+}
+
+async function maybeUpdateHaGeZi(force) {
+  if (_hgUpdating) return { ok: false, skipped: true, busy: true };   // 单飞：避免并发下载大名单
+  const s = await getSettings();
+  const hg = (s && s.hagezi) || {};
+  if (!hg.enabled && !force) return { ok: false, skipped: true };
+  let meta = _hgMeta;
+  if (!meta || (!meta.updated && !meta.lastAttempt)) {
+    try {
+      meta = await new Promise(function (r) { chrome.storage.local.get({ [HG_META_KEY]: { updated: 0 } }, function (o) { r(o[HG_META_KEY] || { updated: 0 }); }); });
+    } catch (e) { meta = { updated: 0 }; }
+    _hgMeta = meta;
+  }
+  const last = (meta && meta.updated) || 0;
+  const lastTry = (meta && meta.lastAttempt) || 0;
+  if (!force) {
+    if ((Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: _hgCount };
+    if (lastTry && (Date.now() - lastTry) < 30 * 60 * 1000) return { ok: false, skipped: true };  // 失败后 30 分钟内不再重试
+  }
+  const variant = (hg.variant === 'medium') ? 'medium' : 'full';
+  // 版本切换后必须重新抓取（旧位图与新版名单不对应）
+  const variantChanged = !!(_hgMeta && _hgMeta.variant && _hgMeta.variant !== variant);
+  if (variantChanged) force = true;
+  _hgUpdating = true;
+  try {
+    return await fetchHaGeZiFeed(variant);
+  } finally {
+    _hgUpdating = false;
+  }
+}
+
+try {
+  chrome.alarms.get('sfHaGeZiDaily', function (a) {
+    if (!a) { try { chrome.alarms.create('sfHaGeZiDaily', { periodInMinutes: 1440 }); } catch (e) {} }
+  });
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (!alarm) return;
+    if (alarm.name !== 'sfHaGeZiDaily' && alarm.name !== 'sfHaGeZiManual') return;
+    try {
+      if (alarm.name === 'sfHaGeZiDaily') {
+        const s = await getSettings();
+        const hg = (s && s.hagezi) || {};
+        if (!hg.enabled) return;
+        notifyHaGeZiUpdated(await maybeUpdateHaGeZi(false));
+      } else {
+        notifyHaGeZiUpdated(await maybeUpdateHaGeZi(true));
+      }
+    } catch (e) {
+      notifyHaGeZiUpdated({ ok: false, error: String((e && e.message) || e) });
     }
   });
 } catch (e) {}
@@ -665,6 +1545,8 @@ function isTainted(state, tabId) {
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(function () {
     loadOpenPhishDomains().catch(function () {});
+    loadPhishDestroyDomains().catch(function () {});   // PhishDestroy 同样启动即载入内存常驻
+    loadHaGeZiFilter().catch(function () {});          // HaGeZi TIF：从 IndexedDB 直接取位图（约 5MB，无需解码）
   });
 }
 
@@ -676,9 +1558,17 @@ chrome.runtime.onInstalled.addListener(function (details) {  chrome.storage.sync
   });
   // OpenPhish：预热内存名单；若已启用则触发一次更新（避免首次启用后 24h 内无名单可用）
   loadOpenPhishDomains().catch(function () {});
+  // PhishDestroy：同上（首次启用后立即抓一次，之后由每日 alarm 维护）
+  loadPhishDestroyDomains().catch(function () {});
+  // HaGeZi TIF：同上（哈希表本地解码，首次启用后立即抓一次）
+  loadHaGeZiFilter().catch(function () {});
   getSettings().then(function (s) {
     const op = (s && s.openphish) || {};
     if (op.enabled) maybeUpdateOpenPhish(false);
+    const pd = (s && s.phishdestroy) || {};
+    if (pd.enabled) maybeUpdatePhishDestroy(false);
+    const hg = (s && s.hagezi) || {};
+    if (hg.enabled) maybeUpdateHaGeZi(false);
   }).catch(function () {});
   // OOBE 首次引导向导已移除：安装/升级不再弹出初始化设置页
   if (details.reason === 'update') {
@@ -1589,7 +2479,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           try {
             const r = await p.query(host, key, msg.url || '');
             if (r && r.malicious) {
-              results.push({ id: p.id, name: p.name, hasScore: !!p.hasScore, soft: !!r.soft, score: r.score, scoreMax: r.scoreMax, detail: r.detail, src: r.src, order: (p.order || 0) });
+              results.push({ id: p.id, name: p.name, hasScore: !!p.hasScore, soft: !!r.soft, score: r.score, scoreMax: r.scoreMax, detail: r.detail, src: r.src, vtLevel: r.vtLevel || '', verdictText: r.verdictText || '', engines: Array.isArray(r.engines) ? r.engines : [], stale: !!r.stale, facts: Array.isArray(r.facts) ? r.facts : [], order: (p.order || 0) });
             } else if (r && r.error) {
               errors.push({ id: p.id, name: p.name, status: (r.status || null), reason: (r.reason || 'unknown'), detail: (r.detail || '') });
             }
@@ -1623,6 +2513,48 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         // meta 已常驻内存，不再每次导航都读一次 storage.local（原实现多花 1~2ms 且推迟横幅）
         if (!_opMeta) { try { _opMeta = await new Promise((res) => chrome.storage.local.get({ [SF_OP_META_KEY]: { updated: 0 } }, (o) => res(o[SF_OP_META_KEY] || { updated: 0 }))); } catch (e) {} }
         try { sendResponse({ listed: listed, count: (_opDomains ? _opDomains.size : 0), updated: ((_opMeta && _opMeta.updated) || 0) }); } catch (e) {}
+      } catch (e) { try { sendResponse({ listed: false, count: 0, updated: 0 }); } catch (_) {} }
+    })();
+    return true;
+  }
+
+  // ===== PhishDestroy 本地钓鱼黑名单 =====
+  if (msg.type === 'sf-phishdestroy-update') {
+    // 与 OpenPhish 相同：立即 ACK，抓取交给一次性 alarm，结果用单向消息回推设置页
+    try { chrome.alarms.create('sfPhishDestroyManual', { when: Date.now() + 200 }); } catch (e) {}
+    try { sendResponse({ started: true }); } catch (e) {}
+    return true;
+  }
+  if (msg.type === 'sf-phishdestroy-check') {
+    // 内容脚本访问网站时调用：与常驻内存的 Set 比对（精确 + 父域回溯），不读 storage.local
+    (async () => {
+      try {
+        if (!_pdDomains) await loadPhishDestroyDomains();
+        const host = (msg.hostname || '').toLowerCase();
+        const listed = phishDestroyHit(host);
+        if (!_pdMeta) { try { _pdMeta = await new Promise((res) => chrome.storage.local.get({ [PD_META_KEY]: { updated: 0 } }, (o) => res(o[PD_META_KEY] || { updated: 0 }))); } catch (e) {} }
+        try { sendResponse({ listed: listed, count: (_pdDomains ? _pdDomains.size : 0), updated: ((_pdMeta && _pdMeta.updated) || 0) }); } catch (e) {}
+      } catch (e) { try { sendResponse({ listed: false, count: 0, updated: 0 }); } catch (_) {} }
+    })();
+    return true;
+  }
+  // ===== HaGeZi's TIF 本地威胁情报黑名单 =====
+  if (msg.type === 'sf-hagezi-update') {
+    // 同 OpenPhish / PhishDestroy：立即 ACK，抓取交给一次性 alarm（完整版约 36MB，下载耗时较长，避免长连接被回收）
+    try { chrome.alarms.create('sfHaGeZiManual', { when: Date.now() + 200 }); } catch (e) {}
+    try { sendResponse({ started: true }); } catch (e) {}
+    return true;
+  }
+  if (msg.type === 'sf-hagezi-check') {
+    (async () => {
+      try {
+        if (!_hgBits) await loadHaGeZiFilter();
+        const host = (msg.hostname || '').toLowerCase();
+        const listed = haGeZiHit(host);
+        if (!_hgMeta) {
+          try { _hgMeta = await new Promise((res) => chrome.storage.local.get({ [HG_META_KEY]: { updated: 0 } }, (o) => res(o[HG_META_KEY] || { updated: 0 }))); } catch (e) {}
+        }
+        try { sendResponse({ listed: listed, count: _hgCount, updated: ((_hgMeta && _hgMeta.updated) || 0) }); } catch (e) {}
       } catch (e) { try { sendResponse({ listed: false, count: 0, updated: 0 }); } catch (_) {} }
     })();
     return true;

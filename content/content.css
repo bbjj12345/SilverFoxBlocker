@@ -191,16 +191,44 @@
 .sf-intel-banner .sf-ib-text { flex: 1 1 auto !important; min-width: 0 !important; line-height: 1.45 !important; text-align: left !important; word-break: break-word !important; }
 .sf-intel-banner .sf-ib-sub { flex: 1 1 100% !important; font-size: calc(11px * var(--sf-scale)) !important; font-weight: 500 !important;
   opacity: .92 !important; text-align: left !important; margin-top: 2px !important; }
+/* 横幅末尾的通用安全提醒（所有第三方情报 / 本地黑名单横幅共用），分隔线 + 小字，不抢正文 */
+.sf-intel-banner .sf-ib-tip { flex: 1 1 100% !important; font-size: calc(11px * var(--sf-scale)) !important; font-weight: 600 !important;
+  line-height: 1.4 !important; text-align: left !important; margin-top: 3px !important; padding-top: 5px !important;
+  border-top: 1px solid rgba(255,255,255,.28) !important; word-break: break-word !important; }
+/* GSB 免责声明：数据来源归因 + 「可靠性与准确性无法保证」（Google 服务条款要求），字号更小、权重更低 */
+.sf-intel-banner .sf-ib-note { flex: 1 1 100% !important; font-size: calc(10.5px * var(--sf-scale)) !important; font-weight: 500 !important;
+  line-height: 1.4 !important; text-align: left !important; margin-top: 2px !important; opacity: .86 !important;
+  word-break: break-word !important; }
 .sf-intel-banner .sf-ib-close { flex: none !important; cursor: pointer !important; border: 1px solid rgba(255,255,255,.55) !important;
   background: rgba(255,255,255,.18) !important; color: #fff !important; border-radius: 10px !important; padding: 6px 13px !important;
   font-size: calc(12px * var(--sf-scale)) !important; font-weight: 700 !important; font-family: inherit !important; }
 .sf-intel-banner .sf-ib-close:hover { background: rgba(255,255,255,.3) !important; }
+/* VT「详情」按钮：位于「知道了」左侧，描边样式，视觉权重低于主按钮 */
+.sf-intel-banner .sf-ib-detail-btn { flex: none !important; cursor: pointer !important; border: 1px solid rgba(255,255,255,.42) !important;
+  background: rgba(255,255,255,.10) !important; color: #fff !important; border-radius: 10px !important; padding: 6px 12px !important;
+  font-size: calc(12px * var(--sf-scale)) !important; font-weight: 700 !important; font-family: inherit !important; }
+.sf-intel-banner .sf-ib-detail-btn:hover { background: rgba(255,255,255,.26) !important; }
+/* 展开后的引擎明细：独占整行、可滚动，逐条「引擎名 等级 类别」（如「Kaspersky 顶级引擎 Phishing」） */
+.sf-intel-banner .sf-ib-detail { flex: 1 1 100% !important; display: none !important; margin-top: 3px !important; padding-top: 6px !important;
+  border-top: 1px solid rgba(255,255,255,.28) !important; font-size: calc(11px * var(--sf-scale)) !important; font-weight: 600 !important;
+  line-height: 1.55 !important; text-align: left !important; max-height: 190px !important; overflow-y: auto !important; overscroll-behavior: contain !important; }
+.sf-intel-banner .sf-ib-detail.sf-ib-detail-open { display: block !important; }
+.sf-intel-banner .sf-ib-detail-row { white-space: normal !important; word-break: break-word !important; padding: 1px 0 !important; }
+/* 明细允许选中复制（上面的通用规则把横幅文字设为不可选，这里单独放开） */
+.sf-intel-banner .sf-ib-detail,
+.sf-intel-banner .sf-ib-detail * { user-select: text !important; -webkit-user-select: text !important; }
 .sf-intel-banner.sf-font-smiley { font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important; }
 .sf-intel-banner.sf-closing { animation: sf-bar-out .28s ease both !important; }
-/* 软判定源（如 Google Safe Browsing）：用琥珀/橙色调表达「疑似」，与确认类情报源（红）区分，呼应「疑似/可能」限定措辞 */
+/* VT「可能是误报」：琥珀/橙色调表达「仅供参考的低置信度结论」，与「请保持谨慎」（默认红粉）、
+   「请提高警惕」（深警示红）形成三档递进。URLhaus / NetAPI / GSB 已按需求统一改用默认红粉。 */
 .sf-intel-banner.sf-soft { background: linear-gradient(90deg, rgba(214,148,28,.97), rgba(198,132,32,.95)) !important; border-color: rgba(255,224,170,.6) !important; }
-/* OpenPhish 本地黑名单命中：深红（与 GSB「疑似」琥珀色、VT 红粉区分），表达「确已被拉黑」的确定性 */
-.sf-intel-banner.sf-openphish { background: linear-gradient(90deg, rgba(140,18,42,.97), rgba(120,30,60,.96)) !important; border-color: rgba(255,170,190,.55) !important; }
+/* VT「请提高警惕」：在默认红粉之上再加一档，用更深的警示红表达最高严重度 */
+.sf-intel-banner.sf-vt-alert { background: linear-gradient(90deg, rgba(158,12,26,.98), rgba(112,6,18,.98)) !important; border-color: rgba(255,140,140,.7) !important; }
+/* 三个本地黑名单（OpenPhish / PhishDestroy / HaGeZi TIF）统一使用同一套青蓝配色：
+   它们表达的是同一种结论「已被某名单拉黑」，无需靠颜色区分来源，文案里已写明来源名。 */
+.sf-intel-banner.sf-openphish,
+.sf-intel-banner.sf-phishdestroy,
+.sf-intel-banner.sf-hagezi { background: linear-gradient(90deg, rgba(16,104,128,.97), rgba(20,78,116,.96)) !important; border-color: rgba(168,226,255,.6) !important; }
 /* 抗页面样式覆盖 */
 .sf-intel-banner, .sf-intel-banner * { color: #fff !important; -webkit-text-fill-color: #fff !important; user-select: none !important; -webkit-user-select: none !important; }
 
