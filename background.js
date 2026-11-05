@@ -102,6 +102,9 @@ const DEFAULTS = {
       googlesafebrowsing: { enabled: false, apiKey: '' }
     }
   },
+  // 社区维护的本地黑名单总开关（默认关闭）：关闭时三个名单既不加载、不自动更新，也不参与比对。
+  // 开启后各名单再按自己的 enabled 开关决定是否参与。后续新增名单沿用同一结构即可。
+  communityLists: { enabled: false },
   // OpenPhish 本地钓鱼黑名单：免费 feed.txt（无需 API Key），默认每天自动更新一次，
   // 名单保存在 chrome.storage.local；访问网站时与本地静态名单（域名集合）比对，命中即渲染横幅。
   openphish: { enabled: false, lastUpdated: 0 },
@@ -767,6 +770,21 @@ function domainListHit(set, host) {
 }
 function openPhishHit(host) { return domainListHit(_opDomains, host); }
 
+// 社区维护的本地黑名单总开关（默认关）：关闭时三个名单不加载、不更新、不比对。
+// 单独抽成函数，后续新增名单只需在后台上沿用同一个判定，不必重复读 settings。
+async function communityListsOn() {
+  try {
+    const s = await getSettings();
+    return !!(s && s.communityLists && s.communityLists.enabled);
+  } catch (e) { return false; }
+}
+// 关闭总开关时立刻释放常驻内存（HaGeZi 位图约 5MB），不必等 SW 被回收
+function releaseCommunityLists() {
+  _opDomains = null; _opMeta = null;
+  _pdDomains = null; _pdMeta = null;
+  _hgBits = null; _hgMeta = null; _hgCount = 0; _hgLoadTried = false;
+}
+
 // 将 feed 文本解析为去重域名数组（仅收录含点、无空格/端口冒号的「域名形态」，避免把异常行当域名污染名单）
 function extractOpenPhishDomains(text) {
   // 跳过 # 开头的注释行：PhishDestroy 的 domains.txt 头部有
@@ -835,6 +853,7 @@ async function fetchOpenPhishFeed() {
 
 async function maybeUpdateOpenPhish(force) {
   const s = await getSettings();
+  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
   const op = (s && s.openphish) || {};
   if (!op.enabled && !force) return { ok: false, skipped: true };
   let last = (_opMeta && _opMeta.updated) || 0;
@@ -950,6 +969,7 @@ async function fetchPhishDestroyFeed() {
 
 async function maybeUpdatePhishDestroy(force) {
   const s = await getSettings();
+  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
   const pd = (s && s.phishdestroy) || {};
   if (!pd.enabled && !force) return { ok: false, skipped: true };
   let last = (_pdMeta && _pdMeta.updated) || 0;
@@ -1318,6 +1338,7 @@ async function fetchHaGeZiFeed(variant) {
 async function maybeUpdateHaGeZi(force) {
   if (_hgUpdating) return { ok: false, skipped: true, busy: true };   // 单飞：避免并发下载大名单
   const s = await getSettings();
+  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
   const hg = (s && s.hagezi) || {};
   if (!hg.enabled && !force) return { ok: false, skipped: true };
   let meta = _hgMeta;
@@ -1416,6 +1437,11 @@ function getSettings() {
 if (chrome.storage && chrome.storage.onChanged) {
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area === 'sync' && _settingsCache) _settingsCache = null; // 任意 sync 设置变更 → 下次 getSettings 重新拉取
+    // 社区名单总开关被关掉 → 立即释放常驻内存（OpenPhish/PhishDestroy 的 Set 与 HaGeZi 位图）
+    if (area === 'sync' && changes.communityLists) {
+      const cl = changes.communityLists.newValue || {};
+      if (!cl.enabled) releaseCommunityLists();
+    }
     // session 里的 releasedHosts 被外部改写（如设置页清空放行记录）→ 同步内存镜像
     if (area === 'session' && changes.releasedHosts) refreshReleasedCache();
   });
@@ -1542,11 +1568,20 @@ function isTainted(state, tabId) {
 
 // 浏览器启动即把本地黑名单载入内存（服务 Worker 冷启动时也走这里），
 // 使首个页面的比对不需要再等一次异步读取。
+// 暖加载：仅当「总开关 + 该名单自身开关」都开启时才把名单搬进内存，避免默认关时白读 5MB 位图
+async function warmCommunityLists() {
+  try {
+    if (!(await communityListsOn())) return;
+    const s = await getSettings();
+    if (s.openphish && s.openphish.enabled) loadOpenPhishDomains().catch(function () {});
+    if (s.phishdestroy && s.phishdestroy.enabled) loadPhishDestroyDomains().catch(function () {});
+    if (s.hagezi && s.hagezi.enabled) loadHaGeZiFilter().catch(function () {});   // IndexedDB 直接取位图，无需解码
+  } catch (e) {}
+}
+
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(function () {
-    loadOpenPhishDomains().catch(function () {});
-    loadPhishDestroyDomains().catch(function () {});   // PhishDestroy 同样启动即载入内存常驻
-    loadHaGeZiFilter().catch(function () {});          // HaGeZi TIF：从 IndexedDB 直接取位图（约 5MB，无需解码）
+    warmCommunityLists();
   });
 }
 
@@ -1556,19 +1591,16 @@ chrome.runtime.onInstalled.addListener(function (details) {  chrome.storage.sync
   chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, function (r) {
     if (!r.stats) chrome.storage.local.set({ stats: { warnings: 0, blocks: 0, recent: [] } });
   });
-  // OpenPhish：预热内存名单；若已启用则触发一次更新（避免首次启用后 24h 内无名单可用）
-  loadOpenPhishDomains().catch(function () {});
-  // PhishDestroy：同上（首次启用后立即抓一次，之后由每日 alarm 维护）
-  loadPhishDestroyDomains().catch(function () {});
-  // HaGeZi TIF：同上（哈希表本地解码，首次启用后立即抓一次）
-  loadHaGeZiFilter().catch(function () {});
+  // 社区名单：仅在总开关与各名单开关都开启时预热内存，并在已启用时触发一次更新
+  // （避免首次启用后 24h 内无名单可用；已更新的名单会被 maybeUpdate* 的 24h 幂等约束跳过）
   getSettings().then(function (s) {
+    if (!(s && s.communityLists && s.communityLists.enabled)) return;
     const op = (s && s.openphish) || {};
-    if (op.enabled) maybeUpdateOpenPhish(false);
+    if (op.enabled) { loadOpenPhishDomains().catch(function () {}); maybeUpdateOpenPhish(false); }
     const pd = (s && s.phishdestroy) || {};
-    if (pd.enabled) maybeUpdatePhishDestroy(false);
+    if (pd.enabled) { loadPhishDestroyDomains().catch(function () {}); maybeUpdatePhishDestroy(false); }
     const hg = (s && s.hagezi) || {};
-    if (hg.enabled) maybeUpdateHaGeZi(false);
+    if (hg.enabled) { loadHaGeZiFilter().catch(function () {}); maybeUpdateHaGeZi(false); }
   }).catch(function () {});
   // OOBE 首次引导向导已移除：安装/升级不再弹出初始化设置页
   if (details.reason === 'update') {
@@ -2507,6 +2539,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     // 内容脚本访问网站时调用：与本地静态名单（域名集合）比对（精确 + 父域回溯）
     (async () => {
       try {
+        if (!(await communityListsOn())) { try { sendResponse({ listed: false, count: 0, updated: 0, disabled: true }); } catch (_) {} return; }
         if (!_opDomains) await loadOpenPhishDomains();
         const host = (msg.hostname || '').toLowerCase();
         const listed = openPhishHit(host);
@@ -2529,6 +2562,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     // 内容脚本访问网站时调用：与常驻内存的 Set 比对（精确 + 父域回溯），不读 storage.local
     (async () => {
       try {
+        if (!(await communityListsOn())) { try { sendResponse({ listed: false, count: 0, updated: 0, disabled: true }); } catch (_) {} return; }
         if (!_pdDomains) await loadPhishDestroyDomains();
         const host = (msg.hostname || '').toLowerCase();
         const listed = phishDestroyHit(host);
@@ -2548,6 +2582,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (msg.type === 'sf-hagezi-check') {
     (async () => {
       try {
+        if (!(await communityListsOn())) { try { sendResponse({ listed: false, count: 0, updated: 0, disabled: true }); } catch (_) {} return; }
         if (!_hgBits) await loadHaGeZiFilter();
         const host = (msg.hostname || '').toLowerCase();
         const listed = haGeZiHit(host);

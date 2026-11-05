@@ -148,7 +148,7 @@
             <div class="row" style="border:0;padding:0" data-page-node-id="sfTiRow1">
               <div class="rl" data-page-node-id="sfTiRl1">
                 <div class="rt" data-page-node-id="sfTiRt1">威胁情报 API（可选）</div>
-                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal（需自有 Key）、URLhaus 与 NetAPI（均无需 Key）。三者横幅自上而下依次为 VirusTotal → URLhaus → NetAPI，仅显示判为恶意的情报源；任一未检出则后续自动上移补位。</div>
+                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal（需自有 Key）、URLhaus（无需 Key）、NetAPI（无需 Key）、Google Safe Browsing（需自有 Key）。四者横幅自上而下依次为 VirusTotal → URLhaus → NetAPI → Google Safe Browsing，仅显示判为恶意的情报源；任一未检出则后续自动上移补位。</div>
               </div>
               <label class="switch" data-page-node-id="sfTiSw1"><input type="checkbox" id="tiEnabled" data-page-node-id="sfTiCb1"><span class="slider" data-page-node-id="sfTiSl1"></span></label>
             </div>
@@ -272,51 +272,65 @@
               </div>
           </div>
         </div>
-        <div class="card" data-page-node-id="sfOpCard">
-          <div class="field" data-page-node-id="sfOpField">
-            <div class="rl" data-page-node-id="sfOpRl">
-              <div class="rt" data-page-node-id="sfOpRt">OpenPhish 本地钓鱼黑名单</div>
-              <div class="rd" data-page-node-id="sfOpRd">启用后，扩展每日自动从 OpenPhish 免费 feed 抓取最新钓鱼 URL 名单并保存在本地（chrome.storage.local，不上传）；访问网站时与本地静态名单（域名集合）实时比对，命中即渲染横幅「OpenPhish 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
+        <!-- 社区维护的本地黑名单（可选，默认关闭；开启后展开各名单子开关。新增名单只需在同结构内追加一个 .ti-provider） -->
+        <div class="card" data-page-node-id="sfClCard">
+          <div class="field" data-page-node-id="sfClField">
+            <div class="row" style="border:0;padding:0" data-page-node-id="sfClRow1">
+              <div class="rl" data-page-node-id="sfClRl1">
+                <div class="rt" data-page-node-id="sfClRt1">社区维护的本地黑名单（可选）</div>
+                <div class="rd" data-page-node-id="sfClRd1">启用后展示可选的社区名单。名单每日自动抓取并保存在本地（chrome.storage.local / IndexedDB，不上传、不发送任何查询内容），浏览器启动时载入内存常驻，访问网站时在本地比对，命中即渲染横幅。默认关闭，不影响任何本地检测。当前开放 OpenPhish、PhishDestroy 与 HaGeZi's Threat Intelligence Feeds；需各自单独开启才会参与比对，横幅自上而下依次为 OpenPhish → PhishDestroy → HaGeZi's TIF。</div>
+              </div>
+              <label class="switch" data-page-node-id="sfClSw1"><input type="checkbox" id="communityListsEnabled" data-page-node-id="sfClCb1"><span class="slider" data-page-node-id="sfClSl1"></span></label>
             </div>
-            <label class="switch" data-page-node-id="sfOpSw"><input type="checkbox" id="openphishEnabled" data-page-node-id="sfOpCb"><span class="slider" data-page-node-id="sfOpSl"></span></label>
-          </div>
-          <div style="margin:10px 0 2px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
-            <button id="openphishUpdateBtn" type="button" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:7px 14px; font-weight:600;">立即更新</button>
-            <span id="openphishStatus" class="hint" style="margin:0"></span>
-          </div>
-        </div>
-        <div class="card" data-page-node-id="sfPdCard">
-          <div class="field" data-page-node-id="sfPdField">
-            <div class="rl" data-page-node-id="sfPdRl">
-              <div class="rt" data-page-node-id="sfPdRt">PhishDestroy 本地钓鱼黑名单</div>
-              <div class="rd" data-page-node-id="sfPdRd">与 OpenPhish 并列的第二个静态名单源（约 14 万条域名）。启用后扩展每日自动从 PhishDestroy Destroylist 抓取最新名单并保存在本地（chrome.storage.local，不上传）；浏览器启动时即载入内存常驻，访问网站时与本地名单（域名集合）实时比对，命中即渲染横幅「PhishDestroy 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
+            <div id="communityProviders" class="ti-providers" style="display:none" data-page-node-id="sfClProv">
+              <div class="ti-provider" data-page-node-id="sfClOp">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClOpRow">
+                  <div class="rl" data-page-node-id="sfClOpRl">
+                    <div class="rt" data-page-node-id="sfClOpRt">OpenPhish 本地钓鱼黑名单</div>
+                    <div class="rd" data-page-node-id="sfClOpRd">启用后，扩展每日自动从 OpenPhish 免费 feed 抓取最新钓鱼 URL 名单并保存在本地（chrome.storage.local，不上传）；访问网站时与本地静态名单（域名集合）实时比对，命中即渲染横幅「OpenPhish 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClOpSw"><input type="checkbox" id="openphishEnabled" data-page-node-id="openphishEnabledId"><span class="slider" data-page-node-id="sfClOpSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="openphishUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="openphishStatus" class="hint" style="margin:0"></span>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfClPd">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClPdRow">
+                  <div class="rl" data-page-node-id="sfClPdRl">
+                    <div class="rt" data-page-node-id="sfClPdRt">PhishDestroy 本地钓鱼黑名单</div>
+                    <div class="rd" data-page-node-id="sfClPdRd">与 OpenPhish 并列的第二个静态名单源（约 14 万条域名）。启用后扩展每日自动从 PhishDestroy Destroylist 抓取最新名单并保存在本地（chrome.storage.local，不上传）；浏览器启动时即载入内存常驻，访问网站时与本地名单（域名集合）实时比对，命中即渲染横幅「PhishDestroy 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClPdSw"><input type="checkbox" id="phishdestroyEnabled" data-page-node-id="phishdestroyEnabledId"><span class="slider" data-page-node-id="sfClPdSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="phishdestroyUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="phishdestroyStatus" class="hint" style="margin:0"></span>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfClHg">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClHgRow">
+                  <div class="rl" data-page-node-id="sfClHgRl">
+                    <div class="rt" data-page-node-id="sfClHgRt">HaGeZi's Threat Intelligence Feeds 黑名单</div>
+                    <div class="rd" data-page-node-id="sfClHgRd">第三个静态名单源，规模约 181 万条域名（恶意软件、挖矿、诈骗、垃圾邮件与钓鱼）。启用后扩展每日自动从 hagezi/dns-blocklists 的 tif.txt 抓取，并以「布隆过滤器位图」形式保存在本地 IndexedDB（约 5MB，不上传、不保存明文域名）；浏览器启动时直接读取该位图常驻内存，访问网站时与本地名单实时比对（精确 + 父域回溯），命中即渲染横幅「HaGeZi's TIF 已将其拉黑」。也可随时手动「立即更新」，更新过程会实时显示下载进度。无需 API Key。误判率约 2.5e-5，且不会漏判。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClHgSw"><input type="checkbox" id="hageziEnabled" data-page-node-id="hageziEnabledId"><span class="slider" data-page-node-id="sfClHgSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="hageziUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="hageziStatus" class="hint" style="margin:0"></span>
+                </div>
+                <div style="margin:0 0 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                  <label for="hageziVariant" style="font-size:13px">名单版本</label>
+                  <select id="hageziVariant" class="ti-select">
+                    <option value="full">完整版（181 万条，约 36MB 下载，最全）</option>
+                    <option value="medium">中等版（31.8 万条，约 6.6MB 下载，更轻快）</option>
+                  </select>
+                  <span class="hint" style="margin:0">切换版本后会自动重新抓取一次</span>
+                </div>
+              </div>
             </div>
-            <label class="switch" data-page-node-id="sfPdSw"><input type="checkbox" id="phishdestroyEnabled" data-page-node-id="sfPdCb"><span class="slider" data-page-node-id="sfPdSl"></span></label>
-          </div>
-          <div style="margin:10px 0 2px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
-            <button id="phishdestroyUpdateBtn" type="button" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:7px 14px; font-weight:600;">立即更新</button>
-            <span id="phishdestroyStatus" class="hint" style="margin:0"></span>
-          </div>
-        </div>
-        <div class="card" data-page-node-id="sfHgCard">
-          <div class="field" data-page-node-id="sfHgField">
-            <div class="rl" data-page-node-id="sfHgRl">
-              <div class="rt" data-page-node-id="sfHgRt">HaGeZi's Threat Intelligence Feeds 黑名单</div>
-              <div class="rd" data-page-node-id="sfHgRd">第三个静态名单源，规模约 181 万条域名（恶意软件、挖矿、诈骗、垃圾邮件与钓鱼）。启用后扩展每日自动从 hagezi/dns-blocklists 的 tif.txt 抓取，并以「布隆过滤器位图」形式保存在本地 IndexedDB（约 5MB，不上传、不保存明文域名）；浏览器启动时直接读取该位图常驻内存，访问网站时与本地名单实时比对（精确 + 父域回溯），命中即渲染横幅「HaGeZi's TIF 已将其拉黑」。也可随时手动「立即更新」，更新过程会实时显示下载进度。无需 API Key。误判率约 2.5e-5，且不会漏判。</div>
-            </div>
-            <label class="switch" data-page-node-id="sfHgSw"><input type="checkbox" id="hageziEnabled" data-page-node-id="sfHgCb"><span class="slider" data-page-node-id="sfHgSl"></span></label>
-          </div>
-          <div style="margin:10px 0 2px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
-            <button id="hageziUpdateBtn" type="button" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:7px 14px; font-weight:600;">立即更新</button>
-            <span id="hageziStatus" class="hint" style="margin:0"></span>
-          </div>
-          <div style="margin:8px 0 2px; display:flex; align-items:center; gap:8px; flex-wrap:wrap">
-            <label for="hageziVariant" style="font-size:13px">名单版本</label>
-            <select id="hageziVariant" style="cursor:pointer; border:1px solid var(--sf-border,#3a3f4b); background:var(--sf-surface,#23262f); color:inherit; border-radius:10px; padding:6px 10px; font-weight:600;">
-              <option value="full">完整版（181 万条，约 36MB 下载，最全）</option>
-              <option value="medium">中等版（31.8 万条，约 6.6MB 下载，更轻快）</option>
-            </select>
-            <span class="hint" style="margin:0">切换版本后会自动重新抓取一次</span>
           </div>
         </div>
         <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">

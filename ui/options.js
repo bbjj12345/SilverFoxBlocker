@@ -46,6 +46,9 @@ const DEFAULTS = {
       googlesafebrowsing: { enabled: false, apiKey: '' }
     }
   },
+  // 社区维护的本地黑名单总开关（默认关闭）：关闭时三个名单不加载、不更新、不参与比对；
+  // 开启后各名单再按自己的 enabled 开关决定是否参与。后续新增名单只需在此结构下追加。
+  communityLists: { enabled: false },
   // OpenPhish 本地钓鱼黑名单：免费 feed，无需 Key；默认每天自动更新，名单存于 storage.local
   openphish: { enabled: false, lastUpdated: 0 },
   // PhishDestroy 本地钓鱼黑名单：第二个静态名单源（约 14 万条域名），机制与 OpenPhish 完全一致
@@ -913,77 +916,89 @@ function bindControls(settings) {
     if (tiGsEnabled) tiGsEnabled.addEventListener('change', function () {
       if (tiGsKeyWrap) tiGsKeyWrap.style.display = tiGsEnabled.checked ? '' : 'none';
     });
-
-    // OpenPhish 本地钓鱼黑名单：开关 + 立即更新按钮 + 状态显示
-    const opEnabled = $('openphishEnabled');
-    const opUpdateBtn = $('openphishUpdateBtn');
-    const opStatus = $('openphishStatus');
-    if (opEnabled) opEnabled.checked = !!(settings.openphish && settings.openphish.enabled);
-    // 读取本地名单元信息，显示「上次更新 / 条目数」
-    try {
-      chrome.storage.local.get({ sfOpenPhishMeta: { updated: 0, count: 0, error: '' } }, function (r) {
-        const m = r.sfOpenPhishMeta || {};
-        if (opStatus) {
-          if (m.updated) {
-            const d = new Date(m.updated);
-            const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-            opStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
-            opStatus.style.color = m.error ? '#c0392b' : '';
-          } else {
-            opStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
-          }
-        }
-      });
-    } catch (e) {}
-    if (opUpdateBtn) opUpdateBtn.addEventListener('click', function () { updateOpenPhish(opStatus); });
-
-    // PhishDestroy 本地钓鱼黑名单：与 OpenPhish 完全同构的「开关 + 立即更新 + 状态」
-    const pdEnabled = $('phishdestroyEnabled');
-    const pdUpdateBtn = $('phishdestroyUpdateBtn');
-    const pdStatus = $('phishdestroyStatus');
-    if (pdEnabled) pdEnabled.checked = !!(settings.phishdestroy && settings.phishdestroy.enabled);
-    try {
-      chrome.storage.local.get({ sfPhishDestroyMeta: { updated: 0, count: 0, error: '' } }, function (r) {
-        const m = r.sfPhishDestroyMeta || {};
-        if (!pdStatus) return;
-        if (m.updated) {
-          const d = new Date(m.updated);
-          const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-          pdStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
-          pdStatus.style.color = m.error ? '#c0392b' : '';
-        } else {
-          pdStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
-        }
-      });
-    } catch (e) {}
-    if (pdUpdateBtn) pdUpdateBtn.addEventListener('click', function () { updatePhishDestroy(pdStatus); });
-
-    // HaGeZi's TIF：与前两者同构的「开关 + 立即更新 + 状态」
-    const hgEnabled = $('hageziEnabled');
-    const hgUpdateBtn = $('hageziUpdateBtn');
-    const hgStatus = $('hageziStatus');
-    if (hgEnabled) hgEnabled.checked = !!(settings.hagezi && settings.hagezi.enabled);
-    const hgVariant = $('hageziVariant');
-    if (hgVariant) hgVariant.value = (settings.hagezi && settings.hagezi.variant === 'medium') ? 'medium' : 'full';
-    try {
-      chrome.storage.local.get({ sfHaGeZiTifMeta: { updated: 0, count: 0, error: '' } }, function (r) {
-        const m = r.sfHaGeZiTifMeta || {};
-        if (!hgStatus) return;
-        if (m.updated) {
-          const d = new Date(m.updated);
-          const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-          hgStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
-          hgStatus.style.color = m.error ? '#c0392b' : '';
-        } else if (m.error) {
-          hgStatus.textContent = '本地名单尚未更新；上次更新失败：' + m.error;
-          hgStatus.style.color = '#c0392b';
-        } else {
-          hgStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
-        }
-      });
-    } catch (e) {}
-    if (hgUpdateBtn) hgUpdateBtn.addEventListener('click', function () { updateHaGeZi(hgStatus); });
   }
+
+  // 社区维护的本地黑名单：主开关默认不勾选；勾选后才展开三个名单子项（各自还有独立开关）
+  const clEnabled = $('communityListsEnabled');
+  if (clEnabled) {
+    const clProviders = $('communityProviders');
+    clEnabled.checked = !!(settings.communityLists && settings.communityLists.enabled);
+    if (clProviders) clProviders.style.display = clEnabled.checked ? '' : 'none';
+    clEnabled.addEventListener('change', function () {
+      if (clProviders) clProviders.style.display = clEnabled.checked ? '' : 'none';
+    });
+  }
+
+  // 以下三个名单的初始化不依赖主开关：即使总开关关闭也要回填各自状态（下次开启即生效）
+  // OpenPhish 本地钓鱼黑名单：开关 + 立即更新按钮 + 状态显示
+  const opEnabled = $('openphishEnabled');
+  const opUpdateBtn = $('openphishUpdateBtn');
+  const opStatus = $('openphishStatus');
+  if (opEnabled) opEnabled.checked = !!(settings.openphish && settings.openphish.enabled);
+  // 读取本地名单元信息，显示「上次更新 / 条目数」
+  try {
+    chrome.storage.local.get({ sfOpenPhishMeta: { updated: 0, count: 0, error: '' } }, function (r) {
+      const m = r.sfOpenPhishMeta || {};
+      if (opStatus) {
+        if (m.updated) {
+          const d = new Date(m.updated);
+          const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+          opStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
+          opStatus.style.color = m.error ? '#c0392b' : '';
+        } else {
+          opStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
+        }
+      }
+    });
+  } catch (e) {}
+  if (opUpdateBtn) opUpdateBtn.addEventListener('click', function () { updateOpenPhish(opStatus); });
+
+  // PhishDestroy 本地钓鱼黑名单：与 OpenPhish 完全同构的「开关 + 立即更新 + 状态」
+  const pdEnabled = $('phishdestroyEnabled');
+  const pdUpdateBtn = $('phishdestroyUpdateBtn');
+  const pdStatus = $('phishdestroyStatus');
+  if (pdEnabled) pdEnabled.checked = !!(settings.phishdestroy && settings.phishdestroy.enabled);
+  try {
+    chrome.storage.local.get({ sfPhishDestroyMeta: { updated: 0, count: 0, error: '' } }, function (r) {
+      const m = r.sfPhishDestroyMeta || {};
+      if (!pdStatus) return;
+      if (m.updated) {
+        const d = new Date(m.updated);
+        const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        pdStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
+        pdStatus.style.color = m.error ? '#c0392b' : '';
+      } else {
+        pdStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
+      }
+    });
+  } catch (e) {}
+  if (pdUpdateBtn) pdUpdateBtn.addEventListener('click', function () { updatePhishDestroy(pdStatus); });
+
+  // HaGeZi's TIF：与前两者同构的「开关 + 立即更新 + 状态」
+  const hgEnabled = $('hageziEnabled');
+  const hgUpdateBtn = $('hageziUpdateBtn');
+  const hgStatus = $('hageziStatus');
+  if (hgEnabled) hgEnabled.checked = !!(settings.hagezi && settings.hagezi.enabled);
+  const hgVariant = $('hageziVariant');
+  if (hgVariant) hgVariant.value = (settings.hagezi && settings.hagezi.variant === 'medium') ? 'medium' : 'full';
+  try {
+    chrome.storage.local.get({ sfHaGeZiTifMeta: { updated: 0, count: 0, error: '' } }, function (r) {
+      const m = r.sfHaGeZiTifMeta || {};
+      if (!hgStatus) return;
+      if (m.updated) {
+        const d = new Date(m.updated);
+        const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        hgStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
+        hgStatus.style.color = m.error ? '#c0392b' : '';
+      } else if (m.error) {
+        hgStatus.textContent = '本地名单尚未更新；上次更新失败：' + m.error;
+        hgStatus.style.color = '#c0392b';
+      } else {
+        hgStatus.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
+      }
+    });
+  } catch (e) {}
+  if (hgUpdateBtn) hgUpdateBtn.addEventListener('click', function () { updateHaGeZi(hgStatus); });
 
   // 灵敏度分段（带滑动药丸动画）—— 防护总览页已移除，仅当控件存在时绑定
   const seg = $('sensitivity');
@@ -1278,6 +1293,10 @@ async function collectSettings() {
           apiKey: gsKeyEnc   // 密文（AES-GCM）；明文仅在后台 service worker 内解密
         }
       }
+    },
+    // 社区维护的本地黑名单总开关（默认关；关闭时后台不加载/不更新/不比对）
+    communityLists: {
+      enabled: ($('communityListsEnabled') ? $('communityListsEnabled').checked : false)
     },
     openphish: {
       enabled: ($('openphishEnabled') ? $('openphishEnabled').checked : false)

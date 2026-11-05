@@ -56,6 +56,8 @@
       enabled: false,
       providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false },       googlesafebrowsing: { enabled: false, apiKey: '' } }
     },
+    // 社区维护的本地黑名单总开关（默认关）：关着时三个名单一律不查询、不渲染横幅
+    communityLists: { enabled: false },
     // OpenPhish 本地钓鱼黑名单：启用后与本地静态域名名单比对，命中即渲染横幅
     openphish: { enabled: false, lastUpdated: 0 },
     // PhishDestroy 本地钓鱼黑名单：同上的第二个静态名单源（独立横幅、独立开关）
@@ -2037,7 +2039,8 @@
     // —— OpenPhish 本地钓鱼黑名单：启用后与本地静态名单（域名集合）比对，命中即渲染横幅 ——
     try {
       const op = (settings && settings.openphish) || {};
-      if (op.enabled && _host) {
+      const clOn = !!(settings && settings.communityLists && settings.communityLists.enabled);
+      if (clOn && op.enabled && _host) {
         console.log('[SilverFoxBlocker][OpenPhish] 已启用，向后台查询本地黑名单：' + _host);
         sendMsg({ type: 'sf-openphish-check', hostname: _host }).then(function (r) {
           try {
@@ -2055,7 +2058,8 @@
     // —— PhishDestroy 本地钓鱼黑名单：与 OpenPhish 并列的第二个静态名单，命中同样渲染横幅 ——
     try {
       const pd = (settings && settings.phishdestroy) || {};
-      if (pd.enabled && _host) {
+      const clOn = !!(settings && settings.communityLists && settings.communityLists.enabled);
+      if (clOn && pd.enabled && _host) {
         console.log('[SilverFoxBlocker][PhishDestroy] 已启用，向后台查询本地黑名单：' + _host);
         sendMsg({ type: 'sf-phishdestroy-check', hostname: _host }).then(function (r) {
           try {
@@ -2073,7 +2077,8 @@
     // —— HaGeZi's TIF 本地威胁情报黑名单：第三个静态名单（约 181 万条），命中同样渲染横幅 ——
     try {
       const hg = (settings && settings.hagezi) || {};
-      if (hg.enabled && _host) {
+      const clOn = !!(settings && settings.communityLists && settings.communityLists.enabled);
+      if (clOn && hg.enabled && _host) {
         console.log('[SilverFoxBlocker][HaGeZi] 已启用，向后台查询本地黑名单：' + _host);
         sendMsg({ type: 'sf-hagezi-check', hostname: _host }).then(function (r) {
           try {

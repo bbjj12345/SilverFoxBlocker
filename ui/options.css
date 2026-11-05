@@ -1791,6 +1791,21 @@ html.theme-light .fb-card .fb-input::placeholder { color: rgba(30,41,59,.4); }
 .ti-providers .row { align-items: flex-start; }
 .ti-providers .row > .switch { margin-top: 2px; }
 .ti-providers .rd { font-size: calc(11.5px * var(--sf-scale)); color: rgba(220,232,247,.66); }
+/* 名单子项里的「立即更新」按钮与版本下拉（原为行内样式，抽成类便于后续新增名单复用） */
+.ti-update-btn {
+  cursor: pointer; border: 1px solid var(--sf-border, #3a3f4b); background: var(--sf-surface, #23262f);
+  color: inherit; border-radius: 10px; padding: 7px 14px; font-weight: 600; font-family: inherit;
+  font-size: calc(12px * var(--sf-scale)); transition: border-color .18s, background .18s, transform .18s;
+}
+.ti-update-btn:hover { border-color: rgba(125,180,255,.6); background: rgba(125,180,255,.12); }
+.ti-update-btn:active { transform: scale(.97); }
+.ti-select {
+  cursor: pointer; border: 1px solid var(--sf-border, #3a3f4b); background: var(--sf-surface, #23262f);
+  color: inherit; border-radius: 10px; padding: 6px 10px; font-weight: 600; font-family: inherit;
+  font-size: calc(12px * var(--sf-scale));
+}
+html.theme-light .ti-update-btn, html.theme-light .ti-select { border-color: rgba(20,34,64,.15); background: rgba(255,255,255,.7); }
+
 .ti-input {
   width: 100%; box-sizing: border-box; border-radius: 12px; padding: 11px 14px;
   background: rgba(8,12,24,.5); border: 1px solid rgba(255,255,255,.14); color: #eaf0fa;

@@ -15,6 +15,8 @@ const DEFAULTS = {
     enabled: false,
     providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false }, googlesafebrowsing: { enabled: false, apiKey: '' } }
   },
+  // 社区维护的本地黑名单总开关（默认关闭）：关闭时三个名单均不参与比对
+  communityLists: { enabled: false },
   openphish: { enabled: false, lastUpdated: 0 },
   phishdestroy: { enabled: false, lastUpdated: 0 },
   hagezi: { enabled: false, lastUpdated: 0, variant: 'full' }
