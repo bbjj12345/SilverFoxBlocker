@@ -149,10 +149,10 @@ export default {
     const url = new URL(request.url);
 
     // ==========================================
-    // 功能 A: 扩展拉取云端名单 (GET /list)
+    // 功能 A: 实时从 GitHub 拉取并返回名单 (GET /list)
     // ==========================================
     if (request.method === "GET" && url.pathname === "/list") {
-      // 校验扩展传来的 API Key
+      // 1. 校验扩展传来的 API Key
       const apiKey = request.headers.get("X-API-Key");
       if (apiKey !== env.LIST_API_KEY) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -160,24 +160,45 @@ export default {
         });
       }
 
-      // 获取参数，比如 /list?type=black 或 ?type=white
+      // 2. 确定要拉取的文件名
       const type = url.searchParams.get("type") || "black";
-      const kvKey = type === "white" ? "whitelist" : "blacklist";
+      const fileName = type === "white" ? "whitelist.json" : "blacklist.json";
 
-      const listData = await env.LIST_KV.get(kvKey);
-      if (!listData) {
-        return new Response(JSON.stringify({ error: "名单尚未同步，请稍后再试。" }), {
-          status: 503, headers: { "Content-Type": "application/json", ...corsHeaders }
+      try {
+        // 3. 实时请求 GitHub API
+        const ghUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${fileName}?ref=${BRANCH}`;
+        const res = await fetch(ghUrl, {
+          headers: {
+            "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+            "Accept": "application/vnd.github.v3.raw",
+            "User-Agent": "Cloudflare-Worker-SilverFox"
+          }
+        });
+
+        if (!res.ok) {
+          if (res.status === 404) throw new Error("云端文件不存在，请检查仓库名/分支名/文件名。");
+          throw new Error(`GitHub API 报错: ${res.status}`);
+        }
+
+        const content = await res.text();
+        
+        // 简单验证一下是不是合法 JSON
+        JSON.parse(content); 
+
+        // 4. 将内容返回给扩展
+        return new Response(content, {
+          headers: { 
+            "Content-Type": "application/json", 
+            ...corsHeaders 
+          }
+        });
+
+      } catch (error) {
+        console.error(error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500, headers: { "Content-Type": "application/json", ...corsHeaders }
         });
       }
-
-      return new Response(listData, {
-        headers: { 
-          "Content-Type": "application/json", 
-          "Cache-Control": "public, max-age=1800", // 浏览器/CDN 缓存半小时
-          ...corsHeaders 
-        }
-      });
     }
 
     // ==========================================
