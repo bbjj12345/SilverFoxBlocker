@@ -11,5 +11,5 @@ binding = "FEEDBACK"
 id = "98ac1246bc7746368baf6a071f9fed9f"
 
 [observability.logs]
-enabled = false
+enabled = true
 invocation_logs = true
