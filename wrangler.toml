@@ -1,14 +1,33 @@
 name = "silverfoxblocker"
 main = "worker/index.js"
 compatibility_date = "2026-11-02"
+
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
 id = "6d141838347d4cfc86083a479231bf02"
+
 [[kv_namespaces]]
 binding = "FEEDBACK"
 id = "98ac1246bc7746368baf6a071f9fed9f"
+
 [[kv_namespaces]]
 binding = "LIST_KV"
 id = "6d141838347d4cfc86083a479231bf02"
+
+
+
 [triggers]
-crons = ["0 */12 * * *"] 
+crons = ["0 */12 * * *"]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
+[observability.issue_detection]
+enabled = false
