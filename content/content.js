@@ -2189,7 +2189,7 @@
             errs.forEach(function (e) {
               const name = e.name || e.id || '情报源';
               if (e.status === 401 || e.status === 403) {
-                console.log('[SilverFoxBlocker][情报] ⚠ ' + name + ' 查询失败：HTTP ' + e.status + ' —— API Key 无效或权限不足，请到「规则与白名单」核对 VirusTotal Key。当前域名判定不可信，未显示横幅。');
+                console.log('[SilverFoxBlocker][情报] ⚠ ' + name + ' 查询失败：HTTP ' + e.status + ' —— API Key 无效或权限不足，请到「规则与名单」核对 VirusTotal Key。当前域名判定不可信，未显示横幅。');
               } else if (e.reason === 'no_key') {
                 console.log('[SilverFoxBlocker][情报] ℹ ' + name + ' 未配置 Key，已跳过查询。');
               } else if (e.reason === 'network') {

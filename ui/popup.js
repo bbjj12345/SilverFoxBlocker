@@ -240,7 +240,7 @@ async function init() {
 
   const ppMore = $('ppMore');
   if (ppMore) ppMore.addEventListener('click', () => chrome.tabs.create({ url: base + '#sec=stats' }));
-  // 左下角：跳转「规则与白名单」页（信任域名 / 自定义关键词 / 黑名单 / 威胁情报 API）
+  // 左下角：跳转「规则与名单」页（信任域名 / 自定义关键词 / 黑名单 / 威胁情报 API）
   const ppRules = $('ppRules');
   if (ppRules) ppRules.addEventListener('click', () => chrome.tabs.create({ url: base + '#sec=rules' }));
 }

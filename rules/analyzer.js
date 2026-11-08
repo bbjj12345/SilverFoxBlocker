@@ -95,12 +95,78 @@
   //   声明提前到这里，是因为 isKnownBad 的缓存计算函数要直接引用它；
   //   与内置 BAD_SET 同语义（后缀命中即强制 danger），但来源为 storage.local，可随时更新。
   const EXTRA_BAD_SET = new Set();
+
+  // ---- 云端黑名单通配符（2026-11-09 新增；白名单**不支持**通配，语义保持不变）----
+  // 为什么只有云端黑名单支持：它的匹配入口只有本文件这一处（isKnownBad / isCloudBad），
+  //   注入入口只有 registerCloudBad 一个函数，改动面最小；用户自定义黑名单的逻辑散落在
+  //   content.js（两处）与 background.js（hostMatch），内置名单则要跟着发版。
+  //
+  // 语义（必须与设置页文案一致）：
+  //   · `*` 匹配**同一个域名标签内**的任意字符（正则 [^.]*），`?` 匹配单个非点字符。
+  //     ⇒ `*web.cdn-deepseek.com` 命中 729web / 893web / 4422web，
+  //       但**不会**跨标签命中 a.729web.cdn-deepseek.com（跨标签要显式多写一个 `*`）。
+  //   · 前导 `*.` 视为后缀条目：`*.foo.com` 注册时归一成 `foo.com`，即覆盖**全部子域**
+  //     （后缀匹配本身已覆盖子域），避免「通配只吃一层」与用户直觉冲突。
+  //   · 通配**不**作用于 TLD 位：`*.com`、`foo.*`、裸 `*` 一律拒绝，防止一条规则拦掉半个互联网。
+  const EXTRA_BAD_WILD = [];       // [{ src, re }]
+  const WILD_MAX = 200;            // 上限：每遇到一个新域名都要跑一遍正则（_badCache 摊平重复）
+  let _wildBadSkipped = [];        // 被护栏拒绝的条目，供诊断
+
+  // 逐个字符转义，只保留 * 与 ? 为通配。
+  // 不用「先整体转义再回填 \*」的写法：那样 a*b 的回填顺序与元字符处理容易互相污染。
+  function _globToRegExp(pat) {
+    let out = '';
+    for (let i = 0; i < pat.length; i++) {
+      const ch = pat.charAt(i);
+      if (ch === '*') out += '[^.]*';
+      else if (ch === '?') out += '[^.]';
+      else out += (/[\\^$.|+()\[\]{}]/.test(ch) ? '\\' + ch : ch);
+    }
+    try { return new RegExp('^' + out + '$'); } catch (e) { return null; }
+  }
+
+  // 返回 'suffix'（已按后缀条目收录）/ 'wild'（已编译）/ ''（被拒绝，原因进 skipped）
+  function _addBadWild(v, skipped) {
+    // 前导 `*.` ⇒ 等价后缀条目
+    if (v.slice(0, 2) === '*.') {
+      const rest = v.slice(2);
+      if (rest.indexOf('*') === -1 && rest.indexOf('?') === -1 && rest.split('.').length >= 2) {
+        EXTRA_BAD_SET.add(rest);
+        return 'suffix';
+      }
+      skipped.push(v);
+      return '';
+    }
+    const labels = v.split('.');
+    // 护栏：至少两个标签（挡掉 *.com 归一后的 com）、TLD 位禁通配、长度上下限、禁空标签
+    if (labels.length < 2) { skipped.push(v); return ''; }
+    const tld = labels[labels.length - 1];
+    if (!tld || tld.indexOf('*') !== -1 || tld.indexOf('?') !== -1) { skipped.push(v); return ''; }
+    if (v.length < 4 || v.length > 253) { skipped.push(v); return ''; }
+    for (let i = 0; i < labels.length; i++) { if (!labels[i]) { skipped.push(v); return ''; } }
+    if (EXTRA_BAD_WILD.length >= WILD_MAX) { skipped.push(v); return ''; }
+    const re = _globToRegExp(v);
+    if (!re) { skipped.push(v); return ''; }
+    EXTRA_BAD_WILD.push({ src: v, re: re });
+    return 'wild';
+  }
+
+  function _wildBadHit(h) {
+    if (!EXTRA_BAD_WILD.length) return false;
+    for (let i = 0; i < EXTRA_BAD_WILD.length; i++) {
+      if (EXTRA_BAD_WILD[i].re.test(h)) return true;
+    }
+    return false;
+  }
+
   function isKnownBad(hostname) {
-    return _memoHost(_badCache, hostname, (h) => _suffixHit(EXTRA_BAD_SET, h) || _suffixHit(BAD_SET, h));
+    return _memoHost(_badCache, hostname, (h) =>
+      _suffixHit(EXTRA_BAD_SET, h) || _wildBadHit(h.replace(WWW_RE, '')) || _suffixHit(BAD_SET, h));
   }
   // 本次命中是否来自云端名单（仅用于给出更准确的「依据」文案，不影响判定强度）
   function isCloudBad(hostname) {
-    return _suffixHit(EXTRA_BAD_SET, hostname);
+    const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    return _suffixHit(EXTRA_BAD_SET, h) || _wildBadHit(h);
   }
 
   // ============ 政府/公立机构可信域名（严格资质管控后缀，仿冒概率极低）============
@@ -131,7 +197,12 @@
     const v = d.trim().toLowerCase().replace(WWW_RE, '');
     if (!v || v.length > 253) return '';
     if (v.indexOf(' ') !== -1 || v.indexOf('/') !== -1 || v.indexOf('@') !== -1 || v.indexOf('..') !== -1) return '';
-    return v;
+    // 2026-11-09：首尾多余的点一律削掉。`.foo.com` / `foo.com.` 这类条目进 Set 后
+    //   永远匹配不上（后缀查表要求标签对齐），属于和通配符同一类的静默失效；
+    //   削点后若已经不含 `.`（如 `.`、`com`），说明不是域名，直接丢弃。
+    const w = v.replace(/^\.+/, '').replace(/\.+$/, '');
+    if (!w || w.indexOf('.') === -1) return '';
+    return w;
   }
   // ★ 覆盖语义（opts.replace）：本地存储的是云端的「镜像」，每次更新是整体替换而非累加，
   //   因此这里也必须先清空再灌入——否则云端删掉的条目会残留在内存集合里，
@@ -162,16 +233,35 @@
   function registerCloudBad(arr, opts) {
     const replace = !!(opts && opts.replace);
     const before = EXTRA_BAD_SET.size;
-    if (replace) EXTRA_BAD_SET.clear();
+    const beforeWild = EXTRA_BAD_WILD.length;
+    const skipped = [];
+    if (replace) {
+      EXTRA_BAD_SET.clear();
+      EXTRA_BAD_WILD.length = 0;
+    }
     if (Array.isArray(arr)) {
       for (const d of arr) {
         const v = _normCloudDomain(d);
-        if (v) EXTRA_BAD_SET.add(v);
+        if (!v) continue;
+        // 含通配符号的条目走独立编译流程；其余仍进 Set（O(标签数) 查表，最快路径）
+        if (v.indexOf('*') !== -1 || v.indexOf('?') !== -1) _addBadWild(v, skipped);
+        else EXTRA_BAD_SET.add(v);
       }
     }
-    const added = EXTRA_BAD_SET.size - (replace ? 0 : before);
+    _wildBadSkipped = skipped;
+    const added = (EXTRA_BAD_SET.size - (replace ? 0 : before)) +
+                  (EXTRA_BAD_WILD.length - (replace ? 0 : beforeWild));
     if (replace || added) _badCache.clear();
     return added;
+  }
+
+  // 诊断用：当前生效的通配条目 / 后缀条目 / 被护栏拒掉的条目
+  function getCloudBadWild() {
+    return {
+      active: EXTRA_BAD_WILD.map((x) => x.src),
+      suffix: Array.from(EXTRA_BAD_SET),
+      skipped: _wildBadSkipped.slice()
+    };
   }
 
   const _officialCache = new Map();
@@ -2254,6 +2344,7 @@
     registerCloudOfficial,
     registerCloudBad,
     isCloudBad,
+    getCloudBadWild,
     isTrustedPlatform,
     detectSpoof,
     extractIcp,

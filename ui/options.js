@@ -423,7 +423,7 @@ const NAV_ICONS = {
 const NAV_OLD = [
   { targets: ['detect'],  label: '检测维度', title: '检测维度', desc: '独立评分的检测项，可逐项开关', icon: 'grid' },
   { targets: ['behavior'], label: '拦截行为',title: '拦截行为', desc: '命中风险时如何提醒与处置',   icon: 'shield' },
-  { targets: ['rules'],   label: '规则与白名单',title: '规则与白名单', desc: '信任域名、自定义关键词与黑名单', icon: 'doc' },
+  { targets: ['rules'],   label: '规则与名单',title: '规则与名单', desc: '信任域名、自定义关键词与黑名单', icon: 'doc' },
   { targets: ['stats'],   label: '防护统计', title: '防护统计', desc: '已拦截风险与下载次数',       icon: 'chart' },
   { targets: ['rescue'],  label: '银狐急救', title: '银狐急救', desc: '中招后的下载与查杀引导',     icon: 'cross' },
   { targets: ['about'],   label: '关于',     title: '关于',     desc: '版本信息与说明',             icon: 'info' }
@@ -433,7 +433,7 @@ const NAV_NEW_GROUPS = [
   {
     label: '防护', items: [
       { targets: ['detect', 'behavior'], label: '检测拦截', title: '检测与拦截', desc: '检测维度与命中后的处置方式', icon: 'shield' },
-      { targets: ['rules'],              label: '规则与白名单', title: '规则与白名单', desc: '信任域名、关键词与黑名单', icon: 'doc' },
+      { targets: ['rules'],              label: '规则与名单', title: '规则与名单', desc: '信任域名、关键词与黑名单', icon: 'doc' },
       { targets: ['stats'],              label: '防护统计', title: '防护统计', desc: '已拦截风险与下载次数', icon: 'chart' }
     ]
   },
@@ -1054,7 +1054,7 @@ function updateMasterPill(on) {
 }
 
 // 「银狐急救」分类：展示官方直链 + 点击按钮直接下载 360 系统急救箱
-/* 下钻导航：枢纽页卡片 → 独立子页面，返回时回到来源枢纽页（规则白名单 + 工具中心 + 个性化主题共用）。
+/* 下钻导航：枢纽页卡片 → 独立子页面，返回时回到来源枢纽页（规则与名单 + 工具中心 + 个性化主题共用）。
    支持多级嵌套返回（如「工具中心 → 银狐急救」），栈记录每层「从哪进来」。 */
 function setupSubNav() {
   const backBtn = $('backBtn');
@@ -1352,6 +1352,10 @@ function formatAbsTime(ts) {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
          p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
+// ★ 2026-11-08：最近拦截记录展示条数。background.js 的 updateStats 以
+//   `stats.recent = recent.slice(0, 30)` 封顶，这里保持一致取 30——若只取 12，
+//   等于把后台已经存下的记录白白藏掉一半；若要再多，需同时抬高后台的容量上限。
+const RECENT_SHOW_LIMIT = 30;
 const LEVEL_LABEL = { danger: '高危', warn: '可疑', safe: '放行' };
 const LEVEL_COLOR = { danger: '#ff4d6d', warn: '#ffae42', safe: '#4be38b' };
 function loadStats() {
@@ -1394,7 +1398,7 @@ function loadStats() {
       if (!total) { rl.innerHTML = '<div class="dl-empty">暂无记录</div>'; }
       else {
         rl.innerHTML = '';
-        recent.slice(0, 12).forEach((x) => {
+        recent.slice(0, RECENT_SHOW_LIMIT).forEach((x) => {
           const lv = x.level || 'safe';
           const item = document.createElement('div');
           item.className = 'dl-item';
@@ -1906,8 +1910,17 @@ function setCloudStatus(text) {
 
 // 统一的同步状态文案：只报云端名册规模（黑 / 白），不报「新增/合并」这类中间量，
 // 因为合并后本地条数会把内置与云端混在一起，用户真正关心的是云端有多少条。
-function cloudCountsText(w, b) {
-  return '已更新，云端黑名单' + b + '条，云端白名单' + w + '条';
+function cloudCountsText(w, b, bw) {
+  // 通配条目单独点出来：否则用户写完 `*web.cdn-deepseek.com` 只看到"黑名单 1 条"，
+  // 无法判断那条到底是被当成普通域名（永不命中）还是被当成规则收录了。
+  return '已更新，云端黑名单' + b + '条' + (bw ? '（含 ' + bw + ' 条通配）' : '') + '，云端白名单' + w + '条';
+}
+// 名单里含通配符（* / ?）的条目数
+function countWildEntries(arr) {
+  return (Array.isArray(arr) ? arr : []).filter(function (d) {
+    const v = String(d == null ? '' : d);
+    return v.indexOf('*') !== -1 || v.indexOf('?') !== -1;
+  }).length;
 }
 
 function refreshCloudListStatus() {
@@ -1920,7 +1933,7 @@ function refreshCloudListStatus() {
     if (!w && !b) { el.textContent = '未同步'; return; }
     const m = o[SF_CLOUD_META_KEY] || {};
     const t = Math.max((m.white && m.white.updated) || 0, (m.black && m.black.updated) || 0);
-    el.textContent = cloudCountsText(w, b);
+    el.textContent = cloudCountsText(w, b, countWildEntries(o[SF_CLOUD_KEY_BLACK]));
     // 同步时间放在 title 里：正文只保留用户要的那句，鼠标悬停仍能看到上次同步时刻
     if (t) el.title = '上次同步 ' + formatAbsTime(t);
   });
@@ -1987,7 +2000,7 @@ async function updateCloudLists(btn) {
     });
     if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message || '写入失败');
     refreshCloudListStatus();
-    setCloudStatus(cloudCountsText(white.length, black.length));
+    setCloudStatus(cloudCountsText(white.length, black.length, countWildEntries(black)));
     console.log('[云端名单] 黑', black.length, '条（新增', db.added, '/ 移除', db.removed,
       '）；白', white.length, '条（新增', dw.added, '/ 移除', dw.removed, '）');
     showToast();
@@ -2003,6 +2016,94 @@ async function updateCloudLists(btn) {
     const b = $('cloudPullList');
     if (b) b.addEventListener('click', function () { updateCloudLists(b); });
     refreshCloudListStatus();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();
+
+// ===== 名单上报：把「信任域名白名单 / 自定义恶意域名黑名单」直接发到作者邮箱 =====
+// 与「反馈与建议 → 发送反馈到作者邮箱」共用同一个 Worker 接口（POST { message, contact }），
+// 区别只有三点：
+//   1) 正文由程序拼装，用户不必写任何描述，只需维护自己的域名清单；
+//   2) 不传 contact → Worker 侧 `data.contact || "未提供"`，邮件里呈现「联系方式：未提供」；
+//   3) 不做「不少于 5 个字符」的反馈校验，改为「至少 1 条域名 + 正文 2000 字符上限」。
+(function initListMail() {
+  var MAX = 2000; // 与 Worker 端 feedbackText.length > 2000 的校验保持一致
+  var JOBS = [
+    { btn: 'mailWhiteBtn', ta: 'allowlist', spin: 'mailWhiteSpin', msg: 'mailWhiteMsg', kind: '自定义白名单' },
+    { btn: 'mailBlackBtn', ta: 'customBadDomains', spin: 'mailBlackSpin', msg: 'mailBlackMsg', kind: '自定义黑名单' }
+  ];
+
+  function setMsg(el, text, kind) {
+    if (!el) return;
+    el.hidden = !text;
+    el.textContent = text || '';
+    el.style.color = kind === 'ok' ? '#4be38b' : (kind === 'warn' ? '#ffae42' : '');
+  }
+
+  // 逐行解析：去空行、去重、剥离协议与首尾点、统一小写。
+  // 这里**不**过滤非法域名——作者收到的是用户原始意图，写错了由人工复核，
+  // 悄悄丢掉反而会让用户以为已经上报成功。
+  function parseDomains(raw) {
+    var seen = {}, out = [];
+    String(raw || '').split(/[\r\n]+/).forEach(function (line) {
+      var v = line.trim();
+      if (!v || v.charAt(0) === '#') return; // 允许 # 开头的备注行
+      if (v.indexOf('://') !== -1) { try { v = new URL(v).hostname; } catch (e) { return; } }
+      v = v.replace(/^\.+/, '').replace(/\.+$/, '').toLowerCase();
+      if (!v || seen[v]) return;
+      seen[v] = 1;
+      out.push(v);
+    });
+    return out;
+  }
+
+  function send(job) {
+    var btn = $(job.btn), ta = $(job.ta), spin = $(job.spin), msgEl = $(job.msg);
+    if (!btn || !ta || btn.disabled) return;
+    var list = parseDomains(ta.value);
+    if (!list.length) {
+      setMsg(msgEl, '输入框里还没有域名，请先填写再发送。', 'warn');
+      ta.focus();
+      return;
+    }
+    var body = '问题类型：' + job.kind + '\n' + list.join('\n');
+    if (body.length > MAX) {
+      setMsg(msgEl, '域名过多（' + list.length + ' 个，正文 ' + body.length + ' 字符），超出 ' + MAX + ' 字符上限，请分批发送。', 'warn');
+      return;
+    }
+    var cfg = window.SFB_FEEDBACK;
+    var endpoint = (cfg && cfg.decode) ? cfg.decode(cfg.endpointCodes) : '';
+    if (!cfg || !cfg.enabled || !endpoint) {
+      setMsg(msgEl, '邮件上报尚未配置，暂时无法发送。', 'warn');
+      return;
+    }
+    btn.disabled = true;
+    if (spin) spin.hidden = false;
+    setMsg(msgEl, '', '');
+    fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: body, contact: '' })
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        setMsg(msgEl, '已发送 ' + list.length + ' 个域名，感谢你的贡献！', 'ok');
+      })
+      .catch(function () {
+        setMsg(msgEl, '发送失败，请稍后重试。', 'warn');
+      })
+      .then(function () {
+        btn.disabled = false;
+        if (spin) spin.hidden = true;
+      });
+  }
+
+  function bind() {
+    JOBS.forEach(function (job) {
+      var b = $(job.btn);
+      if (b) b.addEventListener('click', function () { send(job); });
+    });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();

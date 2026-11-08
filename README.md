@@ -90,7 +90,7 @@ SilverFoxBlocker/
 │   └── resource-resolver.js   # 下载发现层：BFS 解析脚本/文本/跳转/iframe 中的直链
 ├── ui/
 │   ├── popup.html/.js/.css    # 工具栏弹窗：当前站点评分、近期拦截
-│   ├── options.html/.js/.css  # 设置页：检测维度、拦截行为、规则与白名单、统计、急救、关于
+│   ├── options.html/.js/.css  # 设置页：检测维度、拦截行为、规则与名单、统计、急救、关于
 │   └── feedback-config.js     # 反馈后端端点（字符码存储，避免明文域名）
 ├── crypto-helper.js           # 情报源 API Key 的 AES-GCM 加密 / 解密（仅在 SW 内解密）
 ├── icons/                     # 扩展图标 16 / 48 / 128
@@ -167,7 +167,7 @@ SilverFoxBlocker/
 
 遇到误拦：
 
-1. 在设置 →「规则与白名单」→ 信任域名白名单里加上该域名，立即放行；
+1. 在设置 →「规则与名单」→ 信任域名白名单里加上该域名，立即放行；
 2. 在「关于」页选择「误报」提交反馈；
 3. 临时访问可在拦截浮层里选「仍要访问」（需二次确认）。
 

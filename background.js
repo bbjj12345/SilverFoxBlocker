@@ -1507,7 +1507,15 @@ const _KNOWN_BAD_HOSTS = (function () {
 })();
 function isKnownBadHost(h) {
   h = (h || '').toLowerCase();
-  return _KNOWN_BAD_HOSTS.some(function (d) { return d && (h === d || h.endsWith('.' + d)); });
+  if (_KNOWN_BAD_HOSTS.some(function (d) { return d && (h === d || h.endsWith('.' + d)); })) return true;
+  // 2026-11-09：云端黑名单（含通配符）同样作用于下载拦截。
+  //   本函数原来只查内置 KNOWN_BAD_DOMAINS，云端名单里的落地/载荷域名就会出现
+  //   「页面拦得住、下载拦不住」，与 applyCloudLists 上方注释写明的意图不符。
+  //   isCloudBad 走 analyzer 的同一套后缀 + 通配匹配，故 *web.xxx.com 也能拦下 exe 下载。
+  try {
+    if (SF.isCloudBad && SF.isCloudBad(h)) return true;
+  } catch (e) {}
+  return false;
 }
 
 // 已知木马化投递物文件名（来自样本静态分析 IOC）：bzy.exe / shanlian_VPN_64.exe 等。
@@ -2530,7 +2538,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           if (p.encryptsKey && key) {
             try { key = await sfDecryptKey(key); } catch (e) { key = ''; }
             if (!key) {
-              errors.push({ id: p.id, name: p.name, status: null, reason: 'decrypt', detail: 'API Key 密文无法解密（可能曾手动改动或被篡改），请到「规则与白名单」重新填写。' });
+              errors.push({ id: p.id, name: p.name, status: null, reason: 'decrypt', detail: 'API Key 密文无法解密（可能曾手动改动或被篡改），请到「规则与名单」重新填写。' });
               continue;
             }
           }
