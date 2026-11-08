@@ -100,6 +100,7 @@ export default {
   },
 };
 */
+
 // 你的私人仓库信息
 const GITHUB_OWNER = "bbjj12345"; // 替换为你的 GitHub 用户名
 const GITHUB_REPO = "SilverFoxBlocker-Cloud"; // 你的私人仓库名
@@ -250,16 +251,5 @@ export default {
         status: 500, headers: { "Content-Type": "application/json", ...corsHeaders }
       });
     }
-  },
-
-  // ==========================================
-  // 功能 C: 定时任务 (Cron Trigger) 自动同步名单
-  // ==========================================
-  async scheduled(controller, env, ctx) {
-    // 使用 ctx.waitUntil 确保即使请求结束，任务也会在后台执行完毕
-    ctx.waitUntil(Promise.all([
-      syncListToKV(env, "blacklist.json", "blacklist"),
-      syncListToKV(env, "whitelist.json", "whitelist")
-    ]));
   }
 };
