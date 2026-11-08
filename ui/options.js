@@ -10,6 +10,19 @@ const RESCUE_DOWNLOAD_URL = 'https://dl.360safe.com/360c0mpkill_5.1.64.1289-0701
 // 有签名版同样会被银狐类病毒拦截，故只提供无签名版。自动抓取失败时才回退到此种子直链。
 const HRKILL_DOWNLOAD_URL = 'https://down7.huorong.cn/hrkill/hrkill_unsign-1.0.0.200.exe';
 
+// Kaspersky Virus Removal Tool（KVRT）官方直链：固定地址、始终指向最新版，
+// 所以不需要像 360 / 火绒那样去探测版本号（桌面 KVRT 目录里的 update_by_aria2.bat
+// 抓的也是这一条）。每次点击都是「重新下载最新版」。
+const KVRT_DOWNLOAD_URL = 'https://devbuilds.s.kaspersky-labs.com/kvrt/latest/full/kvrt.exe';
+
+// 三个急救工具的 DOM 映射，供下载与复制直链共用。
+// direct:true = 直链固定，点按钮直接下载，不经后台探测（见 sfRescueDownload）。
+const SF_RESCUE_TOOLS = {
+  '360': { btn: 'rescueBtn', url: 'rescueUrl', fallback: RESCUE_DOWNLOAD_URL, store: 'rescue360Url', direct: false },
+  hrkill: { btn: 'hrkillBtn', url: 'hrkillUrl', fallback: HRKILL_DOWNLOAD_URL, store: 'hrkillUrl', direct: false },
+  kvrt: { btn: 'kvrtBtn', url: 'kvrtUrl', fallback: KVRT_DOWNLOAD_URL, store: 'kvrtUrl', direct: true }
+};
+
 // （银狐系统解锁工具已停止维护并下架，此处不再提供下载入口。）
 
 const DEFAULTS = {
@@ -1119,11 +1132,25 @@ function sfRescueDirect(btn, urlEl, url, originalText, safety) {
 }
 
 function sfRescueDownload(tool) {
-  const btn = tool === '360' ? $('rescueBtn') : $('hrkillBtn');
-  const urlEl = tool === '360' ? $('rescueUrl') : $('hrkillUrl');
-  const fallbackUrl = tool === '360' ? RESCUE_DOWNLOAD_URL : HRKILL_DOWNLOAD_URL;
+  const cfg = SF_RESCUE_TOOLS[tool];
+  if (!cfg) return;
+  const btn = $(cfg.btn);
+  const urlEl = $(cfg.url);
   if (!btn) return;
   const originalText = btn.textContent;
+  // KVRT：直链本身就是「最新版」，没有版本探测这一步，直接走下载。
+  // 复用同一套 sfRescueDirect（写直链、调 chrome.downloads、无权限时退化为新标签打开）。
+  if (cfg.direct) {
+    sfRescueDirect(btn, urlEl, cfg.fallback, originalText, null);
+    try {
+      const kv = {};
+      kv[cfg.store] = cfg.fallback;
+      if (chrome.storage && chrome.storage.local) chrome.storage.local.set(kv);
+    } catch (e) {}
+    showToast('已开始下载：' + (cfg.fallback.split('/').pop() || 'kvrt.exe'));
+    return;
+  }
+  const fallbackUrl = cfg.fallback;
   btn.disabled = true;
   btn.textContent = '正在获取最新直链…';
   // 安全兜底：60s 后恢复按钮，避免卡死
@@ -1145,7 +1172,7 @@ function sfRescueDownload(tool) {
       // 缓存到 storage.local，下次进入页面秒显最新直链
       try {
         const kv = {};
-        kv[tool === '360' ? 'rescue360Url' : 'hrkillUrl'] = res.url;
+        kv[cfg.store] = res.url;
         chrome.storage.local.set(kv);
       } catch (e) {}
       showToast(res.fallback ? '自动获取失败，已用备用直链开始下载' : ('已开始下载：' + (res.filename || res.url)));
@@ -1157,50 +1184,42 @@ function sfRescueDownload(tool) {
   });
 }
 
+// 直链卡片：点击复制（360 / 火绒 / KVRT 三张卡共用）
+function bindRescueCopy(el, fallback) {
+  if (!el) return;
+  el.textContent = fallback;
+  el.title = '点击复制';
+  el.addEventListener('click', function () {
+    const txt = el.textContent || fallback;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () { showToast(); }, function () { showToast(); });
+      } else { showToast(); }
+    } catch (e) { showToast(); }
+  });
+}
+
 function bindRescue() {
-  const urlEl = $('rescueUrl');
-  if (urlEl) {
-    urlEl.textContent = RESCUE_DOWNLOAD_URL;
-    urlEl.title = '点击复制';
-    urlEl.addEventListener('click', function () {
-      const txt = urlEl.textContent || RESCUE_DOWNLOAD_URL;
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(txt).then(function () { showToast(); }, function () { showToast(); });
-        } else { showToast(); }
-      } catch (e) { showToast(); }
-    });
-  }
-
-  const btn = $('rescueBtn');
-  if (!btn) return;
-  btn.addEventListener('click', function () { sfRescueDownload('360'); });
-
-  // 火绒专杀工具（无签名版）：可解除银狐对杀毒软件的打开限制
-  const hkUrl = $('hrkillUrl');
-  if (hkUrl) {
-    hkUrl.textContent = HRKILL_DOWNLOAD_URL;
-    hkUrl.title = '点击复制';
-    hkUrl.addEventListener('click', function () {
-      const txt = hkUrl.textContent || HRKILL_DOWNLOAD_URL;
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(txt).then(function () { showToast(); }, function () { showToast(); });
-        } else { showToast(); }
-      } catch (e) { showToast(); }
-    });
-  }
-
-  const hkBtn = $('hrkillBtn');
-  if (hkBtn) hkBtn.addEventListener('click', function () { sfRescueDownload('hrkill'); });
+  // 表驱动绑定：新增一个急救工具只需在 SF_RESCUE_TOOLS 里加一行，再在页面里放好
+  // 同 id 的按钮 / 直链元素即可，不必再复制一遍下载与复制逻辑。
+  Object.keys(SF_RESCUE_TOOLS).forEach(function (tool) {
+    const cfg = SF_RESCUE_TOOLS[tool];
+    bindRescueCopy($(cfg.url), cfg.fallback);
+    const btn = $(cfg.btn);
+    if (btn) btn.addEventListener('click', function () { sfRescueDownload(tool); });
+  });
 
   // 优先显示上次抓取到的直链（秒显），没有再用内置备用直链
   try {
     if (chrome.storage && chrome.storage.local) {
-      chrome.storage.local.get(['rescue360Url', 'hrkillUrl'], function (kv) {
+      const keys = Object.keys(SF_RESCUE_TOOLS).map(function (t) { return SF_RESCUE_TOOLS[t].store; });
+      chrome.storage.local.get(keys, function (kv) {
         kv = kv || {};
-        if (urlEl && kv.rescue360Url) { urlEl.textContent = kv.rescue360Url; urlEl.title = '点击复制'; }
-        if (hkUrl && kv.hrkillUrl) { hkUrl.textContent = kv.hrkillUrl; hkUrl.title = '点击复制'; }
+        Object.keys(SF_RESCUE_TOOLS).forEach(function (tool) {
+          const cfg = SF_RESCUE_TOOLS[tool];
+          const el = $(cfg.url);
+          if (el && kv[cfg.store]) { el.textContent = kv[cfg.store]; el.title = '点击复制'; }
+        });
       });
     }
   } catch (e) {}
@@ -1813,3 +1832,178 @@ document.addEventListener('click', function (e) {
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   btn.textContent = open ? '收起教程' : '如何获取 API？';
 });
+
+/* ============================================================================
+ * 云端名单同步（关于页「从云端更新名单」按钮）
+ * ----------------------------------------------------------------------------
+ * 数据流：按钮 → worker GET /list?type=white|black（两份并行）→ 清洗去重 →
+ *         覆盖写入 storage.local 对应键 → background 收到 storage.onChanged 立即重注入；
+ *         内容脚本在下次页面加载（getSettings）时注入。
+ *
+ * 语义是「镜像覆盖」不是「合并追加」：
+ *   每次拉取成功后，用云端这一份**整体替换**上一份快照，本地 sfCloudWhite / sfCloudBlack
+ *   始终等于云端最新内容。这样云端删掉的条目（误报反馈后的移除）才能真正生效——
+ *   并集语义下删掉的条目会永久留在本地，状态行的条数也只会单调递增。
+ *   云端的空响应已在 fetchCloudList() 里被拦下（抛错，不进入写入路径），
+ *   因此不存在「云端异常导致本地被清空」的风险。
+ *
+ * 注意：云端名单与**内置名单**(rules/iocs.js)、**用户手写名单**(settings.allowlist /
+ *   customBadDomains) 始终是三份独立数据；判定时由 analyzer 做双集合查找
+ *   （isOfficialDomain / isKnownBad 内部分别查 内置 ∪ 云端），互不覆盖。
+ *
+ * 为什么存 storage.local 而不是 storage.sync：
+ *   sync 单键上限 8192 bytes ≈ 550 个域名，上千条会「静默写失败」
+ *   （回调里只带 runtime.lastError，界面看起来却是成功的）。
+ *   本扩展已申请 unlimitedStorage，storage.local 实际无上限。
+ * ============================================================================ */
+
+// worker 的名单接口（manifest 的 connect-src 已放行该域名）
+const SF_CLOUD_API = 'https://api.silverfoxblocker.dpdns.org/list';
+// ⚠️ 必须填成 Cloudflare Worker 里 env.LIST_API_KEY 的同一个值，否则接口返回 401。
+//    留空时两个按钮不会发请求，只提示「未配置 API Key」。
+const SF_CLOUD_API_KEY = 'R6fNcSm^$Z5d6s';
+// 与 analyzer / content / background 三处约定的存储键，改名要同步改那三处
+const SF_CLOUD_KEY_WHITE = 'sfCloudWhite';
+const SF_CLOUD_KEY_BLACK = 'sfCloudBlack';
+const SF_CLOUD_META_KEY = 'sfCloudListMeta';
+
+// 兼容多种云端 JSON 形态：纯数组 / {domains:[]} / {list:[]} / {data:[]} / 换行分隔字符串
+function normalizeCloudList(json) {
+  let arr = null;
+  if (Array.isArray(json)) arr = json;
+  else if (json && typeof json === 'object') {
+    const keys = ['domains', 'list', 'data', 'items', 'all', 'white', 'black'];
+    for (let i = 0; i < keys.length; i++) {
+      if (Array.isArray(json[keys[i]])) { arr = json[keys[i]]; break; }
+    }
+    if (!arr && json.data && Array.isArray(json.data.domains)) arr = json.data.domains;
+  } else if (typeof json === 'string') {
+    arr = json.split(/[\r\n,]+/);
+  }
+  const out = new Set();
+  (arr || []).forEach((d) => {
+    let v = String(d == null ? '' : d).trim().toLowerCase();
+    // 带协议头的按 URL 解析取 host，避免把 "https://a.com/x" 截成 "https:" 或 "a"
+    if (v.indexOf('://') !== -1) {
+      try { v = new URL(v).hostname; } catch (e) { return; }
+    } else if (v.indexOf('/') !== -1) {
+      // 无协议的路径式写法（如 "a/b.com"）不是域名，直接丢弃——
+      // 早期版本用 replace(/\/.*$/,'') 会把 "a/b.com" 截成 "a"，把垃圾洗成合法条目
+      return;
+    }
+    v = v.replace(/^www\./, '');
+    if (!v || v.length > 253) return;
+    if (/[\s@]/.test(v) || v.indexOf('..') !== -1) return;
+    out.add(v);
+  });
+  return Array.from(out);
+}
+
+function setCloudStatus(text) {
+  const el = $('cloudListStatus');
+  if (el) el.textContent = text;
+}
+
+// 统一的同步状态文案：只报云端名册规模（黑 / 白），不报「新增/合并」这类中间量，
+// 因为合并后本地条数会把内置与云端混在一起，用户真正关心的是云端有多少条。
+function cloudCountsText(w, b) {
+  return '已更新，云端黑名单' + b + '条，云端白名单' + w + '条';
+}
+
+function refreshCloudListStatus() {
+  const el = $('cloudListStatus');
+  if (!el) return;
+  if (!hasStorageLocal()) { el.textContent = '未同步（当前环境无扩展存储）'; return; }
+  chrome.storage.local.get({ [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_META_KEY]: {} }, (o) => {
+    const w = (o[SF_CLOUD_KEY_WHITE] || []).length;
+    const b = (o[SF_CLOUD_KEY_BLACK] || []).length;
+    if (!w && !b) { el.textContent = '未同步'; return; }
+    const m = o[SF_CLOUD_META_KEY] || {};
+    const t = Math.max((m.white && m.white.updated) || 0, (m.black && m.black.updated) || 0);
+    el.textContent = cloudCountsText(w, b);
+    // 同步时间放在 title 里：正文只保留用户要的那句，鼠标悬停仍能看到上次同步时刻
+    if (t) el.title = '上次同步 ' + formatAbsTime(t);
+  });
+}
+
+async function fetchCloudList(type) {
+  const url = SF_CLOUD_API + '?type=' + (type === 'white' ? 'white' : 'black') + '&_=' + Date.now();
+  const res = await fetch(url, { headers: { 'X-API-Key': SF_CLOUD_API_KEY }, cache: 'no-store' });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = '';
+    try { msg = (JSON.parse(text) || {}).error || ''; } catch (e) {}
+    if (res.status === 401) throw new Error('鉴权失败：API Key 与 worker 的 LIST_API_KEY 不一致');
+    throw new Error(msg || ('HTTP ' + res.status));
+  }
+  let json;
+  try { json = JSON.parse(text); } catch (e) { throw new Error('云端返回的不是合法 JSON'); }
+  const list = normalizeCloudList(json);
+  if (!list.length) throw new Error('云端名单为空，或结构无法识别');
+  return list;
+}
+
+// 一次拉取黑 + 白两份云端名单并整体覆盖本地快照。
+// 合并成一个按钮的原因：两份名单本来就是同一次部署的产物，分开点会出现
+// 「黑名单已更新、白名单还是旧的」这种过期组合，状态行也没法一次报全。
+async function updateCloudLists(btn) {
+  if (!SF_CLOUD_API_KEY) {
+    setCloudStatus('未配置 API Key：请先在 ui/options.js 填入 SF_CLOUD_API_KEY');
+    return;
+  }
+  if (!hasStorageLocal()) { setCloudStatus('当前环境不支持扩展存储'); return; }
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  setCloudStatus('正在从云端拉取黑白名单…');
+  try {
+    // 两份并行拉取；任一失败都会抛错，此时本地不做任何写入（不会出现半新半旧）
+    const lists = await Promise.all([fetchCloudList('white'), fetchCloudList('black')]);
+    const white = lists[0];
+    const black = lists[1];
+    const cur = await new Promise((resolve) => {
+      chrome.storage.local.get({
+        [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_META_KEY]: {}
+      }, resolve);
+    });
+    // 镜像覆盖：云端这份直接替换旧快照（不是并集），云端删掉的条目才会真正失效
+    const diff = function (prev, next) {
+      const p = new Set(prev || []);
+      const n = new Set(next);
+      return {
+        added: next.filter(function (d) { return !p.has(d); }).length,
+        removed: (prev || []).filter(function (d) { return !n.has(d); }).length
+      };
+    };
+    const dw = diff(cur[SF_CLOUD_KEY_WHITE], white);
+    const db = diff(cur[SF_CLOUD_KEY_BLACK], black);
+    const now = Date.now();
+    const meta = Object.assign({}, cur[SF_CLOUD_META_KEY] || {});
+    meta.white = { updated: now, count: white.length, pulled: white.length, added: dw.added, removed: dw.removed };
+    meta.black = { updated: now, count: black.length, pulled: black.length, added: db.added, removed: db.removed };
+    await new Promise((resolve) => {
+      chrome.storage.local.set({
+        [SF_CLOUD_KEY_WHITE]: white, [SF_CLOUD_KEY_BLACK]: black, [SF_CLOUD_META_KEY]: meta
+      }, resolve);
+    });
+    if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message || '写入失败');
+    refreshCloudListStatus();
+    setCloudStatus(cloudCountsText(white.length, black.length));
+    console.log('[云端名单] 黑', black.length, '条（新增', db.added, '/ 移除', db.removed,
+      '）；白', white.length, '条（新增', dw.added, '/ 移除', dw.removed, '）');
+    showToast();
+  } catch (e) {
+    setCloudStatus('名单同步失败：' + (e && e.message ? e.message : '未知错误'));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+(function initCloudListSync() {
+  function bind() {
+    const b = $('cloudPullList');
+    if (b) b.addEventListener('click', function () { updateCloudLists(b); });
+    refreshCloudListStatus();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();

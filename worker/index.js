@@ -113,31 +113,13 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
 };
 
-// 从 GitHub 拉取文件并存入 KV 的函数
-async function syncListToKV(env, fileName, kvKey) {
-  try {
-    const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${fileName}?ref=${BRANCH}`;
-    const res = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
-        "Accept": "application/vnd.github.v3.raw", // 直接拿原始文本
-        "User-Agent": "Cloudflare-Worker-SilverFox"
-      }
-    });
-    
-    if (!res.ok) throw new Error(`GitHub API 报错: ${res.status}`);
-    const content = await res.text(); // 获取 JSON 文本
-    
-    // 简单校验一下是否是合法 JSON，防止拉下来坏数据
-    JSON.parse(content); 
-    
-    // 写入 KV
-    await env.LIST_KV.put(kvKey, content);
-    console.log(`[同步成功] ${fileName} 已更新到 KV.`);
-  } catch (error) {
-    console.error(`[同步失败] ${fileName}:`, error);
-  }
-}
+// 说明：原 syncListToKV() 已删除。
+// 它把 GitHub 上的名单写入 env.LIST_KV，但 LIST_KV 这个 KV 绑定已不存在
+// （wrangler.toml 里只绑定了 RATE_LIMIT_KV 与 FEEDBACK），调用时会抛
+// "Cannot read properties of undefined (reading 'put')"。
+// /list 本来就是实时读 GitHub、不经过 KV，因此删除该函数不影响任何功能。
+// 若日后想启用 KV 缓存：先在 wrangler.toml 加 [[kv_namespaces]] binding = "LIST_KV"，
+// 再恢复写入逻辑即可。
 
 export default {
   // 1. 处理 HTTP 请求 (用户反馈 & 扩展拉取名单)

@@ -25,16 +25,20 @@
   // ============ 官方域名快速索引（精确 + 子域匹配）============
   const OFFICIAL_SET = new Set((IOCS.OFFICIAL_DOMAINS || []).map(d => d.toLowerCase()));
 
-  // ============ 用户指定豁免域名（整站不拦截 / 不评分告警 / 不参与连坐）============
-  const EXCEPTION_SET = new Set((IOCS.EXCEPTION_DOMAINS || []).map(d => d.toLowerCase()));
-  // 精确或子域后缀命中（与 isOfficialDomain 同语义：www. 前缀先去掉，再比对）
+  // ============ 用户指定信任域名 ============
+  // 2026-11-08 合并：旧版另有一份 EXCEPTION_DOMAINS 名单，与 OFFICIAL_DOMAINS 的判定语义
+  // 完全一致（都是「早期退出、跳过全部检测」），分成两套只会让同一站点在两条路径上
+  // 出现不一致的判定（例如 qianwenai.com 能跳过仿冒，却仍参与缺备案号等维度）。
+  // 现统一并入 iocs.js 白名单目录的「用户指定信任」大类 → OFFICIAL_DOMAINS。
+  // ⚠️ 保留本函数名是因为 content/content.js 仍在调用它（下载计数跳过），语义已收窄为
+  //    「该主机是否在白名单内（精确或父域命中）」。
   function isExceptionHost(host) {
-    host = (host || '').toLowerCase().replace(/^www\./, '');
+    host = (host || '').toLowerCase().replace(WWW_RE, '');
     if (!host) return false;
-    if (EXCEPTION_SET.has(host)) return true;
+    if (OFFICIAL_SET.has(host)) return true;
     let i = host.indexOf('.');
     while (i !== -1) {
-      if (EXCEPTION_SET.has(host.slice(i + 1))) return true;
+      if (OFFICIAL_SET.has(host.slice(i + 1))) return true;
       i = host.indexOf('.', i + 1);
     }
     return false;
@@ -87,8 +91,16 @@
   // ============ 已知恶意域名硬编码黑名单（银狐木马投递站，命中即强制 danger）============
   const BAD_SET = new Set((IOCS.KNOWN_BAD_DOMAINS || []).map(d => d.toLowerCase()));
   const _badCache = new Map();
+  // ★ 2026-11-08：云端黑名单注入槽（由 registerCloudBad 填充，见下方「运行时动态注入槽位」）。
+  //   声明提前到这里，是因为 isKnownBad 的缓存计算函数要直接引用它；
+  //   与内置 BAD_SET 同语义（后缀命中即强制 danger），但来源为 storage.local，可随时更新。
+  const EXTRA_BAD_SET = new Set();
   function isKnownBad(hostname) {
-    return _memoHost(_badCache, hostname, (h) => _suffixHit(BAD_SET, h));
+    return _memoHost(_badCache, hostname, (h) => _suffixHit(EXTRA_BAD_SET, h) || _suffixHit(BAD_SET, h));
+  }
+  // 本次命中是否来自云端名单（仅用于给出更准确的「依据」文案，不影响判定强度）
+  function isCloudBad(hostname) {
+    return _suffixHit(EXTRA_BAD_SET, hostname);
   }
 
   // ============ 政府/公立机构可信域名（严格资质管控后缀，仿冒概率极低）============
@@ -102,21 +114,64 @@
     return _suffixHit(GOV_SET, hostname);
   }
 
-  // ============ 运行时动态白名单注入槽位（原作者的云端库已移除，此槽位保留待用）============
+  // ============ 运行时动态名单注入槽位（黑白各一，供「从云端更新名单」使用）============
   // 2026-11-01：原作者的云端官网库（site-directory-cache.pages.dev / 250,603 条 /
   // Tranco Top-1M 衍生清单）已随其数据源一并完整移除。
   // 此处保留的是「注入槽位」本身：一组字符串 + 一个注入函数，不含任何网络请求，
   // 也不含原作者特有的判定逻辑，故不属于需清理的死代码。
-  // 保留理由：日后启用 background.js 的「我的云端库」模板时，直接调用
-  // registerCloudOfficial 即可让 isOfficialDomain 立即生效，无需改动本文件。
-  // 若你确定彻底不要任何云端名单，可连同下方 isOfficialDomain 中的
-  // _suffixHit(EXTRA_OFFICIAL_SET, h) 一项一并删除。
+  // 2026-11-08：接入自建云端名单（worker /list?type=white|black）后正式启用——名单存放在
+  //   chrome.storage.local，由 content.js / background.js 在启动时读取并调用这里注入，
+  //   避免把上千条域名塞进 storage.sync 的 8KB 单键配额。
+  // ⚠️ 注入后必须清空相关缓存：isOfficialDomain / isKnownBad 都走 _memoHost，
+  //   缓存里存的是「注入前」的判定结果，不清就会出现「明明同步了云端名单却仍被判危」。
   const EXTRA_OFFICIAL_SET = new Set();
-  function registerCloudOfficial(arr) {
-    if (!arr) return;
-    for (const d of arr) {
-      if (d && typeof d === 'string') EXTRA_OFFICIAL_SET.add(d.toLowerCase().replace(WWW_RE, ''));
+  // 云端名单统一清洗：小写、去 www.、剔除含空格/斜杠/协议等明显不是域名的项
+  function _normCloudDomain(d) {
+    if (typeof d !== 'string') return '';
+    const v = d.trim().toLowerCase().replace(WWW_RE, '');
+    if (!v || v.length > 253) return '';
+    if (v.indexOf(' ') !== -1 || v.indexOf('/') !== -1 || v.indexOf('@') !== -1 || v.indexOf('..') !== -1) return '';
+    return v;
+  }
+  // ★ 覆盖语义（opts.replace）：本地存储的是云端的「镜像」，每次更新是整体替换而非累加，
+  //   因此这里也必须先清空再灌入——否则云端删掉的条目会残留在内存集合里，
+  //   表现为「云端已移除，浏览器里仍然拦截」，直到重启浏览器才消失。
+  //   不传 opts 时保持旧的累加行为，兼容其它调用方。
+  function registerCloudOfficial(arr, opts) {
+    const replace = !!(opts && opts.replace);
+    const before = EXTRA_OFFICIAL_SET.size;
+    if (replace) EXTRA_OFFICIAL_SET.clear();
+    if (Array.isArray(arr)) {
+      for (const d of arr) {
+        const v = _normCloudDomain(d);
+        if (v) EXTRA_OFFICIAL_SET.add(v);
+      }
     }
+    const added = EXTRA_OFFICIAL_SET.size - (replace ? 0 : before);
+    // 覆盖模式下即使集合最终为空（云端清空名单）也必须失效缓存，
+    // 否则先前按「官方」缓存的域名会一直判为安全。
+    if (replace || EXTRA_OFFICIAL_SET.size !== before) {
+      _officialCache.clear();
+      // 仿冒判定的三处缓存都依赖「是否官方域名」，一并失效，
+      // 否则刚同步进白名单的域名仍会被当作仿冒站（detectSpoof 有独立的 host 级缓存）。
+      _brandSelfCache.clear();
+      _spoofHostCache.clear();
+    }
+    return added;
+  }
+  function registerCloudBad(arr, opts) {
+    const replace = !!(opts && opts.replace);
+    const before = EXTRA_BAD_SET.size;
+    if (replace) EXTRA_BAD_SET.clear();
+    if (Array.isArray(arr)) {
+      for (const d of arr) {
+        const v = _normCloudDomain(d);
+        if (v) EXTRA_BAD_SET.add(v);
+      }
+    }
+    const added = EXTRA_BAD_SET.size - (replace ? 0 : before);
+    if (replace || added) _badCache.clear();
+    return added;
   }
 
   const _officialCache = new Map();
@@ -297,11 +352,45 @@
       .filter(b => /^[a-z0-9-]{4,}$/.test(b) && !_isGenericBrandWord(b))
   );
 
+  // ============ 中国境内后缀族（跨注册局 → 域名主干不构成所有权证据）============
+  // ⚠️ 2026-11-05 实测漏报（todesk.com.cn 未判仿冒，而 todesk.cn.com 判 124 分）：
+  //   下方「品牌方自有站点」豁免原先把「注册域主干恰好等于品牌词」当成**所有权证据**。
+  //   该推定只在**同一注册局内**成立：todesk.com 若已被他人抢注，ToDesk 就拿不到它；
+  //   但 todesk.com 属于 .com 注册局、todesk.com.cn 属于 .cn 注册局，
+  //   ToDesk 持有前者与「谁能注册后者」毫无关系 —— 任何人花几十元就能拿到 todesk.com.cn。
+  //   而国内用户天然把 xxx.com.cn 当成「官方中国站」，这正是银狐最爱的仿冒形态。
+  //   旧的廉价后缀黑名单（tk/ml/xyz/top…）恰好漏掉了 cn 系，于是 todesk.com.cn 被当成
+  //   品牌方自有站点 ⇒ 域名仿冒 / 缺备案号 / 假冒官方话术 三个维度同时弃权 ⇒ 只剩 18 分 ⇒ 漏报。
+  //   修复：cn 系后缀上的「主干 == 品牌词」只算**候选身份**，必须另有所有权佐证
+  //   （权威 ICP 备案库确认本域名确有备案，或官方域名表本就登记了该品牌在同后缀上的域名）。
+  const _CN_FAMILY_SUFFIX = new Set([
+    'cn', 'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn', 'co.cn',
+    'com.hk', 'com.tw', 'com.mo'
+  ]);
+  function _isCnFamilySuffix(suffix) {
+    return !!suffix && _CN_FAMILY_SUFFIX.has(String(suffix).toLowerCase());
+  }
+  // 品牌 → 官方域名表里已登记过的「中国境内后缀」集合
+  // （例：OFFICIAL_DOMAINS 含 lenovo.com.cn ⇒ lenovo 在 com.cn 上的站点属于已核实官网）。
+  const _brandCnSuffixes = new Map();
+  for (const _od of (IOCS.OFFICIAL_DOMAINS || [])) {
+    const _oreg = getRegistrableDomain(_od);
+    const _olb = _oreg.split('.');
+    if (_olb.length < 2) continue;
+    const _osuf = _olb.slice(1).join('.');
+    if (!_isCnFamilySuffix(_osuf)) continue;
+    const _osld = _olb[0];
+    if (!_osld || _osld.length < 4) continue;
+    if (!_brandCnSuffixes.has(_osld)) _brandCnSuffixes.set(_osld, new Set());
+    _brandCnSuffixes.get(_osld).add(_osuf);
+  }
+
   // ============ 「品牌方自家站点」判定 ============
   // 判据（任一成立，均属不可伪造的所有权证据）：
   //   ① 域名命中人工维护的官方域名表（isOfficialDomain）；
   //   ② 注册域名的二级标签**恰好等于**已知品牌词，且后缀是品牌方会用的常规后缀 ——
   //      drweb.cn 的 SLD 就是 drweb，kaspersky.com.cn 的 SLD 就是 kaspersky。
+  //      ⚠️ ② 在 cn 系后缀上只是**候选身份**（见上），需 ICP 备案佐证后才成立。
   // 用途：这类站点上「缺备案号」「以品牌名义提供下载」「外链分散」等维度天然不成立，
   // 应在这些**与站点身份相关**的维度上弃权；但载荷级证据（可疑文件名 / 运行时取链 /
   // 混淆脚本 / 已知投递域名）一律照常参与判定——官网被入侵挂马时仍能被拦下。
@@ -311,6 +400,8 @@
   //    com/net/org 或 ccTLD（含 com.cn 这类二级后缀），而滥用集中在 tk/ml/ga/cf/gq/
   //    cc/pw/ws/su/top/xyz 等后缀上。若品牌确实注册了其它后缀，把它加进 OFFICIAL_DOMAINS
   //    走 ① 号通道即可。
+  //    ⚠️ 2026-11-05：cn 系后缀例外——它们同样「几块钱就能注册」，只是贵一点，
+  //    且是银狐最主要的仿冒后缀，故在 _brandSelfVerdict 里额外要求 ICP 备案佐证（见上）。
   const _ABUSED_SUFFIX = new Set(['tk', 'ml', 'ga', 'cf', 'gq', 'cc', 'pw', 'ws', 'su', 'cm', 'top', 'xyz', 'buzz', 'cyou', 'icu', 'rest', 'sbs', 'cfd']);
   // 廉价/批量注册 TLD 黑名单（复用 iocs.js 的 SUSPICIOUS_TLDS，避免两张表各自维护）
   const _CHEAP_TLD = new Set((IOCS.SUSPICIOUS_TLDS || []).map(t => String(t).toLowerCase()));
@@ -339,24 +430,53 @@
     // 其余非黑名单的通用顶级域（info / io / dev / app / wiki / cloud / edu / gov …）
     return /^[a-z]{3,}$/.test(last);
   }
-  function _brandOwnedSld(hostname) {
+  // 判定「注册域主干恰好是品牌词」这一身份候选，并给出该证据链是否可独立成立。
+  // 返回 { sld, suffix, needIcp } 或 null：
+  //   needIcp=true ⇒ 该候选跨了注册局（cn 系后缀且官方域名表未登记同后缀域名），
+  //                  名字本身不构成所有权证据，必须另有 ICP 备案佐证才能豁免。
+  function _brandSelfVerdict(hostname) {
     const reg = getRegistrableDomain(hostname);
     const labels = reg.split('.');
-    if (labels.length < 2) return '';
+    if (labels.length < 2) return null;
     const sld = labels[0];
     const suffix = labels.slice(1).join('.');
-    if (!sld || !_BRAND_LABEL_SET.has(sld)) return '';
-    return _isReputableSuffix(suffix) ? sld : '';
+    if (!sld || !suffix) return null;
+    // 词库与仿冒判定同源：人工品牌词表 + 由官方域派生的品牌词（adguard 等），
+    // 否则 adguard.info 这类品牌方备用域名会因「派生词命中」被判仿冒（2026-10-30 治理）。
+    const known = _BRAND_LABEL_SET.has(sld) || (_SPOOF_KW_SET.has(sld) && sld.length >= 4);
+    if (!known) return null;
+    if (!_isReputableSuffix(suffix)) return null;
+    let needIcp = false;
+    if (_isCnFamilySuffix(suffix)) {
+      const listed = _brandCnSuffixes.get(sld);
+      needIcp = !(listed && listed.has(suffix));
+    }
+    return { sld: sld, suffix: suffix, needIcp: needIcp };
   }
+  const _brandSelfCache = new Map();
+  // 纯 hostname 版本（没有页面 / 备案上下文）：只有「同注册局证据」才算自有站点。
+  // 跨注册局的候选身份一律不放行——留给带上下文的 _isBrandSelfSiteData(data) 用 ICP 佐证，
+  // 绝不在这里凭名字直接豁免（这正是 todesk.com.cn 漏报的口子）。
   function isBrandSelfSite(hostname) {
     const h = String(hostname || '').toLowerCase().replace(WWW_RE, '');
     if (!h) return false;
     return _memoHost(_brandSelfCache, h, function (x) {
       if (isOfficialDomain(x)) return true;
-      return !!_brandOwnedSld(x);
+      const v = _brandSelfVerdict(x);
+      return !!(v && !v.needIcp);
     });
   }
-  const _brandSelfCache = new Map();
+  // 带上下文版本：跨注册局候选身份可用「确有 ICP 备案」佐证（备案需实名 + 审核 + 留痕，
+  // 银狐一次性投递域名基本不会去备案；kaspersky.com.cn / drweb.cn 这类真实地区站均有备案）。
+  function _isBrandSelfSiteData(data) {
+    if (!data) return false;
+    const h = String(data.hostname || '').toLowerCase().replace(WWW_RE, '');
+    if (!h) return false;
+    if (isOfficialDomain(h)) return true;
+    const v = _brandSelfVerdict(h);
+    if (!v) return false;
+    return !v.needIcp || _icpCorroborated(data);
+  }
 
   // ============ 前端渲染未完成识别（SPA 骨架页护栏）============
   // ⚠️ 2026-08-31 定位到的**架构级误报根因**：
@@ -554,7 +674,12 @@
     return out;
   }
 
-  function detectSpoof(hostname) {
+  function detectSpoof(hostname, opts) {
+    // opts.verifiedIcp：调用方是否已确认「本域名确有 ICP 备案」（权威库或页面备案号）。
+    //   undefined ⇒ 调用方没有备案上下文（如下载拦截路径只拿到 hostname）→ 保持旧行为放行，
+    //   避免在无证据可查时误伤品牌方真实地区站；带上下文的调用方（analyze 主链路）必须显式传入。
+    const _ctxKnown = !!(opts && typeof opts.verifiedIcp === 'boolean');
+    const _verifiedIcp = !!(opts && opts.verifiedIcp);
     const normalized = (hostname || '').toLowerCase().replace(WWW_RE, '');
     // ★ 用户指定豁免域名（如 qianwenai.com）：整站不判品牌仿冒（连同 content.js 的连坐/评分告警一并放行）。
     //   其余检测（缺备案 / 混淆脚本 / 木马安装包等）仍照常运行；其它 qianwen 仿冒站（go0gle 类等）仍受保护。
@@ -568,29 +693,21 @@
     // 判「域名仿冒」会造成海量合法页面误报。
     // ⚠️ 只跳过本条规则——页面内容仍照常参与混淆脚本 / 沙箱探测 / 木马安装包等全部检测。
     if (isTrustedPlatform(normalized)) return null;
-    // ★ 站点自身品牌豁免：注册域的二级标签恰好等于某品牌词 → 该品牌方自己的站点
-    //   （free.drweb.cn / www.kaspersky.com.cn 的 SLD 分别是 drweb / kaspersky），绝非仿冒。
-    //   仅做「精确相等」判定：kaspersky-update.com / drweb-cn.com 这类仿冒域名的 SLD
-    //   不等于品牌词，不会因此豁免；真正仿冒仍由后续段匹配 / 形近 / 编辑距离逻辑照常捕获。
-    const _selfBrand = _brandOwnedSld(normalized);
-    if (_selfBrand) return null;
-    // ★ 2026-10-30：与「仿冒词库」同源的"品牌方自有域名"豁免（adguard.info 误报）
-    //   _brandOwnedSld 只认人工维护的 BRAND_KEYWORDS，而仿冒词库 SPOOF_KEYWORDS
-    //   还包含**从 OFFICIAL_DOMAINS 派生**的品牌（adguard ← adguard.com …）。
-    //   两边不同源 ⇒ 品牌方自己的**备用域名**会被自家品牌词打成仿冒：
-    //     adguard.info = AdGuard 官方知识库（官方域表里只有 adguard.com/.org/.net）
-    //       → 段精确匹配命中派生词 adguard → 判「域名仿冒官方品牌」(STRONG +60)
-    //   判据（与 _brandOwnedSld 一致，只是词库换成仿冒词库）：
-    //     注册域二级标签**恰好等于**仿冒词库中的某品牌词，且后缀非廉价/滥用后缀
-    //   ⇒ 这是品牌方自己注册的域名，不是仿冒。
-    //   kaspersky.xyz / drweb.top / microsoft.live 因后缀在黑名单里，照常判危。
-    const _regSelf = getRegistrableDomain(normalized);
-    const _regLabels = _regSelf.split('.');
-    if (_regLabels.length >= 2) {
-      const _sldSelf = _regLabels[0];
-      const _sufSelf = _regLabels.slice(1).join('.');
-      if (_sldSelf && _sldSelf.length >= 4 &&
-          _SPOOF_KW_SET.has(_sldSelf) && _isReputableSuffix(_sufSelf)) return null;
+    // ★ 站点自身品牌豁免（2026-11-05 改造）：注册域主标签恰好等于某品牌词。
+    //   同一注册局内这是可靠的所有权证据（他人抢注 brand.com，品牌方就拿不到 brand.com）；
+    //   但跨注册局毫无约束力 —— todesk.com.cn / todesk.cn 谁都能注册，
+    //   故 cn 系后缀上的这类候选（needIcp=true）必须另有 ICP 备案佐证才豁免。
+    //   未获佐证时直接判仿冒，并给出可解释的 detail（这正是原先漏报 todesk.com.cn 的位置）。
+    const _selfV = _brandSelfVerdict(normalized);
+    if (_selfV) {
+      if (!_selfV.needIcp || _verifiedIcp) return null;
+      if (!_ctxKnown) return null;   // 无备案上下文 → 沿用旧行为（下载拦截路径）
+      return {
+        brand: _selfV.sld,
+        matchType: 'branddomain',
+        detail: `域名主干「${_selfV.sld}」等于品牌词，但「${_selfV.sld}.${_selfV.suffix}」既不在官方域名表中、也查不到 ICP 备案 —— ` +
+          `${_selfV.suffix} 与品牌方官网分属不同注册局，任何人都可注册该同名域名（仿冒站典型形态）`
+      };
     }
     // 形近字符规范化后再做品牌词匹配（捕获 0→o / rn→m / 1→l 等 homoglyph 仿冒）
     const h = normalizeHomoglyph(normalized);
@@ -684,14 +801,16 @@
     return null;
   }
 
-  // detectSpoof 只依赖 hostname（纯函数），但单次 analyze 内的 data 级缓存会在
+  // detectSpoof 只依赖 hostname + verifiedIcp，但单次 analyze 内的 data 级缓存会在
   // 每次 analyze 入口被清空（异步补强后需按新 icpAuth 重判），导致同一域名反复重算。
   // 这里加一层 host 级缓存：结果恒定，重判时直接命中，省掉整轮品牌词矩阵与编辑距离。
+  // ⚠️ 2026-11-05：缓存的 key 必须带上 verifiedIcp —— 同一域名在「无备案上下文」与
+  //   「已确认备案」两种上下文下结论可能不同（cn 系品牌候选身份），否则会串味。
   const _spoofHostCache = new Map();
-  function detectSpoofCached(hostname) {
-    const k = hostname || '';
+  function detectSpoofCached(hostname, verifiedIcp) {
+    const k = (hostname || '') + (verifiedIcp ? '|1' : '|0');
     if (_spoofHostCache.has(k)) return _spoofHostCache.get(k);
-    const r = detectSpoof(k);
+    const r = detectSpoof(hostname, { verifiedIcp: !!verifiedIcp });
     if (_spoofHostCache.size > 512) _spoofHostCache.clear();
     _spoofHostCache.set(k, r);
     return r;
@@ -705,6 +824,24 @@
     return !!(a && a.queried && a.hasIcp);
   }
 
+  // ============ 「本域名确有备案」的佐证（用于 cn 系后缀的品牌候选身份）============
+  // 优先级：权威备案库 > 页面备案号。
+  //   权威库明确「无备案」时，页面上的备案号反而是盗用证据（detIcpStolen 重罚 55 分），
+  //   绝不能拿它当佐证 —— 故 auth.queried && !hasIcp 一律否决。
+  //   仅在「查询失败 / 用户关闭联网核验」时回退页面扫描（与 detIcpMissing 同口径）。
+  function _icpCorroborated(data) {
+    if (!data) return false;
+    if (_hasVerifiedIcp(data)) return true;
+    const a = data.icpAuth || {};
+    if (a.queried) return false;
+    let icp = data.icp;
+    if (!icp) {
+      // data.icp 由 content.js 采集；后台 / 测试等只传 html 的入口按需补算一次（结果缓存回 data）
+      icp = data.icp = extractIcp(data.html || '');
+    }
+    return !!(icp.hasIcpNumber || icp.hasGovIcp || icp.hasBeianLink);
+  }
+
   // 性能优化：detectSpoof 含编辑距离计算，单次 analyze 内会被多次调用，
   // 在同一 data 对象上缓存结果，避免重复计算
   function getSpoof(data) {
@@ -715,7 +852,7 @@
       //   ⚠️ 仅跳过仿冒这一条规则，其余检测照常——备案站也可能被入侵或由空壳主体持有；
       //      且硬编码恶意域名黑名单在 analyze 最前面拦截，永不受本跳过影响。
       if (_hasVerifiedIcp(data)) data._spoofCache = null;
-      else data._spoofCache = detectSpoofCached(data.hostname);
+      else data._spoofCache = detectSpoofCached(data.hostname, _icpCorroborated(data));
     }
     return data._spoofCache;
   }
@@ -763,7 +900,7 @@
     //   完全可能把备案信息放在「关于我们」或仅以图片展示，页面文本扫不到。
     //   「缺备案号」这一弱信号的用途是识别伪造国内身份的钓鱼站，
     //   而品牌官方站的身份已由域名本身证明，故该维度直接弃权。
-    if (isBrandSelfSite(data.hostname)) return mk(false, 0, '缺备案号(ICP)', '');
+    if (_isBrandSelfSiteData(data)) return mk(false, 0, '缺备案号(ICP)', '');
     const isCn = (data.hostname || '').toLowerCase().endsWith('.cn');
     // 品牌仿冒（如 m1-update-secure.com 这类仿小米但非 .cn 的站）仍需 ICP 维度兜底
     const spoof = getSpoof(data);
@@ -948,7 +1085,7 @@
     // 品牌方自家站点：官网/下载中心天然集中陈列多个安装包（卡巴斯基、Dr.Web 的下载页就是
     // 「一屏都是下载按钮」），「下载入口占比高」是该业态的必然结果，不是交付页特征。
     // 载荷级证据（可疑文件名 / 跨域投递 / 运行时取链）不受影响，仍由各自维度判定。
-    const brandSelf = isBrandSelfSite(pageHost);
+    const brandSelf = _isBrandSelfSiteData(data);
     if (brandSelf && dlRatio < 0.5) return mk(false, 0, '链接分析异常', '');
     // ① 下载入口占比：交付页 10 条链接里 6 条下载（60%）；企业站 180 条里 8 条（4%）
     if (dlCnt >= 2 && dlRatio >= 0.3) { w += 16; bits.push(`下载/可执行入口 ${dlCnt} 个，占本站链接 ${pct}%`); }
@@ -1284,7 +1421,7 @@
     // ⚠️ 2026-10-27 自品牌豁免：注册域 SLD 恰好是品牌词且后缀为品牌方常规后缀
     //   （kaspersky.com.cn / drweb.cn），这是品牌方自己的站点，页面出现「官方版 / 正版」
     //   属常态。后缀白名单见 _isReputableSuffix —— kaspersky.xyz 这类仿冒域名不在此列。
-    if (isBrandSelfSite(data.hostname)) return mk(false, 0, '假冒官方话术', '');
+    if (_isBrandSelfSiteData(data)) return mk(false, 0, '假冒官方话术', '');
     const text = data._titleHtmlLower;
     let n = 0;
     for (const kw of FAKE_OFFICIAL_LOWER) if (text.includes(kw)) n++;
@@ -1911,7 +2048,7 @@
     const _proto = (data.protocol || location.protocol || '').toLowerCase();
     if (_proto && _proto !== 'http:' && _proto !== 'https:') {
       return {
-        score: 0, level: 'safe', detected: false, official: false, spoof: null,
+        score: 0, level: 'safe', detected: false, official: false, spoof: null, skip: 'protocol',
         reasons: [{ label: '本地/内部页面', detail: '非 http(s) 协议（' + _proto + '），跳过银狐检测', weight: 0 }],
         features: {}, threshold: danger
       };
@@ -1922,17 +2059,25 @@
     const _host = (data.hostname || '').toLowerCase().replace(WWW_RE, '');
     if (_host === 'localhost' || _host === '127.0.0.1' || _host === '[::1]' || _host.endsWith('.localhost')) {
       return {
-        score: 0, level: 'safe', detected: false, official: true, spoof: null,
+        score: 0, level: 'safe', detected: false, official: true, spoof: null, skip: 'localhost',
         reasons: [{ label: '本地开发地址', detail: 'localhost / 127.0.0.1 本地回环地址，跳过银狐检测', weight: 0 }],
         features: {}, threshold: danger
       };
     }
 
-    // ---- 已知木马投递站硬拦截（硬编码黑名单，永不豁免，强制 danger）----
+    // ---- 已知木马投递站硬拦截（内置 / 云端黑名单，永不豁免，强制 danger）----
     if (isKnownBad(data.hostname)) {
+      // 区分来源只为文案准确：云端名单是用户自己「从云端更新」拉下来的，写「内置」会说不通。
+      const _fromCloud = isCloudBad(data.hostname);
       return {
         score: 100, level: 'danger', detected: true, official: false, spoof: null,
-        reasons: [{ label: '已知银狐木马站点', detail: `「${data.hostname}」在硬编码恶意域名黑名单中，已强制拦截并禁用下载入口`, weight: 100 }],
+        reasons: [{
+          label: _fromCloud ? '云端黑名单' : '扩展内置黑名单',
+          detail: _fromCloud
+            ? '该域名在你的云端恶意域名名单中，已强制判定为危险并拦截。'
+            : '该域名在扩展内置的恶意域名黑名单中，已强制判定为危险并拦截。',
+          weight: 100
+        }],
         features: { knownBad: true }, threshold: danger
       };
     }
@@ -1940,7 +2085,7 @@
     // ---- 官方早期退出（根治真官网误拦）----
     if (isOfficialDomain(data.hostname)) {
       return {
-        score: 0, level: 'safe', detected: false, official: true, spoof: null,
+        score: 0, level: 'safe', detected: false, official: true, spoof: null, skip: 'official',
         reasons: [{ label: '官方可信域名', detail: `「${data.hostname}」在官方白名单中，直接判定安全`, weight: 0 }],
         features: {}, threshold: danger
       };
@@ -2107,6 +2252,8 @@
     isExceptionHost,
     isBrandSelfSite,
     registerCloudOfficial,
+    registerCloudBad,
+    isCloudBad,
     isTrustedPlatform,
     detectSpoof,
     extractIcp,

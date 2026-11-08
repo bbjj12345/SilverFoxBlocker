@@ -1,99 +1,160 @@
 # 隐私政策 / Privacy Policy
 
-**SilverFoxBlocker**（以下简称"本扩展"）
+**SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期 / Effective Date：2026-10-31（更新至 v1.0.0）
-
----
-
-## 一、我们收集什么 / What we collect
-
-本扩展的防护检测**以本地运行为主**：核心判定逻辑、特征库与评分引擎都随扩展打包，在您设备的内容脚本与后台服务中执行。为及时补充官方已知安全站点清单，扩展后台会按需实时拉取云端官方域名库（仅含官方域名清单、不含任何页面内容或用户访问记录）作为辅助；拉取的数据仅驻留在内存中、用完即清，绝不写入本地存储。
-
-我们**不收集、不上传、不传输**您的浏览历史、书签、Cookie、登录凭据、表单输入，以及任何可识别个人身份的信息（姓名、邮箱、电话、IP 地址等）。
-
-除用户主动触发的下载外，本扩展自动发出的网络请求主要包括：
-
-1. **域名年龄查询。** 为判断一个网站是否新注册（银狐木马常使用新域名投递），本扩展仅将网站的**注册域名**（例如 `example.com`，不含路径、参数或页面内容）发送给公共 RDAP / WHOIS 服务器。该请求不包含您的任何个人信息，也不包含所访问页面的任何内容。
-
-2. **资源解析请求。** 为识别经脚本跳转、页面内嵌直链、重定向转发、文本文件内藏匿地址等伪装的钓鱼或木马下载投递，扩展会在您访问的页面上下文内，按需向该网页所引用的资源地址发起有限的网络请求（如脚本内直链、meta refresh 跳转目标、iframe 内嵌资源、重定向目标、同域文本文件等），用于解析其真实指向。此类请求遵循以下原则：仅用于本地风险判定，请求不发往本扩展运营方的服务器；跨站请求不携带您的登录凭据（不发送 Cookie），仅读取资源响应以判断其真实地址；不收集、不上传任何个人信息。
-
-3. **云端官方域名库拉取。** 为及时补充官方已知安全 / 官网域名清单，扩展后台服务会按需向云端官方静态站点实时请求 `official-domains.json`（托管于 Cloudflare Pages）。该请求仅拉取一份公开的官方域名清单，**不包含您访问的任何网址、页面内容或个人身份信息**；返回数据仅驻留内存（Set 结构）用于即时判定，判定完成后即释放，不写入 `storage.local`，也不向该云端回传任何信息。
-
-**另有一次用户主动触发的下载行为。** 在「银狐急救」功能中，当用户点击下载按钮时，扩展通过浏览器标准下载 API 从 360 官方域名 `dl.360safe.com` 拉取 360 系统急救箱压缩包。该请求仅为文件下载、不含任何个人信息，扩展也不会执行或读取该文件内容。
-
-The extension's protection runs primarily on-device: core detection logic, the signature library, and the scoring engine are all bundled and executed in your browser's content scripts and background service. To keep the official known-safe domain list up to date, the extension fetches a cloud-hosted official domain list on demand in the background (it contains only official domain names—no page content or user visit records) as a supplementary reference; the fetched data resides in memory only, is cleared immediately after use, and is never written to local storage.
-
-We do not collect, upload, or transmit your browsing history, bookmarks, cookies, credentials, form inputs, or any personally identifiable information (name, email, phone, IP, etc.). The extension makes two kinds of automatic outbound network requests:
-
-1. **Domain-age lookup.** To judge whether a site is newly registered (a common SilverFox delivery tactic), the extension sends **only the registrable domain** (e.g. `example.com`, without path, query, or page content) to public RDAP/WHOIS servers. This request contains no personal data and no page content.
-
-2. **Resource-resolution requests.** To detect phishing or trojan download delivery disguised through script redirects, in-page direct links, redirect forwarding, or addresses hidden inside text files, the extension may, within the context of the page you are visiting, issue limited network requests to resource URLs referenced by that page (such as script-embedded links, meta-refresh targets, iframe-embedded resources, redirect targets, and same-origin text files) in order to resolve their true destination. These requests follow these principles: they are used only for on-device risk assessment and are not sent to the extension operator's servers; cross-origin requests carry no login credentials (no cookies are sent) and only read the resource response to determine its real address; no personal data is collected or uploaded.
-
-3. **Cloud official-domain-list fetch.** To keep the official known-safe/official domain list current, the extension's background service fetches `official-domains.json` from a cloud-hosted static site (Cloudflare Pages) on demand. This request only retrieves a public list of official domain names; it contains none of the URLs you visit, no page content, and no personal data. The returned data lives only in memory (a Set) for immediate matching, is released right after use, is never written to `storage.local`, and nothing is sent back to that cloud endpoint.
-
-**There is also one user-initiated download.** In the "SilverFox Rescue" feature, when the user clicks the download button, the extension uses the browser's standard download API to fetch the 360 System Rescue Box archive from 360's official domain `dl.360safe.com`. This request is purely a file download carrying no personal data, and the extension does not execute or read the file's contents.
+生效日期：2026-11-06　|　适用版本：v1.0.5
 
 ---
 
-## 二、数据存储 / Data storage
+## 一、一句话概括
 
-- 您的设置通过浏览器本地 `storage` 保存，仅存于本机，不与任何服务器同步。
-- 拦截统计仅保存在本地，用于扩展内展示，不上传任何服务器。
-
-Your settings are stored locally via the browser's `storage` API and never synced to any server. Blocking statistics remain on-device and are never uploaded.
+本扩展的**检测、评分、名单比对全部在你的设备上完成**；不建立账号、不收集浏览历史、不向作者或任何分析平台上传数据。只有你**主动开启**的威胁情报源、**主动点击**的急救下载与反馈，才会向第三方发出请求——每一类请求的目标与内容都在下文逐条列出。
 
 ---
 
-## 三、远程代码 / Remote code
+## 二、本地完成的部分
 
-本扩展**不包含任何远程托管的脚本**。所有检测逻辑、规则与评分引擎都随扩展一并打包，运行时不从网络加载任何可执行脚本。
+以下能力运行时**不产生任何网络请求**：
 
-The extension **does not use any remotely hosted executable scripts**. All detection logic, rules, and the scoring engine are bundled with the package; no executable script is loaded from the network at runtime. 
-
----
-
-## 四、第三方共享 / Third parties
-
-我们不与任何第三方共享、出售或交易您的个人数据。除上文所述的公共 RDAP 查询、资源解析请求（仅本地读取响应以判定真实地址，不构成数据共享）、后台按需拉取的云端官方域名库（仅取回一份公开官方域名清单、不向该云端回传任何信息）、「银狐急救」中用户主动触发的 急救工具 下载外，本扩展不调用任何第三方服务、广告或分析平台。
-
-We do not share, sell, or trade your personal data with any third party. Apart from the public RDAP lookup, the resource-resolution requests described above (read locally only), the on-demand cloud official-domain-list fetch (retrieves only a public domain list and sends nothing back), the user-initiated download of those rescue tools, the extension calls no third-party services, advertising, or analytics platforms.
+- 页面结构、下载入口、话术特征的采集与加权评分（`rules/analyzer.js`）；
+- 官方域名表、恶意域名、可疑 TLD、话术词表等内置特征库（`rules/iocs.js`）；
+- 下载拦截、跳转链追踪、拦截浮层与提示；
+- 社区黑名单的**比对**（名单下载是一次性的 GET，比对本身全在本地）；
+- 防护统计、白名单/黑名单、界面设置。
 
 ---
 
-## 五、用户控制 / Your controls
+## 三、自动发出的网络请求
 
-- 可随时关闭扩展；
-- 可将信任的网站加入白名单；
-- 可清除本地统计。
+### 3.1 默认开启（可在设置页关闭）
 
-You may disable protection globally at any time, add trusted sites to the allowlist, and clear local statistics.
+**① 域名年龄查询（RDAP）**
+为判断站点是否新注册（银狐常用新域名投递），扩展只把**注册域名**（例如 `example.com`，不含路径、参数、页面内容）发给公共 RDAP 服务（`rdap.org` 及各注册局）。不携带任何个人信息。
+
+**② ICP 备案核验**
+当页面存在可疑信号、需要判断「是否国内备案站」时，扩展把**域名**发给公开的备案查询接口（`uapis.cn`、`cn.apihz.cn`）。该功能可在「设置 → 检测维度」中关闭，关闭后不会有任何请求。
+
+**③ 页面自身的资源解析**
+为识别脚本跳转、内嵌直链、`.txt` 隐藏地址、meta refresh 等伪装投递，扩展会在**你所访问页面的上下文内**，对该页面已引用的资源发起有限的读取（同源或该页面原本就会访问的地址）。这类请求：只用于本地判定；不发往本扩展运营方的服务器；跨域时不携带 Cookie / 登录凭据；不收集、不上传任何信息。
+
+### 3.2 默认关闭（需你手动开启）
+
+| 情报源 | 发出的数据 | 说明 |
+|---|---|---|
+| VirusTotal | 域名的 base64url 或 URL 的 base64url（作为查询 ID） | 使用你自己的 API Key；不上传页面内容或文件 |
+| Google Safe Browsing | **完整页面 URL**（v4 Lookup API 的查询方式） | 使用你自己的 API Key；命中只作「疑似」提示 |
+| URLhaus | 域名、当前页面 URL | 公开接口，无需 Key |
+| NetAPI | 域名 | 公开接口，无需 Key |
+
+> 提示：上述服务由各自厂商运营，其数据处理受其隐私政策约束。若你在意 URL 外泄，请勿开启 Google Safe Browsing。
+
+### 3.3 社区黑名单更新（默认关闭，需先开总开关）
+
+开启后，扩展会按天（或你点「立即更新」时）从 jsDelivr / fastly / gcore / testingcf / raw.githubusercontent.com / gh-proxy.com 等镜像**下载**公开名单文件（OpenPhish、PhishDestroy、HaGeZi's TIF）。这是单向 GET，**不上传任何内容**，也不包含你的访问记录。
+
+> 曾经存在的「云端官方域名库」（`site-directory-cache.pages.dev`）已于 2026-11-01 完整移除，当前版本不再拉取任何第三方官方站点清单。
+
 ---
 
-## 六、权限说明 / Permissions
+## 四、由你主动触发的请求
 
-本扩展在 `manifest.json` 中仅声明**实际使用**的权限，遵循"最小权限"原则。各权限的用途如下：
+**① 银狐急救下载**
+在「银狐急救」页点击下载按钮时，扩展会先访问 360 软件宝库 / 卫士页面探测最新直链，再通过浏览器下载 API 从 `dl.360safe.com`（360 系统急救箱）或 `down7.huorong.cn`（火绒专杀）拉取安装包。请求不含个人信息，扩展也不会执行或读取这些文件。
 
-- **storage（本地存储）**：保存您的设置（拦截开关、各项权重、白名单）与防护统计、拦截记录，数据仅存于浏览器本地，不与任何服务器同步或上传。
-- **downloads（下载管理）**：核心防护能力——后台监听下载事件并取消高危 / 恶意下载；同时用于「银狐急救」中按用户主动点击，从 360 官方域名拉取急救工具压缩包。
-- **webNavigation（网页导航）**：监听顶级框架导航，在页面加载瞬间进入"检测中"状态并识别"危险页 → 新域名"跳转链污染，是实时拦截闸门的关键环节。
-- **notifications（通知）**：检测到高风险网站或下载时，弹出系统原生告警（相比声音提示更可靠，且无需用户手势解锁）。
-- **&lt;all_urls&gt;（主机权限）**：内容脚本需在用户访问的所有 http(s) 页面上运行以做实时检测与拦截；同时为 RDAP 域名年龄查询、官方域名库拉取、360 急救下载等必要的网络请求提供主机授权。
-
-The extension declares **only the permissions it actually uses**, following the principle of least privilege. Their purposes:
-
-- **storage**: stores your settings (blocking toggles, per-dimension weights, allowlist) and on-device statistics; never synced to or uploaded to any server.
-- **downloads**: core protection—monitors download events to cancel malicious ones; also used for the user-initiated Rescue download from 360's official domain.
-- **webNavigation**: watches top-level navigations to enter "scanning" state on page load and to detect "risky-page → new-domain" redirect-chain pollution—a key part of the real-time blocking gate.
-- **notifications**: shows native system alerts when a high-risk site or download is detected.
-- **&lt;all_urls&gt; (host permission)**: lets the content script run on all http(s) pages for real-time detection/blocking and authorizes the necessary network requests (RDAP lookup, official-domain fetch, Rescue download).
-
-> 说明：此前 `manifest.json` 中的 `activeTab`、`unlimitedStorage`、`nativeMessaging` 三项因无对应功能实现，已按"最小权限"原则移除。
+**② 反馈与建议**
+点击「发送」后，反馈正文（以及你选填的联系方式）会 POST 到作者自建的 Cloudflare Worker（`api.silverfoxblocker.dpdns.org`），由它转发邮件。Worker 端仅做「每 IP 每日 60 次」的限流计数，不保存反馈内容到数据库。不填联系方式则完全匿名。
 
 ---
 
-## 七、儿童 / Children
+## 五、本地存储了什么
 
-本扩展不面向 儿童，也不故意收集儿童信息。
+| 位置 | 内容 | 说明 |
+|---|---|---|
+| `chrome.storage.sync` | 开关、权重、灵敏度、白名单、自定义关键词、自定义恶意域名黑名单、界面偏好、情报源配置 | 由浏览器账号同步机制决定是否跨设备同步，**不经过作者服务器** |
+| `chrome.storage.sync` | 情报源 API Key | 仅存 **AES-GCM 密文**（含随机 salt / IV），明文只在后台 SW 解密，内容脚本无法读取 |
+| `chrome.storage.local` | 防护统计（拦截/告警计数、近期记录）、OpenPhish 域名数组、PhishDestroy 域名文本、名单元数据、自动学习的下载黑名单、连坐域名集合 | 仅本机 |
+| IndexedDB（`sfLocalLists`） | HaGeZi TIF 的布隆过滤器位图（约 4.8 MB） | 仅本机；不含明文域名 |
+| 内存 | 名单 Set / 位图、评分缓存、情报查询缓存（10 分钟） | 关闭浏览器或 SW 回收即消失 |
 
-The extension is not directed to children and does not knowingly collect their information.
+**我们收集什么：无。** 不收集浏览历史、书签、Cookie、表单输入、账号凭据，也不收集姓名、邮箱、电话、IP 等可识别个人身份的信息。
+
+---
+
+## 六、远程代码
+
+本扩展**不加载任何远程脚本**。所有检测逻辑、规则与评分引擎都随安装包发布；网络请求只用于取回**数据**（域名清单、情报查询结果、RDAP/ICP 响应），不会 `eval` 或注入远程代码。MV3 的 CSP 同时把可连接域名限制在 `manifest.json` 的 `connect-src` 白名单内。
+
+---
+
+## 七、第三方清单
+
+| 第三方 | 用途 | 默认 |
+|---|---|---|
+| RDAP 注册局 / `rdap.org` | 域名年龄 | 开 |
+| `uapis.cn`、`cn.apihz.cn` | ICP 备案核验 | 开（可关） |
+| VirusTotal | 域名/URL 信誉 | 关 |
+| abuse.ch（URLhaus） | 恶意 URL 情报 | 关 |
+| NetAPI | 失陷情报 | 关 |
+| Google Safe Browsing | 安全浏览判定 | 关 |
+| jsDelivr / GitHub Raw / gh-proxy | 社区名单分发 | 关 |
+| Cloudflare（Worker） | 反馈邮件转发 | 需点击 |
+| 360 / 火绒官方域名 | 急救工具下载 | 需点击 |
+
+**不接入**任何广告、统计（Analytics）、崩溃上报、热更新或用户画像服务。
+
+---
+
+## 八、权限与用途
+
+| 权限 | 用途 |
+|---|---|
+| `storage` | 保存设置、统计、名单与名单元数据 |
+| `unlimitedStorage` | 社区名单体积超过浏览器默认 10 MB 配额 |
+| `downloads` | 取消高危下载；急救工具下载 |
+| `webNavigation` | 顶级导航时序（加载即检测）+ 跳转链追踪 |
+| `notifications` | 高风险时的系统原生告警 |
+| `alarms` | 名单每日自动更新 / 手动更新任务 |
+| `<all_urls>` | 在所有 http(s) 页面运行内容脚本；并授权上述网络请求 |
+| `web_accessible_resources` | 浮层字体与赞助者名单 |
+
+未申请：`tabs`（仅读当前标签）、`cookies`、`history`、`bookmarks`、`webRequest`、`nativeMessaging`、`scripting`。
+
+---
+
+## 九、你的控制权
+
+- 随时用工具栏弹窗关闭整体防护；
+- 「检测维度」里单独关闭 ICP 核验等会联网的检测项；
+- 威胁情报 API 与社区黑名单默认关闭，不开启即不会产生对应请求；
+- 清空本地统计、删除白名单/黑名单、卸载扩展即清空本地数据；
+- 反馈可在不填联系方式的情况下匿名发送，或完全不用。
+
+---
+
+## 十、儿童
+
+本扩展不面向儿童，也不会有意收集儿童信息。
+
+---
+
+## 十一、政策变更
+
+功能（尤其是联网功能）变化时会同步更新本文件与 `README.md` 的「网络请求清单」。重大变更会在扩展「关于」页与本文件中标注生效日期。
+
+---
+
+## English Summary
+
+**SilverFoxBlocker** runs all detection, scoring, and list matching **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials, or personal data.
+
+**Automatic requests (on by default, can be disabled):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`), disableable in settings; limited same-origin resource reads inside the page you are visiting for download discovery.
+
+**Optional requests (off by default, only after you enable the source):** VirusTotal receives base64url domain/URL IDs (your own key); Google Safe Browsing receives the **full page URL** (v4 Lookup, your own key); URLhaus receives the domain and current page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF) are downloaded as one-way GETs from jsDelivr/GitHub mirrors.
+
+**User-initiated only:** the "SilverFox Rescue" download from `dl.360safe.com` / `down7.huorong.cn`, and feedback submissions POSTed to our own Cloudflare Worker.
+
+**Local storage:** settings in `chrome.storage.sync` (API keys stored only as AES-GCM ciphertext); statistics, downloaded blocklists, download blacklist and redirect-chain sets in `chrome.storage.local`; HaGeZi's Bloom-filter bitmap (~4.8 MB) in IndexedDB. Nothing is synced to or uploaded to the author's servers.
+
+**No remote code.** All logic ships inside the package; the MV3 CSP restricts outbound connections to an explicit `connect-src` allowlist. No ads, analytics, crash reporting, or telemetry of any kind.
+
+The extension requests only `storage`, `unlimitedStorage`, `downloads`, `webNavigation`, `notifications`, `alarms`, and `<all_urls>` — each with a concrete function described above. For questions, use the in-extension feedback form or open an issue on GitHub.

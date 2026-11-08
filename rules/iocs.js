@@ -6,365 +6,351 @@
 (function () {
   'use strict';
 
-  // ============ 可信官方域名（精确匹配 + 子域匹配；命中即「早期退出」判为安全，永不拦截）============
-  // 覆盖银狐最常仿冒的目标：办公 / IM / 浏览器 / 安全 / 网盘 / AI / 下载工具 / 压缩 / 电商 / 支付 / 系统工具 / 游戏 / 加速器 / 新闻 等
+  // ============ 本地名单目录（大类 → 小项 → 域名）============
+  // 结构：CATALOG = [ [大类, [ [小项, '域名 域名 …', '备注'], … ]], … ]
+  //  · 大类 = 业务领域（安全软件类 / 浏览器类 / 金融类 …）
+  //  · 小项 = 该领域下的品牌系或机构子类（360系 / 腾讯系 / 银行 / 证券 …）
+  //  · 域名一律小写、空格分隔；同一域名只允许出现在一个小项里（首次出现生效，重复会被丢弃并告警）
+  // 下方 OFFICIAL_DOMAINS / KNOWN_BAD_DOMAINS 全部由目录派生，判定逻辑（analyzer.js）无需改动。
+  // 维护方式：只改本目录，不要再单独往扁平数组里塞域名——扁平数组是派生产物。
+  //
+  // 判定语义（与派生前完全一致）：
+  //   WHITELIST_CATALOG → OFFICIAL_DOMAINS → 精确 + 子域后缀命中即「早期退出」判安全，永不拦截
+  //   BLACKLIST_CATALOG → KNOWN_BAD_DOMAINS → 命中即判 danger，永不豁免
 
-  // ============ 用户指定豁免域名（整站不拦截 / 不评分告警 / 不参与连坐）============
-  // 见下方 API.EXCEPTION_DOMAINS 注释。命中规则同官方域名（精确 + 子域后缀）。
-  const EXCEPTION_DOMAINS = [
-    'qianwenai.com'              // 用户 2026-11-01 指定豁免（曾被品牌仿冒启发式误判，并清除其连坐存储残留）
+  // ---------- 白名单目录 ----------
+  const WHITELIST_CATALOG = [
+    // ========== 安全软件类 ==========
+    ['安全软件类', [
+      ['360系', '360.cn 360.com', '安全卫士 / 手机助手 / 手机卫士 / 搜索'],
+      ['火绒系', 'huorong.cn', '火绒安全软件'],
+      ['腾讯电脑管家', 'guanjia.qq.com gj.qq.com', ''],
+      ['瑞星系', 'rising.com.cn', '瑞星杀毒 / 瑞星个人防火墙'],
+      ['金山系', 'duba.net ijinshan.com', '金山毒霸 / 金山卫士'],
+      ['卡巴斯基', 'kaspersky.com kaspersky.com.cn', 'Kaspersky'],
+      ['Bitdefender', 'bitdefender.com bitdefender-cn.com', ''],
+      ['Avast / AVG', 'avast.com avg.com', '同属 Gen Digital'],
+      ['微步在线', 'threatbook.cn threatbook.com', '威胁情报平台'],
+      ['AdGuard', 'adguard.com adguard.org adguard.net adguard-vpn.com adguardteam.com', '广告拦截 / 隐私保护'],
+      ['海外安全软件', 'eset.com mcafee.com norton.com symantec.com trendmicro.com malwarebytes.com avira.com drweb.com panda.com gdata.com f-secure.com sophos.com comodo.com zonealarm.com', 'ESET / McAfee / Norton / 趋势 / 火眼 / 小红伞 / Dr.Web 等'],
+    ]],
+
+    // ========== 浏览器类 ==========
+    ['浏览器类', [
+      ['360系', 'browser.360.cn se.360.cn chromex.360.cn', '360 安全浏览器 / 360 极速浏览器 / 360 浏览器'],
+      ['腾讯系', 'browser.qq.com liulanqi.qq.com', 'QQ 浏览器 / QQ 极速浏览器'],
+      ['搜狗系', 'ie.sogou.com', '搜狗浏览器'],
+      ['猎豹系', 'liebao.cn', '猎豹浏览器'],
+      ['傲游系', 'maxthon.cn maxthon.com', '傲游浏览器'],
+      ['UC系', 'uc.cn ucweb.com', 'UC 浏览器 / UC 手机助手'],
+      ['Mozilla', 'mozilla.org firefox.com', 'Firefox'],
+      ['Google', 'google.com google.cn google.com.hk googlemail.com gmail.com', 'Google / Gmail'],
+      ['海外浏览器', 'brave.com opera.com vivaldi.com yandex.com torproject.org apple.com apple.com.cn safari.com', 'Brave / Opera / Vivaldi / Yandex / Tor / Safari'],
+    ]],
+
+    // ========== IM 与社交类 ==========
+    ['IM与社交类', [
+      ['微信系', 'weixin.qq.com wechat.com action.weixin.qq.com', '微信 / WeChat'],
+      ['企业微信', 'work.weixin.qq.com office.qq.com', '企业微信 / 企业邮箱'],
+      ['QQ系', 'im.qq.com qq.com', 'QQ / QQ 邮箱 / QQ 轻聊版'],
+      ['腾讯系', 'tencent.com', ''],
+      ['钉钉', 'dingtalk.com', ''],
+      ['飞书系', 'feishu.cn larkoffice.com', '飞书 / Lark 国际版'],
+      ['陌陌', 'immomo.com', ''],
+      ['Soul', 'soulapp.cn', ''],
+      ['网易邮箱', 'netease.com 126.com yeah.net', '网易 / 126 / Yeah 邮箱'],
+      ['微博', 'weibo.com weibo.cn', ''],
+      ['知乎', 'zhihu.com', ''],
+      ['小红书', 'xiaohongshu.com xhs.com', ''],
+      ['豆瓣', 'douban.com douban.fm ruguoapp.com mtime.com', '豆瓣 / 豆瓣FM / 即刻 / 时光网'],
+      ['社区论坛', 'tianya.cn hupu.com', '天涯 / 虎扑'],
+    ]],
+
+    // ========== 输入法类 ==========
+    ['输入法类', [
+      ['搜狗系', 'pinyin.sogou.com shurufa.sogou.com', '搜狗输入法'],
+      ['百度系', 'shurufa.baidu.com ime.baidu.com', '百度输入法'],
+      ['讯飞系', 'srf.xunfei.cn xinshuru.com', '讯飞输入法 / 讯飞新输入法'],
+      ['QQ系', 'qq.pinyin.cn', 'QQ 拼音输入法'],
+    ]],
+
+    // ========== 办公与文档类 ==========
+    ['办公与文档类', [
+      ['金山系', 'wps.cn wps.com wps-linux.com kdocs.cn', 'WPS Office / WPS 云文档 / 金山文档'],
+      ['腾讯系', 'docs.qq.com', '腾讯文档'],
+      ['石墨文档', 'shimo.im', ''],
+      ['有赞文档', 'yozosoft.com', ''],
+      ['微软系', 'microsoft.com microsoft.cn office.com microsoft365.com live.com outlook.com onenote.com office365.com hotmail.com msn.com', 'Windows / Office / Outlook（含 Edge 下载页）'],
+      ['微软身份认证', 'microsoftonline.com windows.net login.windows.net azure.com passport.com passport.microsoft.com azureedge.net', 'OAuth / SSO / 登录中转'],
+      ['协作工具', 'zoom.us webex.com slack.com discord.com telegram.org skype.com thunderbird.net', 'Zoom / Webex / Slack / Discord / Telegram'],
+    ]],
+
+    // ========== 影音娱乐类 ==========
+    ['影音娱乐类', [
+      ['腾讯视频', 'v.qq.com', ''],
+      ['爱奇艺', 'iqiyi.com iq.com', ''],
+      ['优酷', 'youku.com tudou.com', '优酷 / 土豆'],
+      ['哔哩哔哩', 'bilibili.com bilibili.tv', ''],
+      ['芒果TV', 'mgtv.com', ''],
+      ['字节系', 'ixigua.com xigua.com douyin.com bytedance.com tiktok.com capcut.com', '西瓜视频 / 抖音 / TikTok / 剪映'],
+      ['搜狐视频', 'tv.sohu.com sohu.com', ''],
+      ['直播平台', 'huya.com douyu.com yy.com panda.tv zhanqi.tv', '虎牙 / 斗鱼 / YY / 熊猫 / 战旗'],
+      ['快手', 'kuaishou.com', ''],
+      ['网易云音乐', 'music.163.com', ''],
+      ['QQ音乐', 'y.qq.com music.qq.com', ''],
+      ['酷狗 / 酷我', 'kugou.com kuwo.cn', ''],
+      ['咪咕音乐', 'music.migu.cn migu.cn', ''],
+      ['喜马拉雅', 'ximalaya.com', ''],
+      ['汽水音乐', 'qishui.com', ''],
+      ['图片与二次元', 'meitu.com meituinc.com xima.tv acfun.cn', '美图 / 喜马拉雅FM / AcFun'],
+      ['网络文学', 'qidian.com yuewen.com zhangyue.com duokan.com cmread.com sfacg.com', '起点 / 阅文 / 掌阅 / 多看 / 咪咕阅读 / SFACG'],
+      ['音视频工具', 'adobe.com photoshop.com adobe.io videolan.org obsproject.com audacityteam.org ffmpeg.org', 'Adobe / VLC / OBS / Audacity / FFmpeg'],
+    ]],
+
+    // ========== 云盘与存储类 ==========
+    ['云盘与存储类', [
+      ['百度网盘', 'pan.baidu.com', ''],
+      ['阿里云盘', 'aliyundrive.com alipan.com', ''],
+      ['腾讯微云', 'weiyun.com', ''],
+      ['115网盘', '115.com', ''],
+      ['天翼云盘', 'cloud.189.cn', ''],
+      ['夸克网盘', 'pan.quark.cn', ''],
+      ['迅雷云盘', 'pan.xunlei.com', ''],
+      ['蓝奏云', 'lanzou.com lanzous.com lanzoux.com lanzouw.com lanzoui.com ilanzou.com', '蓝奏云主站 / 优享版'],
+      ['蓝奏云镜像', 'pc.woozooo.com wwda.lanzouj.com wwn.lanzouy.com wwtr.lanzouw.com', '网友自建镜像站（误报反馈）'],
+    ]],
+
+    // ========== AI 大模型类 ==========
+    ['AI大模型类', [
+      ['百度文心', 'yiyan.baidu.com chat.baidu.com', '文心一言 / 文心大模型'],
+      ['阿里通义', 'tongyi.aliyun.com qianwen.aliyun.com qianwen.com qianwenai.com dashscope.console.aliyun.com', '通义千问 / 阿里云百炼 DashScope'],
+      ['字节豆包', 'doubao.com volcengine.com', '豆包 / 火山引擎'],
+      ['科大讯飞', 'xinghuo.xfyun.cn agent.xfyun.cn', '讯飞星火'],
+      ['360纳米AI', 'chat.360.com ai.360.com ai.360.cn', ''],
+      ['月之暗面 Kimi', 'kimi.moonshot.cn kimi.com platform.kimi.com api.moonshot.cn moonshot.cn', ''],
+      ['DeepSeek', 'chat.deepseek.com deepseek.com platform.deepseek.com', ''],
+      ['智谱 ChatGLM', 'chatglm.cn bigmodel.cn open.bigmodel.cn', ''],
+      ['OpenAI', 'openai.com chatgpt.com platform.openai.com', 'ChatGPT / API'],
+      ['MiniMax', 'minimaxi.com', ''],
+    ]],
+
+    // ========== 下载与压缩类 ==========
+    ['下载与压缩类', [
+      ['迅雷', 'xunlei.com dl.xunlei.com mobile.xunlei.com', '迅雷 / 迅雷下载 / 迅雷手机助手'],
+      ['IDM', 'internetdownloadmanager.com secure.internetdownloadmanager.com', ''],
+      ['BitComet', 'bitcomet.com wiki-zh.bitcomet.com', ''],
+      ['WinRAR', 'rarlab.com win-rar.com winrar.com.cn', ''],
+      ['7-Zip', '7-zip.org', ''],
+      ['Bandizip', 'bandisoft.com bandizip.com', ''],
+      ['2345好压', 'haozip.2345.cc', ''],
+      ['360压缩', 'yasuo.360.cn', ''],
+      ['其他压缩', 'winzip.com peazip.com', 'WinZip / PeaZip'],
+      ['其他下载器', 'freedownloadmanager.org qbittorrent.org utorrent.com bittorrent.com transmissionbt.com aria2.github.io motrix.app xdown.org', 'FDM / qBittorrent / uTorrent / Motrix 等'],
+      ['传输工具', 'putty.org winscp.net filezilla-project.org', 'PuTTY / WinSCP / FileZilla'],
+      ['下载站', 'pcsoft.com.cn onlinedown.net duote.com crsky.com zol.com.cn skycn.com xiazaiba.com a67.com greenxf.com rj.baidu.com software.qq.com mydown.com znds.com', '太平洋 / 华军 / 多特 / 中关村在线 / 智能电视网等'],
+    ]],
+
+    // ========== 系统工具类 ==========
+    ['系统工具类', [
+      ['远程控制', 'todesk.com todeskai.com sunlogin.oray.com oray.com teamviewer.com anydesk.com', 'ToDesk / 向日葵 / TeamViewer / AnyDesk'],
+      ['驱动与硬件检测', 'drivergenius.com ludashi.com cpuid.com cpu-z.com hwmonitor.com aida64.com crystaldiskmark.info crystaldiskinfo.info prime95.com furmark.com memtest86.com techpowerup.com gpuz.com afterburner.com', '驱动精灵 / 鲁大师 / CPU-Z / AIDA64 等'],
+      ['整机与主板', 'dell.com hp.com acer.com asus.com xiaomi.com gigabyte.com msi.com asrock.com corsair.com kingston.com logitech.com razer.com coolermaster.com noctua.at nzxt.com seasonic.com antec.com phanteks.com lian-li.com gskill.com teamgroupinc.com adata.com crucial.com micron.com lenovo.com lenovo.com.cn', 'Dell / HP / 华硕 / 微星 / 联想 / 金士顿 等'],
+      ['存储与外设', 'samsung.com westerndigital.com seagate.com toshiba.com', '三星 / 西数 / 希捷 / 东芝'],
+    ]],
+
+    // ========== 电商与支付类 ==========
+    ['电商与支付类', [
+      ['阿里系', 'taobao.com tmall.com alibaba.com alimama.com 1688.com alitrip.com fliggy.com cainiao.com antgroup.com antfin.com', '淘宝 / 天猫 / 阿里巴巴 / 飞猪 / 菜鸟 / 蚂蚁'],
+      ['京东', 'jd.com jd.hk', ''],
+      ['拼多多', 'pinduoduo.com pdd.com xunmeng.com', ''],
+      ['美团系', 'meituan.com dianping.com waimai.meituan.com koubei.com ele.me', '美团 / 大众点评 / 口碑 / 饿了么'],
+      ['苏宁 / 国美', 'suning.com gome.com.cn', ''],
+      ['二手与导购', 'goofish.com smzdm.com fanli.com returnbuy.com whatsmoney.com haitao.com kaola.com xiji.com', '闲鱼 / 什么值得买 / 返利网 / 考拉 等'],
+      ['电商长尾', 'dangdang.com book.com amazon.cn amazon.com jumei.com vancl.com yhd.com yihaodian.com vip.com vipshop.com sasa.com sephora.cn uniqlo.com hm.com zara.com nike.com adidas.com.cn li-ning.com anta.com 361.com xtep.com erke.com peerless.com 55bbs.com moonbasa.com mi.com', '当当 / 亚马逊 / 唯品会 / 优衣库 / 耐克 等'],
+      ['美妆与健康', 'kimiss.com onlylady.com yoka.com pclady.com 39.net 120ask.com', ''],
+      ['支付平台', 'alipay.com alipayplus.com open.alipay.com p.alipay.com zhifubao.com unionpay.com unionpayintl.com up.com.cn chinapay.com 95516.com', '支付宝 / 银联 / 银联国际 / 中国银联在线'],
+      ['微信支付', 'pay.weixin.qq.com api.mch.weixin.qq.com api2.mch.weixin.qq.com payapp.weixin.qq.com api.wechatpay.cn api2.wechatpay.cn', '支付中转页 / 商户 API'],
+    ]],
+
+    // ========== 地图与出行类 ==========
+    ['地图与出行类', [
+      ['百度地图', 'map.baidu.com', ''],
+      ['高德系', 'amap.com gaode.com autonavi.com ditu.amap.com mobile.amap.com', ''],
+      ['腾讯地图', 'map.qq.com', ''],
+      ['滴滴出行', 'didiglobal.com', ''],
+    ]],
+
+    // ========== 开发者与云服务类 ==========
+    ['开发者与云服务类', [
+      ['阿里云', 'aliyun.com aliyuncs.com alibabacloud.com', ''],
+      ['腾讯云', 'cloud.tencent.com tencentcloud.com', ''],
+      ['华为云', 'huaweicloud.com huawei.com', ''],
+      ['百度智能云', 'cloud.baidu.com intl.cloud.baidu.com', ''],
+      ['代码托管', 'github.com gitee.com gitlab.com github.dev githubcopilot.com githubassets.com githubusercontent.com', 'GitHub / Gitee / GitLab 及资源域'],
+      ['技术社区', 'csdn.net oschina.net juejin.cn v2ex.com cnblogs.com blogjava.net iteye.com talkwithtrend.com stackoverflow.com', ''],
+      ['教程与题库', 'runoob.com w3school.com.cn w3cschool.cn tool.oschina.net c.runoob.com freecodecamp.org code.org leetcode.cn leetcode.com leetcode-cn.com', '菜鸟教程 / W3School / LeetCode'],
+      ['编程教育', 'codemao.cn shequ.codemao.cn codechat.codemao.64mowan.top', '编程猫'],
+      ['工具站', 'tool.lu 52pojie.cn 52pojie.com ghxi.com crxsoso.com appinn.com 51cto.com', '吾爱破解 / 果核剥壳 / 异次元 / 小众软件'],
+      ['站长联盟与统计', 'admin5.com im286.com a5.net webmasterhome.cn cnzz.com umeng.com talkingdata.com mob.com bugly.qq.com getui.com', '站长之家 / 阿里妈妈 / 友盟 / TalkingData / 个推'],
+      ['测速与 IP', 'ipip.net ip.cn whatismyip.com ip138.com boce.com chinaz.com', ''],
+      ['设计素材', 'ui.cn zcool.com.cn poocss.com aigei.com', ''],
+      ['语言与框架', 'python.org nodejs.org golang.org rust-lang.org php.net java.com oracle.com vuejs.org reactjs.org', ''],
+      ['操作系统发行版', 'ubuntu.com debian.org archlinux.org fedoraproject.org centos.org opensuse.org kali.org kali-linux.com deepin.org ubuntukylin.com uniontech.com uos.com linglong.cn', 'Ubuntu / Debian / Arch / Fedora / CentOS / Kali / 深度 / 统信 UOS'],
+      ['数据库与中间件', 'mysql.com mariadb.org postgresql.org mongodb.com redis.io nginx.org nginx.com apache.org', ''],
+      ['建站程序', 'wordpress.org typecho.org hexo.io discuz.net phpwind.com zblogcn.com dedecms.com phpcms.com empirecms.com', ''],
+      ['文档站', 'readthedocs.io gitbook.io', ''],
+      ['编辑器与 IDE', 'notepad-plus-plus.org sublimetext.com jetbrains.com code.visualstudio.com visualstudio.com atom.io', ''],
+    ]],
+
+    // ========== 游戏与加速器类 ==========
+    ['游戏与加速器类', [
+      ['腾讯游戏', 'wegame.com.cn wegame.com game.163.com neteasegames.com tencentgames.com', ''],
+      ['Steam 与 PC 平台', 'steamchina.com store.steamchina.com help.steamchina.com steampowered.com steamgames.com epicgames.com gog.com origin.com ea.com ubisoft.com uplay.com', ''],
+      ['主机平台', 'playstation.com xbox.com nintendo.com battle.net blizzard.com', ''],
+      ['拳头与二次元', 'riotgames.com leagueoflegends.com genshin.com mihoyo.com hoyoverse.com taptap.com taptap.cn', ''],
+      ['Minecraft', 'minecraft.net minecraft.wiki mojang.com', ''],
+      ['主机模拟器', 'rpcs3.net rpcs3.org pcsx2.net ppsspp.org yuzu-emu.org ryujinx.org cemu.info dolphin-emu.org citra-emu.org duckstation.org xenia.jp', 'RPCS3 / PCSX2 / PPSSPP / Yuzu / Ryujinx 等'],
+      ['游戏社区', 'curseforge.com cngal.org bangumi.tv bgm.tv animenewsnetwork.com myanimelist.net acg.178.com 17173.com duowan.com nga.cn wowar.com wowhead.com mcmod.cn battlelog.battlefield.com', 'NGA / 多玩 / 17173 / CurseForge / MC百科 等'],
+      ['加速器', 'uu.163.com xunyou.com leigod.com qiyou.cn yuelun.com xianniu.com jiasu.bohe.com fnjiasu.com golinkcn.com xiaoheihe.cn acc.xiaoheihe.cn tmgalite.qq.com nn.com akspeedy.com', 'UU / 迅游 / 雷神 / 奇游 / 小黑盒 等'],
+    ]],
+
+    // ========== 新闻与搜索类 ==========
+    ['新闻与搜索类', [
+      ['搜索引擎', 'bing.com sogou.com so.com soso.com yahoo.com duckduckgo.com ask.com', 'Bing / 搜狗 / 360搜索 / Yahoo / DuckDuckGo'],
+      ['门户与综合', 'baidu.com baidu.cn toutiao.com 163.com sina.com.cn sina.com china.com', ''],
+      ['中央媒体', 'people.com.cn xinhuanet.com cctv.com cctv.cn chinanews.com.cn china.org.cn cnr.cn cri.cn cntv.cn huanqiu.com globaltimes.com.cn', '人民 / 新华 / 央视 / 中新 / 环球'],
+      ['财经媒体', 'thepaper.cn yicai.com caixin.com caixin.com.cn stcn.com cs.com.cn jrj.com.cn eastmoney.com 21jingji.com 21cbh.com wallstreetcn.com cls.cn fx168.com', '澎湃 / 第一财经 / 财新 / 证券时报 / 东方财富 等'],
+      ['科技媒体', 'yesky.com zdnet.com.cn pconline.com.cn it168.com pcpop.com donews.com techweb.com.cn leiphone.com 36kr.com huxiu.com ifanr.com pingwest.com qdaily.com jiemian.com lanjinger.com', ''],
+      ['综合互联网', 'guokr.com mozhua.net jiakaobaodian.com zhangyu.com', '果壳 / 墨花 / 驾考宝典 / 掌阅'],
+      ['地方媒体', 'bjnews.com.cn bjd.com.cn eastday.com news365.com.cn southcn.com gdtoday.com zjol.com.cn jschina.com.cn yangtse.com sdnews.com.cn dzwww.com qlwb.com.cn dahe.cn hnby.com.cn hebnews.cn yzdsb.com.cn voc.com.cn hnrednet.cn cnhubei.com scol.com.cn sctv.com fjsen.com sxdaily.com.cn cnwest.com ahwang.cn anhuinews.com jxnews.com.cn lnrb.com.cn hljnews.cn hrbrent.com.cn jlnews.com.cn gog.cn gzdaily.com.cn yunnan.cn hinews.cn hndaily.cn gansudaily.com.cn gscn.com.cn qhnews.com.cn nxnet.cn nxdaily.com ts.cn nmgnews.com.cn nmrb.com.cn gxnews.com.cn gxrb.com.cn sxrb.com sxgov.cn cqnews.net cqwb.cn tjnews.cn enorth.com.cn tibet.cn nbweekly.com', '各省党报 / 都市报 / 新闻网'],
+    ]],
+
+    // ========== 教育与考试类 ==========
+    ['教育与考试类', [
+      ['全国招生平台', 'chsi.com.cn moe.gov.cn cer.net ncss.cn chaoxing.com', '学信网 / 阳光高考 / 教育部 / 超星'],
+      ['省级考试院', 'bjeea.cn zhaokao.net hebeea.edu.cn sxkszx.cn zsks.cn lnzsks.com jleea.com.cn jleea.edu.cn lzk.hl.cn hljea.cn shmeea.edu.cn jseea.cn zjzs.net ahzsks.cn eeafj.cn jxeea.cn sdzk.cn haeea.cn hbea.edu.cn hubzs.com.cn hneao.cn hneeb.cn gd.gov.cn gxeea.cn hainan.gov.cn cqksy.cn sceea.cn guizhou.gov.cn ynzs.cn sneac.com sneea.cn ganseea.cn gszs.edu.cn qhjyks.com nxjyks.cn xjzk.gov.cn hunan.gov.cn xizang.gov.cn eeagd.edu.cn', '各省教育考试院 / 招生考试院'],
+      ['培训与留学', 'eol.cn eol.com.cn cnedu.cn kaoyan.com kaoyan365.com yuloo.com studyabroad.com.cn liuxue.com applysquare.com zhixue.com xueersi.com neworiental.org xdf.cn koolearn.com tpedutest.com baijia.com aofan.com zikao365.com', '中国教育在线 / 考研 / 学而思 / 新东方 / 自考365'],
+      ['高校', 'edu.cn cuc.edu.cn bit.edu.cn tsinghua.edu.cn pku.edu.cn fudan.edu.cn sjtu.edu.cn zju.edu.cn nju.edu.cn ustc.edu.cn sysu.edu.cn whu.edu.cn hit.edu.cn scut.edu.cn', ''],
+    ]],
+
+    // ========== 金融类 ==========
+    ['金融类', [
+      ['银行', 'icbc.com.cn abchina.com boc.cn ccb.com bankcomm.com psbc.com.cn cmbchina.com cmbc.com.cn cib.com.cn citicbank.com spdb.com.cn cebbank.com bank.pingan.com hxb.com.cn cgbchina.com.cn czbank.com cbhb.com.cn eximbank.gov.cn cdb.com.cn adbc.com.cn bankofbeijing.com.cn bosc.cn jshbchina.com njcb.com.cn nib.com.cn hzbank.com.cn qdccb.com.cn bankofdl.com xmccb.com tccb.com.cn hrbcb.com.cn bankofgy.com.cn ccbank.cn cqcbank.com zzbank.cn cscb.cn suzhoubank.com lzbank.com nccbank.com.cn hebbank.com qlbank.com.cn whccb.com.cn sxccb.com.cn jinzhoubank.com.cn bsbchina.com lhbchina.com srcb.com.cn bjrcb.com.cn gzrcbank.com cqrcb.com.cn dongguanbank.cn hzcbank.com.cn jxbank.com.cn bhb.cn jcbank.com.cn bohs.cn jhccb.com.cn hsbank.com.cn', '政策性 / 国有大行 / 股份制 / 城商 / 农商'],
+      ['外资银行', 'hsbc.com.cn citibank.com.cn sc.com standardchartered.com.cn hangseng.com.cn bnpparibas.com.cn jpmorgan.com.cn ubs.com mufg.jp mizuhobank.com ocbc.com uob.com.sg maybank.com bankofamerica.com deutschebank.com.cn ing.com rabobank.com db.com', '汇丰 / 花旗 / 渣打 / 摩根 / 瑞银 等'],
+      ['银行客服短号', '95588.com 95599.com 95555.com 95533.com 95559.com 95561.com 95595.com 95568.com 95528.com 95580.com 95577.com 400.com', '工行 / 农行 / 招行 / 建行 等客服站'],
+      ['证券', 'guosen.com.cn gf.com.cn gtja.com htsec.com csc108.com swhy.com cicc.com.cn cijsc.com.cn zts.com.cn ebscn.com gyzq.com.cn dgzq.com.cn htzq.com.cn jyzq.com.cn dwzq.com.cn qlzq.com.cn sxzb.com.cn i618.com.cn newone.com.cn cmschina.com tfzq.com.cn huatai.com hongyuan.com chinalongsun.com lhzq.com.cn yzq.newone.com.cn haitong.com guotaijunan.com shdjt.com stocke.com sw2000.com.cn swhysc.com cs.ecitic.com citic.com china-invs.cn orientsec.com.cn wzq.com.cn xzq.com.cn citics.com citic-tai.com ctitic.com', '国信 / 广发 / 国泰君安 / 海通 / 中信 / 华泰 等'],
+      ['保险与基金', 'china-life.com.cn picc.com piccnet.com.cn cpic.com cpic.com.cn taikang.com taikang.com.cn pingan.com pa18.com ccic.com.cn sinosig.com sunlife.com.cn metlife.com.cn aia.com.cn allianz.com.cn generali.com.cn chubb.com fwd.com manulife.com.cn prudential.com.hk pru.com.hk chinaamc.com eestone.com jjmmw.com fund.eastmoney.com tiantianfunds.com licai.com chinafund.cn csfunds.com.cn wtfund.com ourku.com', '国寿 / 人保 / 太保 / 平安 / 泰康 / 华夏基金 等'],
+      ['期货与交易所', 'cffex.com.cn shfe.com.cn dce.com.cn czce.com.cn ine.com.cn cme.com', '中金所 / 上期所 / 大商所 / 郑商所 / 能源中心'],
+      ['资管与 AMC', 'huarong.com amc.cinda.com gxfc.com.cn', '华融 / 信达 / 国海证券'],
+    ]],
+
+    // ========== 企业机构类 ==========
+    ['企业机构类', [
+      ['通信运营商', '10086.cn 10010.com 189.cn 10000.com chinamobile.com chinaunicom.com chinatelecom.com cmcc.com chinamobileltd.com chinaunicom.com.hk ctm.com.mo cmhk.com one2free.com pccw.com smartone.com three.com.hk csl.com 1010.com cmlink.com', '移动 / 联通 / 电信 / 广电及港澳运营商'],
+      ['能源电力', 'cnpc.com petrochina.com.cn sinopec.com cnooc.com cnpc.com.cn shenergy.com huadian.com chng.com.cn spic.com.cn cgdc.com.cn cgnpc.com.cn statepower.com.cn guodian.com ceec.net.cn chinapower.com.cn', '中石油 / 中石化 / 中海油 / 华能 / 大唐 / 国电投 等'],
+      ['钢铁有色', 'baosteel.com shsteel.com ansteel.com wusteel.com hbisco.com shougang.com taigang.com chinalco.com chalco.com.cn jiangxi-copper.com tongling.com yunlu.com zijinmining.com cmoc.com jnyl.com yanzhoucoal.com china-coal.com shenhua.com camce.com powerchina.cn', '宝武 / 鞍钢 / 中国铝业 / 江西铜业 / 紫金 等'],
+      ['化工', 'chemchina.com sinochem.com syngenta.cn yara.com bluestar.com wanhua.com haihua.com', '中国化工 / 中化 / 先正达 / 万华'],
+      ['汽车', 'saicmotor.com faw.com dongfeng.com geely.com chery.cn greatwallmotor.com byd.com gac.com.cn gac-toyota.com gac-honda.com bmw.com.cn benz.com.cn audi.cn volkswagen.com.cn toyota.com.cn honda.com.cn nissan.com.cn ford.com.cn gm.com.cn hyundai.com.cn kia.com.cn mazda.com.cn subaru.com.cn mitsubishi.com.cn volvo.com.cn tesla.cn nio.cn xpeng.com lixiang.com wmotor.com levdeo.com enovate.com arcfox.com', '上汽 / 一汽 / 东风 / 比亚迪 / 蔚小理及合资品牌'],
+      ['家电', 'haier.com hisense.com tcl.com skyworth.com gree.com midea.com meidi.com changhong.com konka.com galanz.com robam.com vatti.com oppel.com supor.com joyoung.com casarte.com leader.com littleswan.com beko.com', '海尔 / 海信 / TCL / 格力 / 美的 / 老板 等'],
+      ['央企综合', 'sasac.gov.cn china-mae.com csg.cn sgcc.com.cn', '国资委 / 国机集团 / 南方电网 / 国家电网'],
+      ['航空与铁路', 'airchina.com csair.com ceair.com muair.com shenzhenair.com hainanairlines.com xiamenair.com shanghaiair.com springairlines.com juneyaoair.com westair.cn okair.net chinaexpressair.com 12306.cn china-railway.com.cn crh.com.cn railway.com.cn tiqianx.com mtr.com.hk', '国航 / 南航 / 东航 / 12306 / 港铁 等'],
+      ['物流快递', 'sfbchina.com sf-express.com zto.com yto8000.com yundaex.com sto.cn jt-express.com deppon.com dblogistics.com ems.com.cn china-post.com.cn post.com.cn yimidida.com huolala.com kuaibao.com zhongtong.com yunda.com shentong.com youzheng.com.cn', '顺丰 / 中通 / 圆通 / 韵达 / 申通 / 德邦 / 中国邮政 等'],
+      ['地产与建筑', 'vanke.com countrygarden.com evergrande.com poly.com.cn cem.com.cn crland.com.hk longfor.com greentown.com.cn seazen.com.cn sunac.com.cn gemdale.com logan.com.hk shimao.com rsh.com.cn zhongliang.com zhongjun.com agile.com.cn bgy.com.cn csc.com.cn cscec.com crec.com crcc.cn ccccltd.cn cmc.com.cn cnccc.com xcmg.com zoomlion.com sany.com liugong.com zoomliion.com sunward.com bjjs.com shfc.gov.cn szhome.com', '万科 / 碧桂园 / 保利 / 中建 / 中铁 / 徐工 / 三一 等'],
+      ['医疗医药', 'nmpa.gov.cn nhc.gov.cn chinacdc.cn icdc.cn pharmnet.com.cn yaozh.com dxy.com dxy.cn haodf.com xywy.com familydoctor.com.cn jkkp.com jianke.com 111.com.cn yao123.com yaofang.cn medsci.cn biocompare.com bioon.com syphu.com sphic.com sinopharm.com unionmed.com snp.com.cn cspc.com hualanbio.com wantai.com kangtai.com zhifeishengwu.com fosunpharma.com hutian.com nhwa.com hansoh.cn hengrui.com 3sbio.com innobic.com minhai.com bchot.com tongfang.com jxqx.com zjgpharma.com zhejiangdisease.com', '药监 / 疾控 / 丁香园 / 国药 / 石药 / 恒瑞 等'],
+      ['旅游与酒店', 'ctrip.com trip.com qunar.com elong.com ly.com tuniu.com mafengwo.cn lvmama.com 17u.cn tongcheng.com easemob.com huazhu.com jinjiang.com btg.com.cn homeinns.com 7daysinn.com vn.hotels.com marriott.com hilton.com ihg.com accor.com wyndham.com shangri-la.com kempinski.com lv.com visa.com mastercard.cn', '携程 / 去哪儿 / 同程 / 华住 / 万豪 / Visa 等'],
+      ['食品饮料与快消', 'moutai.com.cn wuliangye.com.cn luzhoulaojiao.com yanghe.com gujing.com.cn jnc.com.cn niulanshan.com.cn qingdao.com tsingtao.com snowbeer.com.cn yanjing.com.cn zjbeer.com coca-colacompany.com pepsi.com nestle.com.cn nestle.com yili.com yili.com.cn mengniu.com mengniu.cn want-want.com masterkong.com.cn cofco.com beijinghy.com sanxing.com nongfu-spring.com nongfusanquan.com wahaha.com toly.com glico.com meiji.com brightdairy.com sanyuan.com', '茅台 / 五粮液 / 青岛啤酒 / 可口可乐 / 伊利 / 蒙牛 / 农夫山泉 等'],
+      ['公共事业与政务', 'waterchina.com bewg.com.cn bdc.com.cn bjwater.com shanghaiwater.com gw.com.cn gas.com.cn chinagashub.com pipechina.com bjgas.com shgas.com gzzhgd.com cin.gov.cn mohurd.gov.cn mohrss.gov.cn mof.gov.cn mofcom.gov.cn ndrc.gov.cn miit.gov.cn samr.gov.cn customs.gov.cn tax.gov.cn', '自来水 / 燃气 / 管网 / 各部委'],
+      ['外企中国', 'ibm.com ibm.com.cn intel.com intel.cn amd.com nvidia.com nvidia.cn dell.com.cn hp.com.cn samsung.com.cn lg.com sony.com sony.com.cn panasonic.cn hitachi.com sharp.cn philips.com.cn bosch.com siemens.com ge.com ge.com.cn honeywell.com 3m.com dupont.com basf.com bayer.com novartis.com pfizer.com roche.com gsk.com jnj.com unilever.com pg.com danone.com ikea.com ikea.cn carrefour.com walmart.com walmart.cn metro.com.cn auchan.com rt-mart.com yum.com kfc.com.cn yumchina.com mcd.com.cn starbucks.com.cn uni-president.com jnsn.com', 'IBM / Intel / 英伟达 / 索尼 / 西门子 / 宜家 / 麦当劳 等'],
+    ]],
+
+    // ========== 平台与生态类 ==========
+    ['平台与生态类', [
+      ['静态托管与 PaaS', 'vercel.com vercel.dev netlify.com cloudflare.com cloudflare-cn.com render.com heroku.com replit.com', '厂商官网本体（用户内容子域另见 TRUSTED_PLATFORMS）'],
+      ['证书与认证', 'letsencrypt.org digicert.com sectigo.com globalsign.com ssl.com entrust.com geotrust.com thawte.com verisign.com identrust.com zerossl.com', 'CA 与证书链'],
+      ['人机验证与前端 CDN', 'hcaptcha.com recaptcha.net gstatic.com googleapis.com', 'reCAPTCHA / hCaptcha / Google 静态资源'],
+      ['项目自有站点', 'silverfoxguard.dpdns.org silverfoxguard.top workbuddy.cn', 'SilverFox Guard 分发页 / WorkBuddy 官网'],
+      ['开发者个人站', 'cloud.gjhdr.xyz', '个人开发者凯德荣官方域'],
+    ]],
+
+    // ========== 用户反馈与个人站点类 ==========
+    ['用户反馈与个人站点类', [
+      ['个人站点', 'technologyehco.us.ci lycheeledger.cn 0bcjstko9509h.space.mcode.cn uiso44xg1go9p.space.mcode.cn ae0kcokdy1z45.space.mcode.cn 360.xiaomai.cc.cd d.seewo.com', '评论区 / Issues 反馈确认加白'],
+      ['误报反馈加白', '8kmm.com bingdiancn.com geogebra.org gunsaw-level-codes.jimmyking.dev jfglzs.com mcapks.net mumu-dili.pages.dev shijuezu.com sparanoid.com spestech.com store.rg-adguard.net bbs.kafan.cn', '用户报告的合法站点'],
+    ]],
+
+    // ========== 用户指定信任（整站跳过检测）==========
+    // ⚠️ 语义说明：本大类等价于旧版的 EXCEPTION_DOMAINS / 官方白名单，
+    //   命中即「早期退出」——不评分、不拦截、不参与连坐、不参与下载计数。
+    //   只放用户明确要求放行的站点，且必须是该站点真实持有者/使用者提出的。
+    ['用户指定信任', [
+      ['个人站点', 'example.com', ' 用户指定（曾被品牌仿冒启发式误判，已清除连坐残留）'],
+    ]],
   ];
-  const OFFICIAL_DOMAINS = [
-    // 安全软件
-    '360.cn','360.com','huorong.cn','guanjia.qq.com','gj.qq.com','rising.com.cn','duba.net','ijinshan.com','threatbook.cn','threatbook.com',
-    // 浏览器
-    'browser.360.cn','se.360.cn','chromex.360.cn','browser.qq.com','liulanqi.qq.com','ie.sogou.com','liebao.cn','maxthon.cn','maxthon.com','mozilla.org','firefox.com','google.com','google.cn','google.com.hk','googlemail.com','gmail.com','microsoft.com',
-    // IM / 社交
-    'weixin.qq.com','wechat.com','im.qq.com','qq.com','dingtalk.com','feishu.cn','larkoffice.com','work.weixin.qq.com','office.qq.com','immomo.com','soulapp.cn','uc.cn','ucweb.com',
-    // 输入法
-    'pinyin.sogou.com','shurufa.sogou.com','shurufa.baidu.com','ime.baidu.com','srf.xunfei.cn','qq.pinyin.cn','xinshuru.com',
-    // 办公
-    'wps.cn','wps.com','kdocs.cn','docs.qq.com','shimo.im','yozosoft.com',
-    // 视频
-    'v.qq.com','iqiyi.com','iq.com','youku.com','bilibili.com','mgtv.com','ixigua.com','tv.sohu.com','sohu.com',
-    // 音乐
-    'music.163.com','y.qq.com','music.qq.com','kugou.com','kuwo.cn','qishui.com','music.migu.cn','migu.cn',
-    // 云盘
-    'pan.baidu.com','aliyundrive.com','alipan.com','weiyun.com','115.com','cloud.189.cn','pan.quark.cn','pan.xunlei.com',
-    // AI
-    'yiyan.baidu.com','chat.baidu.com','tongyi.aliyun.com','qianwen.aliyun.com','qianwen.com','dashscope.console.aliyun.com','doubao.com','volcengine.com','xinghuo.xfyun.cn','agent.xfyun.cn','chat.360.com','ai.360.com','ai.360.cn','kimi.moonshot.cn','kimi.com','platform.kimi.com','api.moonshot.cn','moonshot.cn','chat.deepseek.com','deepseek.com','platform.deepseek.com','chatglm.cn','bigmodel.cn','open.bigmodel.cn','openai.com','chatgpt.com','platform.openai.com',
-    // 下载工具
-    'xunlei.com','dl.xunlei.com','mobile.xunlei.com','internetdownloadmanager.com','secure.internetdownloadmanager.com','bitcomet.com','wiki-zh.bitcomet.com',
-    // 压缩
-    'rarlab.com','win-rar.com','winrar.com.cn','7-zip.org','bandisoft.com','bandizip.com','haozip.2345.cc','yasuo.360.cn',
-    // 电商
-    'taobao.com','tmall.com','jd.com','pinduoduo.com','meituan.com','suning.com','goofish.com',
-    // 地图 / 出行
-    'map.baidu.com','amap.com','gaode.com','www.autonavi.com','ditu.amap.com','mobile.amap.com','didiglobal.com','map.qq.com',
-    // 支付
-    'alipay.com','alipayplus.com','open.alipay.com','p.alipay.com','pay.weixin.qq.com','api.mch.weixin.qq.com','api2.mch.weixin.qq.com','payapp.weixin.qq.com','action.weixin.qq.com','api.wechatpay.cn','api2.wechatpay.cn',
-    // 开发者 / 云
-    'aliyun.com','aliyuncs.com','alibabacloud.com','cloud.tencent.com','tencentcloud.com','huaweicloud.com','cloud.baidu.com','intl.cloud.baidu.com','csdn.net','oschina.net','gitee.com','juejin.cn','v2ex.com','github.com',
-    'cloud.gjhdr.xyz',           // 个人开发者凯德荣的官方域名（含其子域名，按 _suffixHit 通配判安全、永不拦截）
-    // ===== 用户指定豁免域名（整站不拦截 / 不评分告警 / 不参与连坐）=====
-    // 与 OFFICIAL_DOMAINS 不同：这些并非「官方」，而是用户明确要求本扩展不得对其做出任何
-    // 拦截或评分告警的站点（例如曾被启发式误判、或确属用户信任）。匹配规则同 _suffixHit：
-    // 仅精确命中或子域后缀命中（www. / api. 等），不会误伤其它含该词的域名。
-    'qianwenai.com',             // 用户 2026-11-01 指定豁免（曾被品牌仿冒启发式误判，并清除其连坐存储残留）
-    // 海外托管 / 部署平台的「厂商官网本体」（公司自有站点，非用户内容托管 → 可整体判安全）
-    // ⚠️ 注意：用户内容托管子域（*.vercel.app / *.netlify.app / *.pages.dev / *.github.io 等）
-    // 已迁至下方 TRUSTED_PLATFORMS。原因：这些平台任何人都能免费部署带 HTTPS 的站点，
-    // 银狐完全可以在上面架仿冒投递站；把它们放进「完全豁免」名单等于给黑产留后门。
-    // 迁移后它们仅跳过「域名仿冒」判定（避免误判），其余检测规则全部照常运行。
-    'vercel.com','vercel.dev','netlify.com','cloudflare.com','render.com','heroku.com','replit.com',
-    'gitlab.com','githubusercontent.com',
-    // 海外安全认证 / SSL 证书颁发机构(CA) / 人机验证平台（银狐几乎不可能持有，一律判安全）
-    'letsencrypt.org','digicert.com','sectigo.com','globalsign.com','ssl.com','entrust.com','comodo.com','geotrust.com',
-    'thawte.com','verisign.com','identrust.com','zerossl.com','hcaptcha.com','recaptcha.net','gstatic.com','googleapis.com',
-    // 系统工具
-    'drivergenius.com','ludashi.com','cpuid.com','todesk.com','todeskai.com','sunlogin.oray.com','oray.com','teamviewer.com','anydesk.com','lenovo.com.cn','lenovo.com',
-    'cpuid.com','hwmonitor.com','aida64.com','samsung.com','westerndigital.com','seagate.com','toshiba.com','dell.com','hp.com','acer.com','asus.com','gigabyte.com','msi.com','asrock.com','corsair.com','kingston.com','logitech.com','razer.com','coolermaster.com','noctua.at','nzxt.com','seasonic.com','antec.com','phanteks.com','lian-li.com','gskill.com','teamgroupinc.com','adata.com','crucial.com','micron.com',
-    // 浏览器
-    'brave.com','opera.com','vivaldi.com','yandex.com','torproject.org','maxthon.com','microsoft.com','mozilla.org','firefox.com','google.com','google.cn','google.com.hk','googlemail.com','gmail.com','apple.com','safari.com',
-    // 办公 / 开发
-    'microsoft.com','office.com','microsoft365.com','live.com','outlook.com','onenote.com','skype.com','zoom.us','webex.com','slack.com','discord.com','telegram.org','thunderbird.net','notepad-plus-plus.org','sublimetext.com','jetbrains.com','code.visualstudio.com','visualstudio.com','github.com',
-    // 微软身份/云/认证域名（OAuth/SSO/登录中转页，极易被「microsoftonline 含 microsoft 子串」误判为仿冒；整体判安全）
-    'microsoftonline.com','windows.net','login.windows.net','hotmail.com','msn.com','office365.com','azure.com','passport.com','passport.microsoft.com','azureedge.net',
-    // 压缩 / 系统工具
-    'rarlab.com','win-rar.com','winrar.com.cn','7-zip.org','bandisoft.com','bandizip.com','peazip.com','haozip.2345.cc','yasuo.360.cn','winzip.com','cpu-z.com','hwmonitor.com','aida64.com','crystaldiskmark.info','crystaldiskinfo.info','prime95.com','furmark.com','memtest86.com','techpowerup.com','gpuz.com','msi.com','afterburner.com',
-    // 下载工具
-    'internetdownloadmanager.com','secure.internetdownloadmanager.com','bitcomet.com','wiki-zh.bitcomet.com','freedownloadmanager.org','qbittorrent.org','utorrent.com','bittorrent.com','transmissionbt.com','aria2.github.io','motrix.app','xdown.org',
-    // 安全软件
-    'avast.com','avg.com','kaspersky.com','bitdefender.com','eset.com','mcafee.com','norton.com','symantec.com','trendmicro.com','malwarebytes.com','avira.com','drweb.com','panda.com','gdata.com','f-secure.com','sophos.com','comodo.com','zonealarm.com',
-    // 媒体
-    'adobe.com','photoshop.com','adobe.io','videolan.org','obsproject.com','audacityteam.org','ffmpeg.org',
-    // 游戏平台
-    'wegame.com.cn','wegame.com','minecraft.net','minecraft.wiki','mojang.com','steamchina.com','store.steamchina.com','help.steamchina.com','game.163.com','neteasegames.com','steampowered.com','steamgames.com','epicgames.com','gog.com','origin.com','ea.com','ubisoft.com','uplay.com','playstation.com','xbox.com','nintendo.com','battle.net','blizzard.com',
-    // 主机模拟器（RPCS3 官方 rpcs3.net、PCSX2、PPSSPP、Yuzu、Ryujinx、Cemu、Dolphin、Citra、DuckStation 等）
-    'rpcs3.net','pcsx2.net','ppsspp.org','yuzu-emu.org','ryujinx.org','cemu.info','dolphin-emu.org','citra-emu.org','duckstation.org','xenia.jp','rpcs3.org',
-    // 加速器
-    'uu.163.com','xunyou.com','leigod.com','qiyou.cn','yuelun.com','xianniu.com','jiasu.bohe.com','fnjiasu.com','golinkcn.com','xiaoheihe.cn','acc.xiaoheihe.cn','tmgalite.qq.com','nn.com','akspeedy.com',
-    // 新闻 / 信息
-    'toutiao.com','baidu.com','zhihu.com',
-    // 搜索引擎（独立域名，避免中文搜索时被 ICP 缺失败误判）
-    'bing.com','sogou.com','so.com','yahoo.com','duckduckgo.com','yandex.com','ask.com',
-    // 高考志愿填报 / 教育考试院 / 招生考试院（各省官方考生服务平台，极易被「社工话术/低质量页面」误判，直接整体判安全）
-    // 注：.gov.cn / .edu.cn 后缀已由 isGovDomain 覆盖，此处仍显式列出，便于维护与审计。
-    'bjeea.cn',                 // 北京教育考试院
-    'zhaokao.net',              // 天津招考资讯网
-    'hebeea.edu.cn',            // 河北省教育考试院
-    'sxkszx.cn',               // 山西招生考试网
-    'zsks.cn',                  // 内蒙古招生考试信息网（nm.zsks.cn）
-    'lnzsks.com',               // 辽宁招生考试之窗
-    'jleea.com.cn',             // 吉林省教育考试院 / 普通高考考生服务平台（gk.jleea.com.cn）
-    'jleea.edu.cn',             // 吉林省教育考试院
-    'lzk.hl.cn',                // 黑龙江招生考试信息港
-    'hljea.cn',                 // 黑龙江省教育考试院
-    'shmeea.edu.cn',            // 上海教育考试院
-    'jseea.cn',                 // 江苏省教育考试院
-    'zjzs.net',                 // 浙江省教育考试院
-    'ahzsks.cn',                // 安徽省教育招生考试院
-    'eeafj.cn',                 // 福建省教育考试院
-    'jxeea.cn',                 // 江西省教育考试院
-    'sdzk.cn',                  // 山东省教育招生考试院
-    'haeea.cn',                 // 河南省教育考试院
-    'hbea.edu.cn',              // 湖北省教育考试院
-    'hubzs.com.cn',             // 湖北招生数智综合平台（zspt.hubzs.com.cn）
-    'hneao.cn',                 // 湖南招生考试信息港（ks.hneao.cn）
-    'hneeb.cn',                 // 湖南省教育考试院
-    'gd.gov.cn',                // 广东省教育考试院（eea.gd.gov.cn）
-    'gxeea.cn',                 // 广西招生考试院
-    'hainan.gov.cn',            // 海南省考试局（ea.hainan.gov.cn）
-    'cqksy.cn',                 // 重庆市教育考试院
-    'sceea.cn',                 // 四川省教育考试院
-    'guizhou.gov.cn',           // 贵州省招生考试院（zsksy.guizhou.gov.cn）
-    'ynzs.cn',                  // 云南省招生考试院
-    'sneac.com',                // 陕西省教育考试院
-    'sneea.cn',                 // 陕西省教育考试院
-    'ganseea.cn',               // 甘肃省教育考试院
-    'gszs.edu.cn',              // 甘肃省教育考试院
-    'qhjyks.com',               // 青海省教育招生考试院
-    'nxjyks.cn',                // 宁夏教育考试院
-    'xjzk.gov.cn',              // 新疆招生网
-    'hunan.gov.cn',             // 湖南省教育考试院（jyt.hunan.gov.cn）
-    'xizang.gov.cn',            // 西藏教育考试院
-    'chsi.com.cn',              // 阳光高考 / 学信网（教育部高校招生阳光工程指定平台）
-    // 项目官方站点（扩展分发页，永不拦截）
-    'silverfoxguard.dpdns.org',
-    'silverfoxguard.top',     // 新主域名（2026-10-11 接入，避免官网被误报）
-    // WorkBuddy 官网（用户实测曾被旧版误报，纳入 early-exit 永不拦截）
-    'workbuddy.cn',
 
-    // ============ 误报反馈补录（来源：B 站评论区 / GitHub Issues）============
-    // 原则：只补「确实被用户报告误拦且经确认的站点」，不做盲目扩库，
-    // 避免把任何人都能注册的 UGC 托管域放进完全豁免名单（等于给黑产留后门）。
-    // AdGuard：广告拦截与隐私保护，属安全软件品类（与 avast/kaspersky 同类），官网本体
-    'adguard.com', 'adguard.org', 'adguard.net', 'adguard-vpn.com', 'adguardteam.com',
-    // 技术学习 / 编程教育（用户反馈 leetcode 官网、编程猫社区被拦）
-    'leetcode.cn', 'leetcode.com', 'leetcode-cn.com',
-    'codemao.cn',                       // 编程猫（shequ.codemao.cn 等子域一并覆盖）
-    'codechat.codemao.64mowan.top',     // 编程猫第三方聊天站（用户反馈误报，已确认加白）
-    // 智能电视 / 安卓 TV 应用市场（软件下载站，易被「下载分发+话术」组合误判）
-    'znds.com',
-    // ⚠️ 注意：免费域名服务商（如 digitalplat）及其签发的免费子域一律【不】加入此处。
-    // 免费域名是银狐投递站的主力载体，任何人匿名即可注册，对其放行只会放大漏报。
-    // （2026-08-30 曾误补 digitalplat.org，经确认后移除）
-    // 用户自建站点（经评论区确认加白，均有正规用途）
-    'technologyehco.us.ci',             // 昼若轩的个人站
-    'lycheeledger.cn',                  // whcl412 的个人站
-    // GitHub 资源域补全（避免 GitHub 站内资源被拦；github.io 属 UGC 托管，不在此列）
-    'githubassets.com', 'github.dev', 'githubcopilot.com',
-
-    // ============ 2026-08 误报治理：官网白名单大规模扩容（#341）============
-    // 目标：把易误报的合法站点长尾「银行 / 证券 / 保险 / 基金 / 媒体 / 互联网 / 软件工具 / 电商 / 央企500强 /
-    //       医疗医药 / 交通物流 / 能源 / 教育 / 旅游 / 快消 / 游戏文娱 / 公共事业 / 外企中国」补进 early-exit 名单。
-    // 原则：只收真实、稳定、知名的官方法人/机构站点本体；任何人可免费注册的 UGC 托管域、免费域名
-    //       （.tk/.ml/.ga/.cf 等）、来路不明的个人站一律不收（避免给黑产留后门）。
-    // 说明：.gov.cn / .edu.cn / .ac.cn / .mil 已由 isGovDomain 自动覆盖，无需逐条列出。
-
-    // ---- 银行（政策性 / 国有大行 / 股份制 / 城商 / 农商 / 外资）----
-    'icbc.com.cn','abchina.com','boc.cn','ccb.com','bankcomm.com','psbc.com.cn','cmbchina.com',
-    'cmbc.com.cn','cib.com.cn','citicbank.com','spdb.com.cn','cebbank.com','bank.pingan.com','hxb.com.cn',
-    'cgbchina.com.cn','czbank.com','cbhb.com.cn','eximbank.gov.cn','cdb.com.cn','adbc.com.cn',
-    'bankofbeijing.com.cn','bosc.cn','jshbchina.com','njcb.com.cn','nib.com.cn','hzbank.com.cn',
-    'qdccb.com.cn','bankofdl.com','xmccb.com','tccb.com.cn','hrbcb.com.cn','bankofgy.com.cn',
-    'ccbank.cn','cqcbank.com','zzbank.cn','cscb.cn','suzhoubank.com','lzbank.com','nccbank.com.cn',
-    'hebbank.com','qlbank.com.cn','whccb.com.cn','sxccb.com.cn','jinzhoubank.com.cn','bsbchina.com',
-    'lhbchina.com','srcb.com.cn','bjrcb.com.cn','gzrcbank.com','cqrcb.com.cn','dongguanbank.cn',
-    'hzcbank.com.cn','jxbank.com.cn','bhb.cn','jcbank.com.cn','bohs.cn','jhccb.com.cn','hsbank.com.cn',
-    'hsbc.com.cn','citibank.com.cn','sc.com','standardchartered.com.cn','hangseng.com.cn','bnpparibas.com.cn',
-    'jpmorgan.com.cn','ubs.com','mufg.jp','mizuhobank.com','sumitomomitsui','ocbc.com','uob.com.sg',
-    'maybank.com','bankofamerica.com','deutschebank.com.cn','ing.com','rabobank.com','db.com',
-
-    // ---- 证券（券商）----
-    'guosen.com.cn','gf.com.cn','gtja.com','htsec.com','csc108.com','swhy.com','cicc.com.cn',
-    'cijsc.com.cn','zts.com.cn','ebscn.com','gyzq.com.cn','dgzq.com.cn','htzq.com.cn','jyzq.com.cn',
-    'dwzq.com.cn','qlzq.com.cn','sxzb.com.cn','i618.com.cn','newone.com.cn','cmschina.com',
-    'tfzq.com.cn','huatai.com','hongyuan.com','chinalongsun.com','lhzq.com.cn','yzq.newone.com.cn',
-    'haitong.com','guotaijunan.com','shdjt.com','stocke.com','sw2000.com.cn','swhysc.com',
-    'cs.ecitic.com','citic.com','china-invs.cn','orientsec.com.cn','wzq.com.cn','xzq.com.cn',
-
-    // ---- 保险 / 基金 / 期货 / 信托 / AMC ----
-    'china-life.com.cn','picc.com','piccnet.com.cn','cpic.com','cpic.com.cn','taikang.com','taikang.com.cn',
-    'pingan.com','pa18.com','ccic.com.cn','sinosig.com','sunlife.com.cn','metlife.com.cn','aia.com.cn',
-    'allianz.com.cn','generali.com.cn','chubb.com','fwd.com','manulife.com.cn','prudential.com.hk',
-    'pru.com.hk','chinaamc.com','eestone.com','jjmmw.com','fund.eastmoney.com','tiantianfunds.com',
-    'licai.com','jrj.com.cn','chinafund.cn','csfunds.com.cn','wtfund.com','ourku.com',
-    'cffex.com.cn','shfe.com.cn','dce.com.cn','czce.com.cn','ine.com.cn','cme.com',
-    'citics.com','citic-tai.com','ctitic.com','huarong.com','amc.cinda.com','gxfc.com.cn',
-
-    // ---- 新闻 / 媒体 / 广电 / 报刊 ----
-    'people.com.cn','xinhuanet.com','cctv.com','cctv.cn','china.com','chinanews.com.cn','china.org.cn',
-    'cnr.cn','cri.cn','cntv.cn','huanqiu.com','globaltimes.com.cn','thepaper.cn','yicai.com',
-    'caixin.com','caixin.com.cn','stcn.com','cs.com.cn','jrj.com.cn','eastmoney.com','21jingji.com',
-    '21cbh.com','nbweekly.com','sina.com.cn','sina.com','sohu.com','163.com','yesky.com','zdnet.com.cn',
-    'pconline.com.cn','it168.com','pcpop.com','donews.com','techweb.com.cn','leiphone.com','36kr.com',
-    'huxiu.com','ifanr.com','pingwest.com','qdaily.com','jiemian.com','lanjinger.com','cls.cn',
-    'wallstreetcn.com','fx168.com','bjnews.com.cn','bjd.com.cn','eastday.com','news365.com.cn',
-    'southcn.com','gdtoday.com','zjol.com.cn','jschina.com.cn','yangtse.com','sdnews.com.cn','dzwww.com',
-    'qlwb.com.cn','dahe.cn','hnby.com.cn','hebnews.cn','yzdsb.com.cn','voc.com.cn','hnrednet.cn',
-    'cnhubei.com','scol.com.cn','sctv.com','fjsen.com','sxdaily.com.cn','cnwest.com','ahwang.cn',
-    'anhuinews.com','jxnews.com.cn','lnrb.com.cn','hljnews.cn','hrbrent.com.cn','jlnews.com.cn',
-    'gog.cn','gzdaily.com.cn','yunnan.cn','hinews.cn','hndaily.cn','gansudaily.com.cn','gscn.com.cn',
-    'qhnews.com.cn','nxnet.cn','nxdaily.com','ts.cn','nmgnews.com.cn','nmrb.com.cn','gxnews.com.cn',
-    'gxrb.com.cn','sxrb.com','sxgov.cn','cqnews.net','cqwb.cn','tjnews.cn','enorth.com.cn','tibet.cn',
-
-    // ---- 互联网 / 科技 / AI / 云 ----
-    'baidu.com','baidu.cn','iqiyi.com','iq.com','youku.com','tudou.com','kuaishou.com','douyin.com',
-    'bytedance.com','toutiao.com','xigua.com','feishu.cn','larkoffice.com','tiktok.com','capcut.com',
-    'meitu.com','meituinc.com','xima.tv','ximalaya.com','zhangyue.com','duokan.com','qidian.com',
-    'yuewen.com','sfacg.com','acfun.cn','bilibili.tv','hupu.com','douyu.com','huya.com','yy.com',
-    'pinduoduo.com','pdd.com','xunmeng.com','meituan.com','dianping.com','waimai.meituan.com',
-    'ele.me','koubei.com','alibaba.com','alimama.com','1688.com','alitrip.com','fliggy.com',
-    'cainiao.com','zhifubao.com','antgroup.com','antfin.com','netease.com','163.com','126.com',
-    'yeah.net','neteasegames.com','shimo.im','kdocs.cn','wps.cn','wps.com','kuaishou.com',
-    'sogou.com','soso.com','qq.com','tencent.com','weibo.com','weibo.cn','zhihu.com','guokr.com',
-    'douban.com','ruguoapp.com','xiaohongshu.com','xhs.com','tianya.cn','mtime.com','douban.fm',
-    'cmread.com','mozhua.net','jiakaobaodian.com','zhangyu.com','aigei.com','51cto.com',
-    'cnblogs.com','blogjava.net','iteye.com','talkwithtrend.com','ui.cn','zcool.com.cn','poocss.com',
-    'chinaz.com','admin5.com','im286.com','a5.net','webmasterhome.cn','cnzz.com','umeng.com',
-    'talkingdata.com','mob.com','umeng.com','bugly.qq.com','tencentcloud.com','aliyun.com',
-    'aliyuncs.com','huaweicloud.com','huawei.com','xiaomi.com','mi.com','duokan.com','getui.com',
-
-    // ---- 软件 / 工具 / 下载 / 论坛社区（极易被误报，重点补）----
-    '52pojie.cn','52pojie.com','ghxi.com','tool.lu','lanzou.com','lanzous.com','lanzoux.com',
-    'lanzouw.com','ilanzou.com', // 蓝奏云主站官网 / 优享版官网（B站网友反馈误报，2026-08-31 加）
-    'lanzoui.com', // 蓝奏云官网被误报，已添加到白名单
-    'pcsoft.com.cn','onlinedown.net','duote.com','crsky.com','zol.com.cn','skycn.com','xiazaiba.com',
-    'a67.com','greenxf.com','rj.baidu.com','software.qq.com','mydown.com','oray.com','putty.org',
-    'winscp.net','filezilla-project.org','notepad-plus-plus.org','sublimetext.com','jetbrains.com',
-    'code.visualstudio.com','visualstudio.com','atom.io','github.com','gitlab.com','gitee.com',
-    'discuz.net','phpwind.com','zblogcn.com','dedecms.com','phpcms.com','empirecms.com','wordpress.org',
-    'typecho.org','hexo.io','vuejs.org','reactjs.org','nodejs.org','python.org','rust-lang.org',
-    'golang.org','php.net','java.com','oracle.com','mysql.com','mariadb.org','postgresql.org',
-    'mongodb.com','redis.io','nginx.org','apache.org','nginx.com','ubuntu.com','debian.org',
-    'archlinux.org','fedoraproject.org','centos.org','opensuse.org','kali.org','kali-linux.com',
-    'deepin.org','ubuntukylin.com','uniontech.com','uos.com','linglong.cn','wps-linux.com',
-    'appinn.com','ipip.net','ip.cn','whatismyip.com','ip138.com','chinaz.com','boce.com',
-    'tool.oschina.net','c.runoob.com','runoob.com','w3school.com.cn','w3cschool.cn','cnblogs.com',
-    'juejin.cn','v2ex.com','oschina.net','csdn.net','gitee.com','gitbook.io','readthedocs.io',
-    'stackoverflow.com','freecodecamp.org','leetcode.cn','leetcode.com','codemao.cn','code.org',
-
-    // ---- 电商 / 零售 / 外卖 / 本地生活 ----
-    'taobao.com','tmall.com','jd.com','jd.hk','pinduoduo.com','meituan.com','suning.com','goofish.com',
-    'gome.com.cn','dangdang.com','book.com','amazon.cn','amazon.com','jumei.com','vancl.com',
-    'yhd.com','yihaodian.com','vip.com','vipshop.com','sasa.com','sephora.cn','uniqlo.com',
-    'hm.com','zara.com','nike.com','adidas.com.cn','li-ning.com','anta.com','361.com','xtep.com',
-    'erke.com','peerless.com','ximalaya.com','fanli.com','returnbuy.com','55bbs.com','moonbasa.com',
-    'kimiss.com','onlylady.com','yoka.com','pclady.com','pcpop.com','39.net','120ask.com',
-    'jd.com','smzdm.com','whatsmoney.com','haitao.com','kaola.com','xiji.com','mi.com',
-
-    // ---- 通信运营商 ----
-    '10086.cn','10010.com','189.cn','10000.com','chinamobile.com','chinaunicom.com','chinatelecom.com',
-    'cmcc.com','chinamobileltd.com','chinaunicom.com.hk','ctm.com.mo','cmhk.com','one2free.com',
-    'pccw.com','smartone.com','three.com.hk','csl.com','1010.com','cmlink.com',
-
-    // ---- 能源 / 电力 / 石化 / 煤炭 / 钢铁 / 有色 ----
-    'cnpc.com','petrochina.com.cn','sinopec.com','cnooc.com','cnpc.com.cn','shenergy.com','huadian.com',
-    'chng.com.cn','spic.com.cn','cgdc.com.cn','cgnpc.com.cn','statepower.com.cn','guodian.com',
-    'baosteel.com','shsteel.com','ansteel.com','wusteel.com','hbisco.com','shougang.com','taigang.com',
-    'chinalco.com','chalco.com.cn','jiangxi-copper.com','tongling.com','yunlu.com','zijinmining.com',
-    'cmoc.com','jnyl.com','yanzhoucoal.com','china-coal.com','shenhua.com','camce.com','powerchina.cn',
-    'chemchina.com','sinochem.com','syngenta.cn','yara.com','bluestar.com','wanhua.com','haihua.com',
-
-    // ---- 汽车 / 制造 / 央企 / 500强 ----
-    'saicmotor.com','faw.com','dongfeng.com','geely.com','chery.cn','greatwallmotor.com','byd.com',
-    'gac.com.cn','gac-toyota.com','gac-honda.com','bmw.com.cn','benz.com.cn','audi.cn','volkswagen.com.cn',
-    'toyota.com.cn','honda.com.cn','nissan.com.cn','ford.com.cn','gm.com.cn','hyundai.com.cn',
-    'kia.com.cn','mazda.com.cn','subaru.com.cn','mitsubishi.com.cn','volvo.com.cn','tesla.cn',
-    'nio.cn','xpeng.com','lixiang.com','wmotor.com','levdeo.com','enovate.com','arcfox.com',
-    'haier.com','hisense.com','tcl.com','skyworth.com','gree.com','midea.com','meidi.com',
-    'changhong.com','konka.com','galanz.com','robam.com','vatti.com','oppel.com','supor.com',
-    'joyoung.com','midea.com','haier.com','casarte.com','leader.com','littleswan.com','beko.com',
-    'sinopec.com','cnpc.com','cnooc.com','sasac.gov.cn','china-mae.com','csg.cn','sgcc.com.cn',
-
-    // ---- 航空 / 铁路 / 地铁 / 物流 / 快递 ----
-    'airchina.com','csair.com','ceair.com','muair.com','shenzhenair.com','hainanairlines.com','xiamenair.com',
-    'shanghaiair.com','springairlines.com','juneyaoair.com','westair.cn','okair.net','chinaexpressair.com',
-    '12306.cn','china-railway.com.cn','crh.com.cn','railway.com.cn','tiqianx.com','mtr.com.hk',
-    'sfbchina.com','sf-express.com','zto.com','yto8000.com','yundaex.com','sto.cn','jt-express.com',
-    'deppon.com','dblogistics.com','ems.com.cn','china-post.com.cn','post.com.cn','yimidida.com',
-    'huolala.com','kuaibao.com','zhongtong.com','yunda.com','shentong.com','youzheng.com.cn',
-
-    // ---- 地产 / 建筑 / 建材 ----
-    'vanke.com','countrygarden.com','evergrande.com','poly.com.cn','cem.com.cn','crland.com.hk',
-    'longfor.com','greentown.com.cn','seazen.com.cn','sunac.com.cn','gemdale.com','logan.com.hk',
-    'shimao.com','rsh.com.cn','zhongliang.com','zhongjun.com','agile.com.cn','bgy.com.cn',
-    'csc.com.cn','cscec.com','crec.com','crcc.cn','ccccltd.cn','powerchina.cn','cmc.com.cn',
-    'cnccc.com','csg.cn','ceec.net.cn','xcmg.com','zoomlion.com','sany.com','liugong.com',
-    'zoomliion.com','sunward.com','csg.cn','bjjs.com','shfc.gov.cn','szhome.com',
-
-    // ---- 医疗 / 医药 / 健康 ----
-    'nmpa.gov.cn','nhc.gov.cn','chinacdc.cn','icdc.cn','pharmnet.com.cn','yaozh.com','dxy.com',
-    'dxy.cn','haodf.com','xywy.com','39.net','120ask.com','familydoctor.com.cn','jkkp.com',
-    'jianke.com','111.com.cn','yao123.com','yaofang.cn','medsci.cn','biocompare.com','bioon.com',
-    'dxy.com','yaozh.com','syphu.com','sphic.com','sinopharm.com','unionmed.com',
-    'snp.com.cn','cspc.com','hualanbio.com','wantai.com','kangtai.com','zhifeishengwu.com',
-    'fosunpharma.com','hutian.com','nhwa.com','hansoh.cn','hengrui.com','3sbio.com','innobic.com',
-    'minhai.com','bchot.com','tongfang.com','jxqx.com','zjgpharma.com','zhejiangdisease.com',
-
-    // ---- 教育 / 培训 / 考试 / 留学 ----
-    'chsi.com.cn','eol.cn','eol.com.cn','cnedu.cn','kaoyan.com','kaoyan365.com','yuloo.com',
-    'studyabroad.com.cn','liuxue.com','applysquare.com','zhixue.com','xueersi.com','sina.com.cn',
-    'neworiental.org','xdf.cn','koolearn.com','tpedutest.com','baijia.com','aofan.com',
-    'cnhubei.com','eeagd.edu.cn','jseea.cn','zjzs.net','sdzk.cn','ahzsks.cn','bjeea.cn',
-    'zikao365.com','eol.cn','edu.cn','cer.net','moe.gov.cn','chsi.com.cn','ncss.cn',
-    'cuc.edu.cn','bit.edu.cn','tsinghua.edu.cn','pku.edu.cn','fudan.edu.cn','sjtu.edu.cn',
-    'zju.edu.cn','nju.edu.cn','ustc.edu.cn','sysu.edu.cn','whu.edu.cn','hit.edu.cn','scut.edu.cn',
-
-    // ---- 旅游 / 酒店 / 生活服务 ----
-    'ctrip.com','trip.com','qunar.com','elong.com','ly.com','tuniu.com','mafengwo.cn','lvmama.com',
-    '17u.cn','ctrip.com','fliggy.com','alitrip.com','tongcheng.com','easemob.com','huazhu.com',
-    'jinjiang.com','btg.com.cn','homeinns.com','7daysinn.com','vn.hotels.com','marriott.com',
-    'hilton.com','ihg.com','accor.com','wyndham.com','shangri-la.com','kempinski.com',
-    'ctrip.com','lv.com','visa.com','mastercard.cn','unionpay.com','unionpayintl.com','up.com.cn',
-    'chinapay.com','95516.com','95588.com','95599.com','95555.com','95533.com','95559.com',
-    '95561.com','95595.com','95568.com','95528.com','95580.com','95577.com','400.com',
-
-    // ---- 食品 / 饮料 / 快消 / 农业 ----
-    'moutai.com.cn','wuliangye.com.cn','luzhoulaojiao.com','yanghe.com','gujing.com.cn','jnc.com.cn',
-    'niulanshan.com.cn','qingdao.com','tsingtao.com','snowbeer.com.cn','yanjing.com.cn','zjbeer.com',
-    'coca-colacompany.com','pepsi.com','nestle.com.cn','yili.com','mengniu.com','want-want.com',
-    'masterkong.com.cn','cofco.com','beijinghy.com','sanxing.com','haier.com',
-    'yili.com.cn','mengniu.cn','nongfu-spring.com','nongfusanquan.com','wahaha.com','toly.com',
-    'glico.com','meiji.com','yili.com','brightdairy.com','sanyuan.com','mengniu.com',
-
-    // ---- 游戏 / 动漫 / 文娱 / 体育 ----
-    'minecraft.net','mojang.com','steampowered.com','steamgames.com','epicgames.com','gog.com',
-    'origin.com','ea.com','ubisoft.com','uplay.com','playstation.com','xbox.com','nintendo.com',
-    'battle.net','blizzard.com','riotgames.com','leagueoflegends.com','genshin.com','mihoyo.com',
-    'hoyoverse.com','neteasegames.com','game.163.com','tencentgames.com','wegame.com','taptap.com',
-    'taptap.cn',    'cngal.org','bangumi.tv','bgm.tv','animenewsnetwork.com','myanimelist.net',
-    'bilibili.com','acg.178.com','17173.com','duowan.com','nga.cn','wowar.com','wowhead.com',
-    'huya.com','douyu.com','yy.com','panda.tv','zhanqi.tv','bilibili.tv',
-
-    // ---- 公共事业（水 / 电 / 气 / 暖 / 广电 / 市政）----
-    'sgcc.com.cn','csg.cn','chinapower.com.cn','waterchina.com','bewg.com.cn','bdc.com.cn',
-    'bjwater.com','shanghaiwater.com','gw.com.cn','gas.com.cn','chinagashub.com','pipechina.com',
-    'cnpc.com','cnpc.com.cn','petrochina.com.cn','sinopec.com','cnooc.com','chinagashub.com',
-    'bjgas.com','shgas.com','gzzhgd.com','cin.gov.cn','mohurd.gov.cn','mohrss.gov.cn','mof.gov.cn',
-    'mofcom.gov.cn','ndrc.gov.cn','miit.gov.cn','samr.gov.cn','customs.gov.cn','tax.gov.cn',
-
-    // ---- 外企中国 / 国际组织 / 商会 / 使领馆 ----
-    'microsoft.com','microsoft.cn','apple.com','apple.com.cn','ibm.com','ibm.com.cn','intel.com',
-    'intel.cn','amd.com','nvidia.com','nvidia.cn','dell.com','dell.com.cn','hp.com','hp.com.cn',
-    'lenovo.com','lenovo.com.cn','samsung.com','samsung.com.cn','lg.com','sony.com','sony.com.cn',
-    'panasonic.cn','hitachi.com','toshiba.com','sharp.cn','philips.com.cn','bosch.com','siemens.com',
-    'ge.com','ge.com.cn','honeywell.com','3m.com','dupont.com','basf.com','bayer.com','novartis.com',
-    'pfizer.com','roche.com','gsk.com','jnj.com','unilever.com','pg.com','coca-colacompany.com',
-    'nestle.com','danone.com','ikea.com','ikea.cn','carrefour.com','walmart.com','walmart.cn',
-    'metro.com.cn','auchan.com','rt-mart.com','yum.com','kfc.com.cn','yumchina.com','mcd.com.cn',
-    'starbucks.com.cn','uni-president.com','masterkong.com.cn','jnsn.com',
-    // —— 用户误报反馈（GitHub Issues 批量确认，均为安全站点，加白名单早期退出）——
-    '0bcjstko9509h.space.mcode.cn','360.xiaomai.cc.cd','8kmm.com','ae0kcokdy1z45.space.mcode.cn',
-    'battlelog.battlefield.com','bbs.kafan.cn','bingdiancn.com','cloudflare-cn.com','crxsoso.com',
-    'curseforge.com','d.seewo.com','geogebra.org','gunsaw-level-codes.jimmyking.dev','jfglzs.com',
-    'mcapks.net','mcmod.cn','minimaxi.com','mumu-dili.pages.dev','pc.woozooo.com','shequ.codemao.cn',
-    'shijuezu.com','sparanoid.com','spestech.com','store.rg-adguard.net',
-    'uiso44xg1go9p.space.mcode.cn','wwda.lanzouj.com','wwn.lanzouy.com','wwtr.lanzouw.com',
-    // —— 被误报为「恶意」实为安全的大站（真实域名，加白名单避险）——
-    'bing.com','chaoxing.com'
+  // ---------- 黑名单目录 ----------
+  const BLACKLIST_CATALOG = [
+    ['恶意投递站', [
+      ['仿冒下载站', 'chrome-china.net appsl-360.com app-360weishi.com.cn deepvseek.com.cn qissmusic.com.cn ggfanyi.com', '仿 Chrome / 仿 360 / 仿 DeepSeek / 仿音乐平台 / 仿谷歌翻译'],
+      ['载荷 CDN', 'coreapps.cc oentvu8xii.com', '跳转分发 .zip 木马安装包 / 下载中转页'],
+      ['APT-Q-27 C2', 'jackadmin1.cn jackadmin2.cn jackadmin3.cn jackadmin4.cn jackadmin5.cn jackbank1.cn jackbank2.cn jackbank3.cn jackbank4.cn jackbank5.cn', '银行木马 C2 面板 / 欺诈页'],
+    ]],
+    ['钓鱼与恶意 AI 站', [
+      ['仿冒 B 站', 'net-bcutbilibili.com.cn', ''],
+      ['恶意 AI 站', 'chat.51mitu.com 108ai.com', '多次举报的 AI 钓鱼站'],
+      ['随机子域投递', '88vyvwbt.qpefh.com abi04.8msg8.com es.wlygrowth.com', '随机子域投递 / C2 / 落地页'],
+    ]],
+    ['历史收录', [
+      ['综合', 'wy-mmusic.com.cn', '早期用户上报'],
+    ]],
   ];
+
+  // ---------- 由目录派生扁平数组（等价于旧版逐条枚举，仅去重）----------
+  // 为什么要派生而不是直接维护扁平数组：1344 条域名原本散落在 400 行注释里，
+  // 同一个品牌（如 360）被拆到「安全软件」「浏览器」两处且大量重复（原表重复 163 条）。
+  // 目录化后「品牌 → 大类/小项」一目了然，扁平数组退化成派生产物，不再手改。
+  function _catalogFlatten(catalog, out, index) {
+    for (let i = 0; i < catalog.length; i++) {
+      const catName = catalog[i][0];
+      const items = catalog[i][1] || [];
+      for (let j = 0; j < items.length; j++) {
+        const itemName = items[j][0];
+        const doms = String(items[j][1] || '').split(/\s+/);
+        for (let k = 0; k < doms.length; k++) {
+          const dom = doms[k].trim().toLowerCase();
+          if (!dom) continue;
+          if (index[dom]) {
+            if (typeof console !== 'undefined' && console.warn) {
+              console.warn('[SF_IOCS] 域名重复归类，已忽略后出现的条目: ' + dom);
+            }
+            continue;
+          }
+          index[dom] = { cat: catName, item: itemName };
+          out.push(dom);
+        }
+      }
+    }
+    return out;
+  }
+
+  const DOMAIN_CATALOG_INDEX = Object.create(null);
+  const OFFICIAL_DOMAINS = _catalogFlatten(WHITELIST_CATALOG, [], DOMAIN_CATALOG_INDEX);
+  const KNOWN_BAD_DOMAINS = _catalogFlatten(BLACKLIST_CATALOG, [], Object.create(null));
+
+  // 域名 → { cat, item }（精确或父域命中）；未收录返回 null。
+  // 用途：设置页按大类分组展示、排查误报时快速定位该域名属于哪个品牌/机构。
+  function categoryOfDomain(host) {
+    let h = String(host || '').toLowerCase().replace(/^www\./, '');
+    if (!h) return null;
+    let hit = DOMAIN_CATALOG_INDEX[h];
+    if (hit) return hit;
+    let i = h.indexOf('.');
+    while (i !== -1) {
+      hit = DOMAIN_CATALOG_INDEX[h.slice(i + 1)];
+      if (hit) return hit;
+      i = h.indexOf('.', i + 1);
+    }
+    return null;
+  }
 
   // ============ UGC 平台白名单（仅跳过「域名仿冒」判定，其余规则照常运行）============
   // 合入自 VirusDetector 的 TRUSTED_PLATFORMS（44 个），并补齐我们原有覆盖。
@@ -425,27 +411,8 @@
 
   // ============ 已知银狐木马投递站黑名单（硬编码：命中即判 danger，永不豁免）============
   // 来源：用户上报 / CNCERT 通报。命中即强制拦截，不受灵敏度或维度开关影响。
-  const KNOWN_BAD_DOMAINS = [
-    'wy-mmusic.com.cn',
-    // 以下来自 2025–2026 公开威胁报告（知道创宇404 / 微步 / 威胁情报），确认为银狐(APT-Q-27/金眼狗)钓鱼/C2 域名
-    'ggfanyi.com',              // 仿冒谷歌翻译钓鱼站（anquanke 报告）
-    'jackadmin1.cn','jackadmin2.cn','jackadmin3.cn','jackadmin4.cn','jackadmin5.cn', // APT-Q-27 银行木马 C2 面板
-    'jackbank1.cn','jackbank2.cn','jackbank3.cn','jackbank4.cn','jackbank5.cn',       // APT-Q-27 银行木马欺诈页
-    'appsl-360.com',            // 用户上报银狐木马投递站（仿 360 命名，下载入口已确认银狐载荷）
-    'app-360weishi.com.cn',     // 用户上报银狐木马投递站（仿 360 卫士命名，下载跳转中转页）
-    'oentvu8xii.com',            // 银狐下载中转页（app-360weishi 跳转至此触发下载，打开即自动关闭）
-    'chrome-china.net',          // 仿冒 Chrome 官方下载的钓鱼站（download.chrome-china.net 入口，meta refresh 秒跳下载）
-    'coreapps.cc',               // 银狐载荷 CDN（chrome-china.net 等仿冒站跳转至此分发 .zip 木马安装包）
-    // —— 用户举报确认恶意（GitHub Issues 恶意站点举报批量确认）——
-    'net-bcutbilibili.com.cn',   // 仿冒 B 站（net-bcutbilibili）钓鱼投递
-    'deepvseek.com.cn',          // 仿冒 DeepSeek（deepvseek，非官方 deepseek.com）钓鱼
-    '88vyvwbt.qpefh.com',        // 随机子域，银狐木马投递/C2
-    'abi04.8msg8.com',           // 随机子域，银狐木马投递/C2
-    'chat.51mitu.com',           // 多次举报为恶意 AI 钓鱼站
-    'qissmusic.com.cn',          // 仿冒音乐平台（qissmusic）钓鱼站
-    '108ai.com',                 // 用户举报疑似恶意 AI 钓鱼站（GitHub confirmed-phish 标签确认）
-    'es.wlygrowth.com'           // 用户实测银狐木马流量落地页（根域名 + 子域/子路径强制 danger）
-  ];
+  // KNOWN_BAD_DOMAINS 由上方 BLACKLIST_CATALOG 派生（见 _catalogFlatten）。
+
 
   // ============ 已知银狐「木马化投递物」文件名（硬编码：命中即强风险）============
   // 来源：用户提交的银狐样本「只读静态分析」（未执行，仅提取字符串级 IOC）。
@@ -834,7 +801,9 @@
 
   const API = {
     OFFICIAL_DOMAINS,
-    EXCEPTION_DOMAINS,
+    WHITELIST_CATALOG,
+    BLACKLIST_CATALOG,
+    categoryOfDomain,
     TRUSTED_PLATFORMS,
     TRUSTED_DOWNLOAD_HOSTS,
     KNOWN_BAD_DOMAINS,

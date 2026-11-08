@@ -42,7 +42,7 @@
 .sf-btn-stay,
 .sf-btn-continue { color: #fff !important; background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.22) !important; }
 .sf-actions { display: flex !important; gap: 12px !important; margin-top: 4px !important; width: 100% !important; }
-/* 「添加到全局黑名单」独占一行，作为次级动作放在主按钮上方 */
+/* 「添加到你的恶意域名黑名单」独占一行，作为次级动作放在主按钮上方 */
 .sf-actions-stack { margin-top: 0 !important; margin-bottom: 10px !important; }
 .sf-btn-blocklist { flex: 1 1 100% !important; padding: 11px 10px !important;
   font-size: calc(13px * var(--sf-scale)) !important; font-weight: 600 !important;

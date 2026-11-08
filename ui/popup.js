@@ -96,23 +96,71 @@ function loadCurrentSite() {
   if (!hostEl) return;
   const unknown = (txt) => {
     hostEl.textContent = '—'; scoreEl.textContent = '—';
+    scoreEl.classList.remove('skip');
     levelEl.textContent = txt; levelEl.className = 'site-level lvl-unknown';
     if (reasonsEl) reasonsEl.innerHTML = '';
+  };
+  // 「跳过检测」的几种情形：这类页面根本没有进入评分引擎，分数是不存在的。
+  // 既不能显示成「未知」（读起来像引擎出错），也不能显示成「0 分」（读起来像「完全干净」）。
+  // 2026-11-06：等级统一显示「已跳过评分」，说明行统一为「该域名在<哪张名单>中，<结果>。」，
+  // 只替换名单名称，不再出现「已跳过检测 / 官方域名」这类不同说法。
+  const SKIP_INFO = {
+    allowlist: {
+      text: '已跳过评分', lvl: 'official',
+      reason: (r) => r.skipBy === 'user'
+        ? '该域名在你的信任域名白名单中，未进入评分引擎。'
+        // 内置的可信分发名单（GitHub / 网盘 / 下载站等）与官方域名表同属「扩展内置的可信号名单」，
+        // 用户要求两者说法完全一致，故共用同一句。
+        : '该域名在扩展内置的官方可信域名表中，未进入评分引擎。'
+    },
+    official: { text: '已跳过评分', lvl: 'official', reason: '该域名在扩展内置的官方可信域名表中，未进入评分引擎。' },
+    disabled: { text: '防护已关闭', lvl: 'unknown', reason: '防护已全局关闭，未参与评分。' },
+    protocol: { text: '不适用', lvl: 'unknown', reason: '非 http(s) 页面，不参与评分。' },
+    localhost: { text: '本地地址', lvl: 'official', reason: '本地开发地址（localhost / 127.0.0.1），未进入评分引擎。' }
   };
   const render = (r, fallbackHost) => {
     const host = r.hostname || fallbackHost || '—';
     hostEl.textContent = host;
+    // 尚未分析完（刚打开标签页 / 异步补强中）：显示「分析中」而不是「未知」，避免被误读成判定失败
+    if (r.analyzed === false) {
+      scoreEl.textContent = '—';
+      scoreEl.classList.remove('skip');
+      levelEl.textContent = '分析中';
+      levelEl.className = 'site-level lvl-unknown';
+      if (reasonsEl) { reasonsEl.innerHTML = ''; reasonsEl.textContent = '正在分析当前页面…'; }
+      return;
+    }
+    // 兼容旧载荷（skip 字段上线前的缓存结果）：没有 skip 时按原有标志位推断
+    let skip = r.skip || '';
+    if (!skip && r.analyzed && typeof r.score !== 'number') {
+      if (r.allowlisted) skip = 'allowlist';
+      else if (r.official) skip = 'official';
+      else if (r.disabled) skip = 'disabled';
+    }
+    // ★ 2026-11-08 兜底：official/allowlisted 是「根本没跑评分引擎」的事实标记，比 skip 更可靠。
+    //   此前 content.js 有一条分支只带 official/score 不带 skip，弹窗就退化成「0 分 / 保持警惕」，
+    //   把「白名单生效」误读成「干净但需警惕」。凡是带 official 标记且未声明 skip 的载荷，
+    //   一律按官方名单跳过渲染（引擎侧所有 official 结果也都同时带 skip，不会与真实评分冲突）。
+    if (!skip && r.official) skip = 'official';
+    if (skip && SKIP_INFO[skip]) {
+      const info = SKIP_INFO[skip];
+      scoreEl.textContent = '跳过';
+      scoreEl.classList.add('skip');
+      levelEl.textContent = info.text;
+      levelEl.className = 'site-level lvl-' + info.lvl;
+      const why = (typeof info.reason === 'function') ? info.reason(r) : info.reason;
+      if (reasonsEl) { reasonsEl.innerHTML = ''; reasonsEl.textContent = why; }
+      return;
+    }
+    scoreEl.classList.remove('skip');
     const score = (typeof r.score === 'number') ? r.score : null;
     scoreEl.textContent = (score == null) ? '—' : String(score);
-    let level = r.level || (score == null ? 'unknown' : 'safe');
-    if (r.allowlisted) level = 'official';
+    const level = r.level || (score == null ? 'unknown' : 'safe');
     levelEl.textContent = LEVEL_MAP[level] || '未知';
     levelEl.className = 'site-level lvl-' + level;
       if (reasonsEl) {
       reasonsEl.innerHTML = '';
-      if (r.allowlisted) reasonsEl.textContent = '该站点在白名单中，已跳过检测。';
-      else if (r.disabled) reasonsEl.textContent = '防护已全局关闭，未参与评分。';
-      else if (r.analyzed === false) reasonsEl.textContent = '正在分析当前页面…';
+      if (r.analyzed === false) reasonsEl.textContent = '正在分析当前页面…';
       else {
         const rs = Array.isArray(r.reasons) ? r.reasons : [];
         if (!rs.length) reasonsEl.textContent = score > 0 ? '已命中风险特征。' : '未命中任何风险特征。';
@@ -134,11 +182,11 @@ function loadCurrentSite() {
         if (!tab || tab.id == null || !tab.url || !/^https?:\/\//i.test(tab.url)) { unknown('当前页面不支持评分'); return; }
         let fallbackHost = ''; try { fallbackHost = new URL(tab.url).hostname; } catch (e) {}
         chrome.tabs.sendMessage(tab.id, { type: 'sf-getStatus' }, (resp) => {
-          if (chrome.runtime.lastError || !resp) { unknown('无法获取评分'); return; }
+          if (chrome.runtime.lastError || !resp) { unknown('无法获取评分（请刷新页面后重试）'); return; }
           render(resp, fallbackHost);
         });
       });
-    } catch (e) { unknown('无法获取评分'); }
+    } catch (e) { unknown('无法获取评分（请刷新页面后重试）'); }
   };
   queryStatus();
   // 评分依赖异步补强（域名年龄 / ICP 核验 / 深链下挖），延后补查一次，确保弹窗结论与页面浮层一致

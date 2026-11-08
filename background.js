@@ -19,6 +19,32 @@ const SF = self.SF_ANALYZER || (typeof window !== 'undefined' ? window.SF_ANALYZ
   detectSpoof: function () { return null; }
 };
 
+// ===== 云端名单注入（storage.local: sfCloudWhite / sfCloudBlack）=====
+// 名单由设置页「关于 → 从云端更新黑/白名单」经 worker 的 /list 接口拉取后落盘。
+// 后台是独立的 analyzer 实例：不注入的话，云端白名单里的站点会「页面不拦、下载却仍被拦」，
+// 云端黑名单里的站点则完全拦不到下载。名单一改（storage.onChanged）立即重新注入。
+// ★ 覆盖语义：storage 里存的是云端镜像，注入时必须 replace:true，先清空内存集合再灌入，
+//   否则云端删掉的条目会残留到浏览器重启为止。空数组同样要注入（等于清空）。
+function applyCloudLists(o) {
+  try {
+    if (SF.registerCloudOfficial) {
+      SF.registerCloudOfficial((o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite : [], { replace: true });
+    }
+    if (SF.registerCloudBad) {
+      SF.registerCloudBad((o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack : [], { replace: true });
+    }
+  } catch (e) {}
+}
+function reloadCloudLists() {
+  try { chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [] }, applyCloudLists); } catch (e) {}
+}
+reloadCloudLists();
+try {
+  chrome.storage.onChanged.addListener(function (ch, area) {
+    if (area === 'local' && (ch.sfCloudWhite || ch.sfCloudBlack)) reloadCloudLists();
+  });
+} catch (e) {}
+
 // 用户在当前会话里「仍要下载」明确放行的下载 URL（避免重复拦截；SW 重启后清空，会重新询问，安全）
 const allowedDownloads = new Set();
 function addAllowedDownload(url) { if (url) allowedDownloads.add(url); }
@@ -670,7 +696,7 @@ const THREAT_INTEL_PROVIDERS = [
       const targetUrl = (pageUrl && /^https?:\/\//i.test(pageUrl)) ? pageUrl : ('http://' + domain + '/');
       const url = 'https://safebrowsing.googleapis.com/v4/threatMatches:find?key=' + encodeURIComponent(key);
       const body = {
-        client: { clientId: 'silverfoxblocker', clientVersion: '1.0.1' },
+        client: { clientId: 'silverfoxblocker', clientVersion: '1.0.6' },
         threatInfo: {
           threatTypes: ['MALWARE', 'SOCIAL_ENGINEERING', 'UNWANTED_SOFTWARE', 'POTENTIALLY_HARMFUL_APPLICATION'],
           platformTypes: ['WINDOWS', 'ANY_PLATFORM'],
@@ -1471,7 +1497,7 @@ function _regDomain(host) {
   return parts.slice(-2).join('.');
 }
 
-// 硬编码银狐木马投递站黑名单（与页面级「已知银狐木马站点」判定同源，来自 iocs.js KNOWN_BAD_DOMAINS）。
+// 硬编码银狐木马投递站黑名单（与页面级「扩展内置黑名单」判定同源，来自 iocs.js KNOWN_BAD_DOMAINS）。
 // 专门用于下载拦截：命中「下载 URL 域名」或「来源/referrer 域名」即视为已知恶意，下载须强制取消（永不豁免）。
 // 背景：此前 onCreated 只查用户自定义黑名单 customBadDomains，漏掉了硬编码名单里的投递站，
 //       导致这类站点的 ZIP/EXE 在被页面级标记危险后，下载仍可能放行。

@@ -415,7 +415,15 @@ html.theme-light .dlbl-item .dx { border-color: rgba(0,0,0,.16); }
 .btn-rescue-hr { color: #06101f; background: linear-gradient(135deg,#7db4ff,#a68cff); box-shadow: 0 8px 22px rgba(125,160,255,.32); }
 .tip-warn { opacity: .85; border-left: 3px solid rgba(255,180,90,.55); background: rgba(255,180,90,.08); padding: 10px 14px; border-radius: 8px; margin-top: 14px; font-size: calc(12.5px * var(--sf-scale)); line-height: 1.65; }
 .tip-warn strong { color: #ffce7a; font-weight: 800; }
+.tip-hint { opacity: .8; border-left: 3px solid rgba(125,180,255,.45); padding: 8px 0 8px 12px; margin-top: 10px; font-size: calc(12px * var(--sf-scale)); line-height: 1.7; }
+.tip-hint strong { color: #7db4ff; font-weight: 800; }
+html.theme-light .tip-hint strong { color: #3a78d0; }
 html.theme-light .btn-rescue-hr { color: #06101f; }
+/* KVRT 卡片（琥珀色调，与 360 绿 / 火绒蓝区分） */
+.rescue-hero-kvrt { border: 1px solid rgba(255,184,107,.22); background: linear-gradient(160deg, rgba(255,184,107,.08), rgba(255,143,94,.04)); }
+.rescue-ico-kvrt { background: rgba(255,184,107,.12); border-color: rgba(255,184,107,.3); }
+.btn-rescue-kvrt { color: #2a1405; background: linear-gradient(135deg,#ffc27a,#ff8f5e); box-shadow: 0 8px 22px rgba(255,150,90,.28); }
+html.theme-light .btn-rescue-kvrt { color: #2a1405; }
 .rescue-steps li b { color: #9fe0c0; }
 .rescue-steps code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .92em; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14); border-radius: 4px; padding: 0 4px; }
 .rescue-links { margin: 6px 0 2px; padding-left: 18px; }
@@ -1846,3 +1854,10 @@ html.theme-light .ti-guide-btn:hover { background: rgba(47,111,237,.18); }
 html.theme-light .ti-guide-body { background: rgba(240,245,255,.92); border-color: rgba(20,34,64,.12); color: rgba(27,35,51,.82); }
 html.theme-light .ti-guide-url { color: #1f4fa8; }
 html.theme-light .ti-guide-note { border-top-color: rgba(20,34,64,.14); }
+
+/* ===== 关于页「更新检查」行的多按钮排布（1.5.1）=====
+   三个控件（GitHub 链接 + 两个云端名单按钮）放在同一个 .av 里：
+   .av 默认是 flex:1 的普通块，窄窗口下会挤成一行溢出，这里单独给它换行与间隙。
+   同时补 font-family / line-height：<button> 不继承字体，混在 <a> 旁边会明显不同款。 */
+.about-row .av.av-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.about-row .av.av-btns .btn-mini { font-family: inherit; line-height: 1.4; white-space: nowrap; }

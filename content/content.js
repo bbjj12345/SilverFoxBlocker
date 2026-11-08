@@ -180,10 +180,44 @@
   let fontFaceInjected = false;
   let currentScale = 1;
 
+  // ===== 云端名单（storage.local）注入 =====
+  // 名单来源：设置页「关于 → 从云端更新黑/白名单」，由 worker 的 /list 接口下发。
+  // 为什么不放 storage.sync：sync 单键上限 8192 bytes ≈ 550 个域名，上千条必然静默写失败；
+  //   storage.local 有 unlimitedStorage 权限，实际无上限。
+  // 为什么在内容脚本注入：analyzer 的名单集合是「每个 JS 上下文各一份」，
+  //   后台注入只影响后台，页面判定用的是内容脚本自己这份 —— 两边都得注入。
+  // 时机：必须在第一次 analyze 之前完成，所以挂在 getSettings 上（所有分析流程都先取设置）。
+  let _cloudListsPromise = null;
+  function ensureCloudLists() {
+    if (_cloudListsPromise) return _cloudListsPromise;
+    _cloudListsPromise = new Promise((resolve) => {
+      const done = () => resolve();
+      try {
+        chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [] }, (o) => {
+          try {
+            const w = (o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite : [];
+            const b = (o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack : [];
+            // 覆盖语义：storage 是云端镜像，注入前先清空，云端删掉的条目不能残留。
+            // 空数组也照常注入（等价于清空），不再用 length 做前置判断。
+            if (SF.registerCloudOfficial) SF.registerCloudOfficial(w, { replace: true });
+            if (SF.registerCloudBad) SF.registerCloudBad(b, { replace: true });
+          } catch (e) {}
+          done();
+        });
+      } catch (e) { done(); }
+    });
+    return _cloudListsPromise;
+  }
+
   function getSettings() {
     return new Promise((resolve) => {
       try {
-        chrome.storage.sync.get(DEFAULTS, (s) => resolve(Object.assign({}, DEFAULTS, s || {})));
+        chrome.storage.sync.get(DEFAULTS, (s) => {
+          const merged = Object.assign({}, DEFAULTS, s || {});
+          // 先保证云端名单已注入，再交回设置：否则首屏分析会以「未注入」的名单判定，
+          // 出现「刚同步的域名第一次打开仍被判危、刷新后才正常」的怪现象。
+          ensureCloudLists().then(() => resolve(merged), () => resolve(merged));
+        });
       } catch (e) { resolve(DEFAULTS); }
     });
   }
@@ -1185,7 +1219,7 @@
   function normBlackDomain(d) {
     return String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   }
-  // 当前站点是否已命中全局黑名单（含父域匹配）
+  // 当前站点是否已命中你的恶意域名黑名单（含父域匹配）
   function isHostBlacklisted(host, list) {
     const h = String(host || '').toLowerCase().replace(/^www\./, '');
     if (!h) return false;
@@ -1204,7 +1238,7 @@
         try { btn = card.querySelector('.sf-btn-blocklist') || document.getElementById('sf-blocklist'); } catch (e) {}
         if (!btn) return;
         try {
-          btn.textContent = '✓ 已在全局黑名单';
+          btn.textContent = '✓ 已在你的恶意域名黑名单';
           btn.disabled = true;
           btn.classList.add('sf-btn-done');
         } catch (e) {}
@@ -1212,7 +1246,7 @@
     } catch (e) {}
   }
 
-  // ★ 用户主动「添加到全局黑名单」：写入 customBadDomains（chrome.storage.sync，跨站点永久生效）。
+  // ★ 用户主动「添加到你的恶意域名黑名单」：写入 customBadDomains（chrome.storage.sync，跨站点永久生效）。
   //   设计变更（2026-11-03）：判危本身**不再自动拉黑**（原逻辑会把 84 分的页面自动记入
   //   sfBlockedHosts，导致二次访问被连坐判 100 分，误报无法复查）。现在只有用户点这个按钮才拉黑。
   function addHostToGlobalBlacklist(btn) {
@@ -1222,7 +1256,7 @@
       if (!btn) return;
       try {
         if (ok) {
-          btn.textContent = '✓ 已加入全局黑名单';
+          btn.textContent = '✓ 已加入你的恶意域名黑名单';
           btn.disabled = true;
           btn.classList.add('sf-btn-done');
         } else {
@@ -1238,12 +1272,12 @@
           if (!isHostBlacklisted(host, arr)) arr.push(host);
           chrome.storage.sync.set({ customBadDomains: arr }, function () {
             const err = chrome.runtime && chrome.runtime.lastError;
-            if (err) { markDone(false, '加入全局黑名单失败：' + err.message); return; }
-            markDone(true, '已加入全局黑名单：' + host);
+            if (err) { markDone(false, '加入你的恶意域名黑名单失败：' + err.message); return; }
+            markDone(true, '已加入你的恶意域名黑名单：' + host);
           });
-        } catch (e) { markDone(false, '加入全局黑名单失败'); }
+        } catch (e) { markDone(false, '加入你的恶意域名黑名单失败'); }
       });
-    } catch (e) { markDone(false, '加入全局黑名单失败'); }
+    } catch (e) { markDone(false, '加入你的恶意域名黑名单失败'); }
   }
 
   function showWarning(result) {
@@ -1282,7 +1316,7 @@
       actions: {
         leave: function () { leaveSite(); },
         continue: function () { try { showContinueConfirm(card, result); } catch (e) {} },
-        // ★ 用户主动拉黑：判危不再自动写入全局黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
+        // ★ 用户主动拉黑：判危不再自动写入你的恶意域名黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
         'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
         __escape: function () { leaveSite(); }
       },
@@ -1322,7 +1356,7 @@
       '<p class="sf-sub">' + subText + '</p>' +
       '<ul class="sf-reasons">' + reasonsHtml + '</ul>' +
       '<div class="sf-actions sf-actions-stack">' +
-      '<button class="sf-btn sf-btn-blocklist" id="sf-blocklist" data-sf-act="add-blacklist" type="button">添加到全局黑名单</button>' +
+      '<button class="sf-btn sf-btn-blocklist" id="sf-blocklist" data-sf-act="add-blacklist" type="button">添加到你的恶意域名黑名单</button>' +
       '</div>' +
       '<div class="sf-actions">' +
       // ★ 动作改用 data-sf-act 标识，由 window 捕获阶段的事件委托统一分发
@@ -1332,7 +1366,7 @@
       '</div>' +
       '<p class="sf-foot">银狐（游蛇）木马常通过仿冒官网投递带毒安装包，请勿轻易放行下载。<br>若已安装 IDM 等第三方下载器，请临时关闭其「浏览器接管」，以免其从链接直接抓取下载。</p>';
 
-    // 若该域名已在全局黑名单中，按钮直接显示「✓ 已在全局黑名单」并禁用
+    // 若该域名已在你的恶意域名黑名单中，按钮直接显示「✓ 已在你的恶意域名黑名单」并禁用
     syncBlacklistButton(card);
   }
 
@@ -1354,7 +1388,7 @@
     sfBindUiActions(root, {
       leave: function () { leaveSite(); },
       'cc-back': function () { try { renderWarning(card, result); } catch (e) {} },
-      // 从二次确认返回主卡后，「添加到全局黑名单」按钮仍需可用
+      // 从二次确认返回主卡后，「添加到你的恶意域名黑名单」按钮仍需可用
       'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
       'cc-go': function () {
         dangerAcknowledged = true; // 标记本页已确认继续，不再重复弹报毒浮层
@@ -1811,12 +1845,16 @@
   }
 
   function analyzeAndAct(settings, chained, data) {
-    if (!settings.enabledGlobal) { lastResult = { analyzed: true, disabled: true }; reportVerdict('safe'); return; }
+    if (!settings.enabledGlobal) { lastResult = { analyzed: true, disabled: true, skip: 'disabled' }; reportVerdict('safe'); return; }
     // ★ 可信分发域名（网盘 / GitHub 官方及镜像）：直接判安全、跳过分析。
     //   否则网盘站点（含大量「下载」入口与网盘链接）会被评分引擎判 danger → 进入即弹「危险网站」警告
     //   并 disable 全部下载按钮（变灰不可点），属严重误伤。与后台 .msi/.zip 豁免同源。
-    if (isAllowlisted(location.hostname, settings.allowlist) || isTrustedDispatch(location.hostname)) {
-      lastResult = { analyzed: true, allowlisted: true };
+    // ★ 2026-11-06：区分「用户白名单」与「扩展内置可信分发名单」两种来源，
+    //   供弹窗如实说明为何跳过（原本文案一律写「白名单」，对 GitHub 这类内置名单并不准确）。
+    const _alwUser = isAllowlisted(location.hostname, settings.allowlist);
+    if (_alwUser || isTrustedDispatch(location.hostname)) {
+      // skip 标记：明确告诉弹窗「这一页没有参加评分」，避免弹窗把「无 score」误渲染成「未知」。
+      lastResult = { analyzed: true, allowlisted: true, skip: 'allowlist', skipBy: _alwUser ? 'user' : 'builtin', score: 0, level: 'official', reasons: [] };
       reportVerdict('safe');
       return;
     }
@@ -1824,17 +1862,20 @@
     // ★ 用户指定豁免域名（qianwenai.com 等）：整站不拦截、不评分告警、不参与连坐；
     //   并主动清除其可能残留于连坐集合 sfBlockedHosts 的历史记录（避免此前误判写入的
     //   连坐记录持续生效，表现为「score 100 / 域名级联动拦截」）。
-    if (SF.isExceptionHost && SF.isExceptionHost(location.hostname)) {
-      _clearBlockedHost(location.hostname);
-      // 豁免域名仍给出明确的「0 分 / 安全」评分，避免弹窗对豁免域名显示「未知」。
-      // 不跑评分引擎，但附上 score/level/reasons，使 sf-getStatus 返回的 lastResult 可被弹窗直接渲染。
-      lastResult = { analyzed: true, exception: true, score: 0, level: 'safe', reasons: [] };
-      reportVerdict('safe');
-      return;
-    }
+    // ⚠️ 2026-11-08 修正：本分支原先独立返回 { exception:true, score:0, level:'safe', reasons:[] }，
+    //   但没有 skip 标记；而 2026-11-08 已把 EXCEPTION_DOMAINS 并入白名单，isExceptionHost()
+    //   现在等价于「命中内置白名单」——于是所有白名单域名都先落到这里并 return，
+    //   下面官方分支的 skip:'official' 永远走不到。弹窗只能按「有 score 数字」渲染，
+    //   就显示成「0 分 / 保持警惕 / 未命中任何风险特征」，看起来像白名单完全没生效。
+    //   现改为：先做连坐清理，再统一走官方分支，由它给出 skip:'official'。
+    if (SF.isExceptionHost && SF.isExceptionHost(location.hostname)) _clearBlockedHost(location.hostname);
     // 官方白名单（cloud.gjhdr.xyz 及其子域等）→ 直接判安全，且优先级高于域名级联动拦截
+    // ★ 2026-11-05：这里原先是 `{ analyzed: true, official: true }`，没有任何 score/level，
+    //   弹窗就把它渲染成「— / 未知 / 未命中任何风险特征」，与「微步云沙箱」的异常显示同源。
+    //   现已补上 skip 标记与明确的 0 分/官方等级：这类站点确实没跑评分引擎，必须让弹窗
+    //   如实显示「官方域名 · 已跳过评分」，而不是装作「未知」。与上面豁免域名分支的处理保持一致。
     if (SF.isOfficialDomain(location.hostname)) {
-      lastResult = { analyzed: true, official: true };
+      lastResult = { analyzed: true, official: true, skip: 'official', score: 0, level: 'official', reasons: [] };
       reportVerdict('safe');
       return;
     }
@@ -1867,7 +1908,7 @@
     if (settings.customBadDomains && settings.customBadDomains.length) {
       const h = location.hostname.toLowerCase();
       if (settings.customBadDomains.some((d) => { d = String(d).trim().toLowerCase(); return d && (h === d || h.endsWith('.' + d)); })) {
-        result.reasons.push({ label: '域名命中自定义黑名单', detail: location.hostname, weight: 100 });
+        result.reasons.push({ label: '用户自定义黑名单', detail: '该域名在你的恶意域名黑名单中，已强制判定为危险并拦截。', weight: 100 });
         result.score += 100;
       }
     }
@@ -1940,7 +1981,7 @@
       // ★ 2026-11-03 行为变更：判危**不再自动写入黑名单**。
       //   旧逻辑在此调用 _recordBlockedHost(host,'danger')，导致「评分 84 的页面被自动拉黑，
       //   二次访问时被连坐抬到 100 分」，误报既无法复查也无法撤销。
-      //   现在只有用户点击拦截弹窗里的「添加到全局黑名单」才写入 customBadDomains。
+      //   现在只有用户点击拦截弹窗里的「添加到你的恶意域名黑名单」才写入 customBadDomains。
       if (!dangerReported) {
         // 通知保持「同页仅一次」：连坐/复访不再重复弹系统通知，避免刷屏；
         // 但 reportDetection 必须上报——否则连坐/复访的危险页不会被计入「拦截风险网站」记录。

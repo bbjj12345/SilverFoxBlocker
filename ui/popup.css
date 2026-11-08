@@ -381,6 +381,11 @@ html:not(.theme-pixel).theme-light body::before { opacity: .5; filter: blur(2px)
   background: linear-gradient(135deg,#9db8ff,#c8a6ff); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
 }
 .site-level { font-size: calc(11px * var(--sf-scale)); font-weight: 700; margin-top: 3px; }
+/* 跳过检测：分数位显示「跳过」（无分数，不冒用 0 分），字号收小以适配 66px 徽章 */
+.site-score.skip {
+  font-size: calc(15px * var(--sf-scale)); letter-spacing: .5px;
+  background: none; -webkit-text-fill-color: #c4ccd8; color: #c4ccd8; opacity: .85;
+}
 .site-level.lvl-safe { color: #6ee7b7; }
 .site-level.lvl-warn { color: #ffb454; }
 .site-level.lvl-danger { color: #ff6b6b; }

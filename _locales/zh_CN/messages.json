@@ -3,6 +3,6 @@
     "message": "SilverFoxBlocker"
   },
   "extensionDescription": {
-    "message": "SilverFoxBlocker是一款拦截钓鱼网站的浏览器扩展，主要用于阻止用户访问银狐木马投放站点。"
+    "message": "拦截银狐木马钓鱼站与仿冒官网：本地启发式检测、下载拦截；可选威胁情报 API 与社区黑名单，数据不上传。"
   }
 }
