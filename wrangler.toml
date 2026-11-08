@@ -9,3 +9,7 @@ id = "6d141838347d4cfc86083a479231bf02"
 [[kv_namespaces]]
 binding = "FEEDBACK"
 id = "98ac1246bc7746368baf6a071f9fed9f"
+
+[observability.logs]
+enabled = false
+invocation_logs = true
