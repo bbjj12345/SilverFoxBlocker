@@ -123,8 +123,8 @@
               <span class="rc-ico" data-page-node-id="itDQEJEBMTi0snQlFLqnVD">
                 <svg viewBox="0 0 24 24" data-page-node-id="mkAgQDiJJxDDfnV8s5WaqM"><path d="M12 3 5 6v6c0 4.5 3 7.6 7 9 4-1.4 7-4.5 7-9V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" data-page-node-id="zKKDisoQEfnDHmr6zA3ePp"/><path d="M9 12l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="0cw1xxT7b2CvXk0LLQ5g9c"/></svg>
               </span>
-              <span class="rc-t" data-page-node-id="TJplIPLWxQsPNny2J8VNpp">信任域名白名单</span>
-              <span class="rc-d" data-page-node-id="1yBzULwqKXAgrPTkAFLJAb">命中后完全不拦截，支持精确与后缀匹配，不支持通配符</span>
+              <span class="rc-t" data-page-node-id="TJplIPLWxQsPNny2J8VNpp">自定义信任域名白名单</span>
+              <span class="rc-d" data-page-node-id="1yBzULwqKXAgrPTkAFLJAb">命中后不拦截；若同一域名同时命中任一黑名单，仍按黑名单处理（黑名单优先）</span>
             </button>
             <button class="rule-card" data-sub="rules-keywords" type="button" data-page-node-id="3BFVlEvheoelsbOFBEbHww">
               <span class="rc-ico" data-page-node-id="NDaV4qZaUtr611GcGYQ7o1">
@@ -336,7 +336,7 @@
         <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">
           <div class="field" data-page-node-id="oOItSmLqHP6DxMGlyjQtdD">
             <label data-page-node-id="Ol7axpG3tDeKZDnTWkWPDA">自动学习的下载黑名单</label>
-            <div class="hint" style="margin:0 0 10px" data-page-node-id="sBAydBiDlqog7AExbalZSf">每次成功拦截一次可疑下载，该文件所在域名会被自动记下；此后任何页面指向同一域名都会加分或直接拦截（银狐换落地页不换载荷服务器）。90 天未再命中自动移除，最多保留 500 条。GitHub、微软等可信下载源与你的信任白名单永不入库。如遇误拦，删除对应条目即可恢复下载。</div>
+            <div class="hint" style="margin:0 0 10px" data-page-node-id="sBAydBiDlqog7AExbalZSf">每次成功拦截一次可疑下载，该文件所在域名会被自动记下；此后任何页面指向同一域名都会加分或直接拦截（银狐换落地页不换载荷服务器）。90 天未再命中自动移除，最多保留 500 条。GitHub、微软等可信下载源与自定义信任白名单永不入库。如遇误拦，删除对应条目即可恢复下载。</div>
             <div id="dlBlList" class="dlbl-list" data-page-node-id="QqOYCkUFdlkjxhAgD5Qnst"><div class="dlbl-empty" data-page-node-id="n8ABGTP8WjHPSA2pUBKNXD">暂无记录</div></div>
             <div class="row" style="border:0;padding:10px 0 0" data-page-node-id="P4nUgox4RtsqIe7N2y7UNu">
               <div class="rl" data-page-node-id="LJQEqK6sFEuwws5KWPWMGh"><div class="rd" id="dlBlCount" data-page-node-id="2jyArmVFPgNNywIxcGquFE">共 0 条</div></div>
@@ -354,11 +354,11 @@
         </div>
       </section>
 
-      <!-- 子页面：信任域名白名单 -->
+      <!-- 子页面：自定义信任域名白名单 -->
       <section class="sec subpage" id="rules-allowlist" data-page-node-id="DZKQUmjQuTV6vnmpQmOPE4">
         <div class="card" data-page-node-id="NWddfWkhJ8LTtYgw6ZkJXz">
           <div class="field" data-page-node-id="jDlQ29lEEyfjarTIksHNJn">
-            <label data-page-node-id="uVK2NcPxJOx7wrHK2FKdsP">信任域名白名单（每行一个，命中后完全不拦截；不支持通配符）</label>
+            <label data-page-node-id="uVK2NcPxJOx7wrHK2FKdsP">自定义信任域名白名单（每行一个，命中后不拦截；与黑名单冲突时按黑名单处理；不支持通配符）</label>
             <textarea id="allowlist" placeholder="每行一个域名，例如：&#10;my-company.com&#10;trusted-site.cn"></textarea>
             <div class="hint" data-page-node-id="hxewy5k5Ol9hGfa8FSKkjc">支持精确域名与后缀（子域）匹配：填写 example.com 将同时信任 a.example.com、a.b.example.com（标签对齐，即必须以 . 分隔，不会匹配 myexample.com）。<strong>不支持通配符</strong>：* 与 ? 只被当作普通字符，永远不会命中。</div>
             <div class="list-mail" data-page-node-id="SF_MAIL_WHITE">
@@ -464,7 +464,7 @@
           </div>
           <div class="rescue-txt" data-page-node-id="SF_KVRT_TXT">
             <h2 data-page-node-id="SF_KVRT_TITLE">Kaspersky Virus Removal Tool（KVRT）</h2>
-            <p data-page-node-id="SF_KVRT_DESC">KVRT是由卡巴斯基实验室提供的扫描器，可以在紧急情况下提供接近卡巴斯基本体的杀毒效果。建议打开下载好的kvrt.exe，创建快捷方式；右键快捷方式，打开‘属性’，在‘目标’栏的末尾添加‘ -freboot’（注意有空格），这会导致自动重启并加载反Rootkit驱动，在KVRT左下角的‘Change parameters’勾选‘All volumes’，随后正常启动扫描。如果KVRT要求‘Disinfect and restart the computer’，点击允许并在重启后进入‘高级清除模式’。在扫描和高级清除期间，保持电源适配器接通、屏幕保持常亮，鼠标远离KVRT的窗口（否则容易误触，导致扫描被意外取消）；检出结果后，自行检查KVRT的扫描结果和处理方式，如Delete（删除）、Copy to quarantine（隔离）、Skip（跳过），确认每一项操作均无误后点击右下角的Continue执行操作。</p>
+            <p data-page-node-id="SF_KVRT_DESC">KVRT是由卡巴斯基实验室提供的扫描器，可以在紧急情况下提供接近卡巴斯基本体的杀毒效果。建议打开下载好的kvrt.exe，创建快捷方式；右键快捷方式，打开‘属性’，在‘目标’栏的末尾添加‘ -freboot’（注意有空格），这会导致自动重启并加载反Rootkit驱动，在KVRT左下角的‘Change parameters’勾选‘All volumes’，随后正常启动扫描。如果KVRT要求‘Disinfect and restart the computer’，点击允许并在重启后进入‘高级清除模式’。在扫描和高级清除期间，应关闭正在运行的应用、不要试图打开任何新应用，保持电源适配器接通、屏幕保持常亮，鼠标远离KVRT的窗口（否则容易误触，导致扫描被意外取消）；检出结果后，自行检查KVRT的扫描结果和处理方式，如Delete（删除）、Copy to quarantine（隔离）、Skip（跳过），确认每一项操作均无误后点击右下角的Continue执行操作。</p>
           </div>
           <button class="btn btn-rescue btn-rescue-kvrt" id="kvrtBtn" data-page-node-id="SF_KVRT_BTN">下载 KVRT</button>
         </div>
@@ -496,6 +496,46 @@
         </div>
       </section>
 
+      <!-- 流氓软件清除：SoftcnKiller（蓝奏云分享页） + AdwCleaner（官方最新版直链） -->
+      <section class="sec" id="adwcleaner" data-page-node-id="SF_ADW_SEC">
+        <!-- SoftcnKiller：下载逻辑复用「关于 / 版本更新」的蓝奏云按钮 —— 原生 <a target="_blank">，
+             打开分享页后按页面提示下载；此分享链接无需提取码。 -->
+        <div class="card rescue-hero rescue-hero-soft" data-page-node-id="SF_SOFT_HERO">
+          <div class="rescue-ico rescue-ico-soft" data-page-node-id="SF_SOFT_ICO">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="SF_SOFT_SVG"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" stroke="#7db4ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="SF_SOFT_TXT">
+            <h2 data-page-node-id="SF_SOFT_TITLE">SoftcnKiller（流氓软件清除工具）</h2>
+            <p data-page-node-id="SF_SOFT_DESC">用于清理先入的流氓软件与捆绑安装行为：随其它软件静默装上的推广程序、弹窗广告、浏览器主页与搜索引擎被篡改、以及难以卸载的预装软件。下载入口是蓝奏云分享页，点击后会在新标签页打开，按页面提示下载即可（本分享链接无需提取码）。</p>
+            <div class="tip tip-hint" data-page-node-id="SF_SOFT_USAGE"><strong>使用说明：</strong>解压下载好的压缩包，先运行“使用前更新流氓软件黑名单.bat”，完成后运行“SoftCnKiller.exe”。扫描完成后，点击窗口左下角的“全选”，再点击右下角的“处理选中”即可。完成后建议重启电脑。</div>
+          </div>
+          <a class="btn btn-rescue btn-rescue-soft" id="softcnkillerBtn" href="https://free.lanzoux.com/b0cpu1guf" target="_blank" rel="noreferrer" title="前往蓝奏云分享页（无需提取码）" data-page-node-id="SF_SOFT_BTN">前往蓝奏云下载 SoftcnKiller</a>
+        </div>
+
+        <!-- AdwCleaner：下载逻辑复用 KVRT —— 固定官方直链始终指向最新版，direct:true 直接调用
+             chrome.downloads.download，并配一张可点击复制的直链卡片。 -->
+        <div class="card rescue-hero rescue-hero-adw" data-page-node-id="SF_ADW_HERO">
+          <div class="rescue-ico rescue-ico-adw" data-page-node-id="SF_ADW_ICO">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="SF_ADW_SVG"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" stroke="#ffb86b" stroke-width="1.5" stroke-linejoin="round"/><circle cx="11" cy="11" r="2.6" stroke="#ffb86b" stroke-width="1.6"/><path d="m13 13 2.4 2.4" stroke="#ffb86b" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="SF_ADW_TXT">
+            <h2 data-page-node-id="SF_ADW_TITLE">AdwCleaner（Malwarebytes）</h2>
+            <p data-page-node-id="SF_ADW_DESC">AdwCleaner 是 Malwarebytes 提供的免费清除工具，用于查找并清理广告软件、PUP / LPI（可能不受欢迎的程序）、工具栏、劫持者（擅自篡改浏览器主页）与预装软件。这里使用官方 release 直链，每次点击都重新下载最新版，等同于「使用前先更新」；扫描完成后按提示重启一次以彻底生效。</p>
+            <div class="tip tip-hint" data-page-node-id="SF_ADW_USAGE"><strong>使用说明：</strong>直接运行adwcleaner.exe即可。默认全选所有被检出的项目，点击“隔离”即可在隔离区隔离30天。建议优先选择隔离；若确认为不需要的软件、被捆绑安装的流氓软件，可在隔离区选择彻底删除。可能造成误报，处理前建议人工复核。</div>
+          </div>
+          <button class="btn btn-rescue btn-rescue-adw" id="adwBtn" type="button" data-page-node-id="SF_ADW_BTN">下载 AdwCleaner</button>
+        </div>
+
+        <div class="card rescue-linkcard" data-page-node-id="SF_ADW_LINKCARD">
+          <p class="sec-desc" data-page-node-id="SF_ADW_LINKDESC">AdwCleaner 官方最新直链（release 通道始终指向最新版，可手动复制备用）：</p>
+          <div class="rescue-url" id="adwUrl" title="点击复制" data-page-node-id="SF_ADW_URL">加载中…</div>
+        </div>
+
+        <div class="card" data-page-node-id="SF_ADW_STEPS">
+          <p class="sec-desc" data-page-node-id="SF_ADW_STEPS_DESC">建议顺序：先用 SoftcnKiller 清掉流氓软件与捆绑安装，再用 AdwCleaner 扫描广告软件、工具栏与主页劫持；处理完重启一次。删除前逐项确认扫描结果，避免误删需要的软件。</p>
+        </div>
+      </section>
+
       <!-- 急救与工具（父页面：工具中心，卡片 → 子页） -->
       <section class="sec" id="tools" data-page-node-id="toolsSec">
         <div class="card" data-page-node-id="toolsCard">
@@ -506,6 +546,13 @@
               </span>
               <span class="rc-t">银狐急救</span>
               <span class="rc-d">中招后的下载与查杀引导</span>
+            </button>
+            <button class="rule-card" data-sub="adwcleaner" data-sub-title="流氓软件清除" data-sub-desc="清除先入的流氓软件和捆绑安装行为" type="button" data-page-node-id="SF_TOOLS_ADW_CARD">
+              <span class="rc-ico" data-page-node-id="SF_TOOLS_ADW_ICO">
+                <svg viewBox="0 0 24 24" data-page-node-id="SF_TOOLS_ADW_SVG"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+              <span class="rc-t" data-page-node-id="SF_TOOLS_ADW_T">流氓软件清除</span>
+              <span class="rc-d" data-page-node-id="SF_TOOLS_ADW_D">清除先入的流氓软件和捆绑安装行为</span>
             </button>
           </div>
         </div>
@@ -521,12 +568,16 @@
           <div class="about-row" data-page-node-id="QkzAZvzqJGj0eGl6AoVXqU"><span class="ak" data-page-node-id="UeB2xusyUyvtBfiXJCLmhu">版本</span><span class="av" id="verAbout" data-page-node-id="2kA1YSeEgJK0FWVhFo3UDU">v1.0.0</span></div>
           <div class="about-row" data-page-node-id="fk21QpHx5xnayIpYBJ9Pik"><span class="ak" data-page-node-id="JbbL5e2HWqX5LYCJ8QWO1G">隐私政策</span><span class="av" data-page-node-id="ewLZB8QUme2ckphjySGFDn"><a href="https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" data-page-node-id="2JDU7smH0eGm2Bl4mg9DuW">github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md</a></span></div>
           <div class="about-row" data-page-node-id="ZlA8G7QHjra4Ijrc81pZPq"><span class="ak" data-page-node-id="tM4qhnfyTX2IAV1dUYCjEp">项目仓库</span><span class="av" data-page-node-id="MlOWp3serjw4b3xhPnYT6c"><a href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="9PdYDUpYdaZAR3gH1hmKTg">github.com/bbjj12345/SilverFoxBlocker</a></span></div>
-          <div class="about-row" data-page-node-id="SF_UC_ROW_VER"><span class="ak" data-page-node-id="SF_UC_AK_VER">版本更新</span><span class="av av-btns"><a class="btn-mini" id="manualCheckUpdate" href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="SF_UC_GH">前往 GitHub 查看更新</a></span></div>
+          <div class="about-row" data-page-node-id="SF_UC_ROW_VER"><span class="ak" data-page-node-id="SF_UC_AK_VER">版本更新</span><span class="av av-btns"><a class="btn-mini" id="manualCheckUpdate" href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="SF_UC_GH">前往 GitHub 查看更新</a><a class="btn-mini" id="lanzouUpdate" href="https://wwavz.lanzout.com/b01gigjayb" target="_blank" rel="noreferrer" title="提取码：2hxh（点击后自动复制）" data-page-node-id="SF_UC_LZ">前往蓝奏云查看更新</a><span class="about-note" id="lanzouPwdTip" data-page-node-id="SF_UC_LZ_TIP">提取码：2hxh</span></span></div>
           <div class="about-row" data-page-node-id="SF_UC_ROW_CLOUD"><span class="ak" data-page-node-id="SF_UC_AK_CLOUD">云端名单更新</span><span class="av av-btns"><button class="btn-mini" id="cloudPullList" type="button" data-page-node-id="SF_CLOUD_LST">从云端更新名单</button><span class="about-note" data-page-node-id="SF_CLOUD_TIP">云端名单可作为拦截危险网站的重要补充依据，建议每天更新一次</span></span></div>
           <!-- 云端名单同步状态：由 ui/options.js 的 refreshCloudListStatus() 回填，
                展示「黑白各多少条 / 上次同步时间」，避免同步完看不出是否真的生效。 -->
           <div class="about-row" data-page-node-id="SF_CLOUD_STATUS_ROW"><span class="ak">云端名单</span><span class="av" id="cloudListStatus" data-page-node-id="SF_CLOUD_STATUS">未同步</span></div>
-          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75">云端黑名单支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）；云端白名单、以及「规则与名单」里的两个本地名单不支持通配。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域。</span></div>
+          <!-- 未生效条目明细：云端名单里被丢弃的条目（白名单写通配、通配超上限、IDN 通配等）
+               以前只在控制台 console.warn 里出现，等于对用户静默。这里把原文 + 原因直接列出来，
+               让用户/作者能照着自己改名单。默认隐藏，无丢弃时不占位。 -->
+          <div class="about-row" id="cloudDropRow" data-page-node-id="SF_CLOUD_DROP_ROW" style="display:none"><span class="ak">未生效条目</span><span class="av" id="cloudDropDetail" data-page-node-id="SF_CLOUD_DROP" style="font-weight:400;opacity:.75;word-break:break-all"></span></div>
+          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75">云端黑名单支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）；云端白名单、以及「规则与名单」里的两个本地名单不支持通配。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域。<br>另支持<b>路径条目</b>（黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；单次最多收录 500 条路径条目。</span></div>
         </div>
 
         <!-- 反馈与建议（经 GitHub Issues 提交）
@@ -655,6 +706,6 @@
   <script src="../rules/analyzer.js"></script>
   <script src="../crypto-helper.js"></script>
   <script src="feedback-config.js?v=20261102"></script>
-  <script src="options.js?v=20261109a"></script>
+  <script src="options.js?v=20261109c"></script>
 </body>
 </html>

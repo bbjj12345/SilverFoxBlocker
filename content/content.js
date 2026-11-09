@@ -79,6 +79,11 @@
   let revoked = false;            // 云端官网库命中 → 已撤销 danger 判定（本页不再拦截，且不被 establishedDanger 重新拉起）
   let didRun = false;             // 防 run() 因 DOMContentLoaded + setTimeout 兜底被重复触发（导致二次分析/双记录）
 
+  // ★ 判定总预算（2026-11-09）：从 run() 进入起算，「等页面就绪 + 联网补强 + 判定」必须在此时间内出结论。
+  //   需求是「页面加载完成后 5s 内完成判定」；run() 由 DOMContentLoaded 触发（页面已可用，通常紧接 load），
+  //   取 5000ms 作为硬上限，超时即用现有数据判定（ICP/年龄只是加分项，缺了引擎会优雅跳过）。
+  const JUDGE_BUDGET_MS = 5000;
+
   // ===== 原生 API 快照（防止页面改写原型来对抗扩展 UI）=====
   // ⚠️ 2026-10-29：content.js 以 document_start 注入，此时页面脚本通常尚未执行，
   //   此刻抓一份原生引用快照，后续扩展 UI 的关键操作全部走这份快照。
@@ -707,32 +712,50 @@
     });
   }
 
-  // 关键异步补强（必须在主判定之前 await 完成）：云端官网库 + ICP 权威核验 + 域名年龄 + 下载黑名单。
+  // 关键异步补强（必须在主判定之前 await 完成）：ICP 权威核验 + 域名年龄 + 下载黑名单。
   // 这些项会改变判定（尤其 ICP 核验决定「是否扣缺备案号 18 分」），若像旧逻辑那样「先判定、后补强」，
   // 就会出现「首屏 70 分（缺备案）→ 补强后 52 分」的评分跳变与重复记录。
-  async function collectCriticalEnrichments(settings, data) {
+  // ★ 2026-11-09：三项补强改为**并行**。它们彼此不依赖，原先却是三次串行 await，
+  //   于是弹窗时间 = ICP 超时 + 本地读 + RDAP 超时 的**累加**（.cn 站最坏 8+0+6 ≈ 14s）。
+  //   并行后只取决于最慢的一项，且由调用方传入剩余预算（budgetMs）做硬截止。
+  // 入参 budgetMs：距判定总截止还剩多少毫秒（见 run() 里的 JUDGE_BUDGET_MS）。
+  async function collectCriticalEnrichments(settings, data, budgetMs) {
     // 原作者的「云端官网库」查询步骤已于 2026-11-01 移除。
     // 移除原因：源由第三方控制且无签名校验，命中即撤销告警，存在漏放风险。
     // 原文备份：.bak_20261101010207_remove-cloud/content.js
     // 日后若改用自有名单，在此恢复查询步骤，并配合 background.js 的「我的云端库」模板启用。
+    const jobs = [];
     // 1) ICP 权威核验（三态：确有备案 / 确认无备案 / 查询失败）。失败时后台返回 {queried:false}，引擎回退页面文本扫描。
     if (needIcpVerify(settings, data)) {
-      try {
-        const ra = await sendMsg({ type: 'sf-icp-verify', hostname: location.hostname });
-        if (ra && ra.queried) data.icpAuth = ra;
-      } catch (e) {}
+      jobs.push(sendMsg({ type: 'sf-icp-verify', hostname: location.hostname })
+        .then((ra) => { if (ra && ra.queried) data.icpAuth = ra; })
+        .catch(() => {}));
     }
     // 2) 下载黑名单（纯本地读）：只有本页确实存在指向黑名单域名的链接时才注入（供评分加分 + 页面级拦截提示）。
-    try {
-      const rb = await sendMsg({ type: 'sf-dl-blacklist' });
-      const domains = (rb && rb.domains) || [];
-      if (domains.length) data.dlBlacklist = domains;
-    } catch (e) {}
+    jobs.push(sendMsg({ type: 'sf-dl-blacklist' })
+      .then((rb) => {
+        const domains = (rb && rb.domains) || [];
+        if (domains.length) data.dlBlacklist = domains;
+      })
+      .catch(() => {}));
     // 3) 域名年龄（RDAP，查不到则保持 undefined，引擎优雅跳过）。
+    jobs.push(sendMsg({ type: 'sf-domain-age', hostname: location.hostname })
+      .then((r) => { if (r && typeof r.days === 'number') data.domainAgeDays = r.days; })
+      .catch(() => {}));
+    // ★ 总预算：即使某个第三方接口卡在后台超时边缘，也不能让"弹窗"无限期等下去。
+    //   到点就用现有数据先判定（后台对同一 tab 的深度补强仍可能再重判一次，去重逻辑照旧）。
+    //   budgetMs 由 run() 按「5s 总预算 - 已用时间」算出；不传时退回 4500ms（老调用点兼容）。
+    const budget = (typeof budgetMs === 'number' && isFinite(budgetMs))
+      ? Math.max(0, Math.min(4500, budgetMs))
+      : 4500;
+    if (budget <= 0) return;   // 预算已耗尽：不再等，直接让调用方用现有数据判定
+    let timer = null;
+    const timeout = new Promise((resolve) => { timer = setTimeout(resolve, budget); });
     try {
-      const r = await sendMsg({ type: 'sf-domain-age', hostname: location.hostname });
-      if (r && typeof r.days === 'number') data.domainAgeDays = r.days;
-    } catch (e) {}
+      await Promise.race([Promise.all(jobs), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // 深度异步补强：同域 .txt 内嵌下载链接 + BFS 资源下挖（耗时可达 10s）。
@@ -1219,7 +1242,7 @@
   function normBlackDomain(d) {
     return String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   }
-  // 当前站点是否已命中你的恶意域名黑名单（含父域匹配）
+  // 当前站点是否已命中自定义恶意域名黑名单（含父域匹配）
   function isHostBlacklisted(host, list) {
     const h = String(host || '').toLowerCase().replace(/^www\./, '');
     if (!h) return false;
@@ -1238,7 +1261,7 @@
         try { btn = card.querySelector('.sf-btn-blocklist') || document.getElementById('sf-blocklist'); } catch (e) {}
         if (!btn) return;
         try {
-          btn.textContent = '✓ 已在你的恶意域名黑名单';
+          btn.textContent = '✓ 已在自定义恶意域名黑名单';
           btn.disabled = true;
           btn.classList.add('sf-btn-done');
         } catch (e) {}
@@ -1246,7 +1269,7 @@
     } catch (e) {}
   }
 
-  // ★ 用户主动「添加到你的恶意域名黑名单」：写入 customBadDomains（chrome.storage.sync，跨站点永久生效）。
+  // ★ 用户主动「添加到自定义恶意域名黑名单」：写入 customBadDomains（chrome.storage.sync，跨站点永久生效）。
   //   设计变更（2026-11-03）：判危本身**不再自动拉黑**（原逻辑会把 84 分的页面自动记入
   //   sfBlockedHosts，导致二次访问被连坐判 100 分，误报无法复查）。现在只有用户点这个按钮才拉黑。
   function addHostToGlobalBlacklist(btn) {
@@ -1256,7 +1279,7 @@
       if (!btn) return;
       try {
         if (ok) {
-          btn.textContent = '✓ 已加入你的恶意域名黑名单';
+          btn.textContent = '✓ 已加入自定义恶意域名黑名单';
           btn.disabled = true;
           btn.classList.add('sf-btn-done');
         } else {
@@ -1272,12 +1295,12 @@
           if (!isHostBlacklisted(host, arr)) arr.push(host);
           chrome.storage.sync.set({ customBadDomains: arr }, function () {
             const err = chrome.runtime && chrome.runtime.lastError;
-            if (err) { markDone(false, '加入你的恶意域名黑名单失败：' + err.message); return; }
-            markDone(true, '已加入你的恶意域名黑名单：' + host);
+            if (err) { markDone(false, '加入自定义恶意域名黑名单失败：' + err.message); return; }
+            markDone(true, '已加入自定义恶意域名黑名单：' + host);
           });
-        } catch (e) { markDone(false, '加入你的恶意域名黑名单失败'); }
+        } catch (e) { markDone(false, '加入自定义恶意域名黑名单失败'); }
       });
-    } catch (e) { markDone(false, '加入你的恶意域名黑名单失败'); }
+    } catch (e) { markDone(false, '加入自定义恶意域名黑名单失败'); }
   }
 
   function showWarning(result) {
@@ -1316,7 +1339,7 @@
       actions: {
         leave: function () { leaveSite(); },
         continue: function () { try { showContinueConfirm(card, result); } catch (e) {} },
-        // ★ 用户主动拉黑：判危不再自动写入你的恶意域名黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
+        // ★ 用户主动拉黑：判危不再自动写入自定义恶意域名黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
         'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
         __escape: function () { leaveSite(); }
       },
@@ -1356,7 +1379,7 @@
       '<p class="sf-sub">' + subText + '</p>' +
       '<ul class="sf-reasons">' + reasonsHtml + '</ul>' +
       '<div class="sf-actions sf-actions-stack">' +
-      '<button class="sf-btn sf-btn-blocklist" id="sf-blocklist" data-sf-act="add-blacklist" type="button">添加到你的恶意域名黑名单</button>' +
+      '<button class="sf-btn sf-btn-blocklist" id="sf-blocklist" data-sf-act="add-blacklist" type="button">添加到自定义恶意域名黑名单</button>' +
       '</div>' +
       '<div class="sf-actions">' +
       // ★ 动作改用 data-sf-act 标识，由 window 捕获阶段的事件委托统一分发
@@ -1366,7 +1389,7 @@
       '</div>' +
       '<p class="sf-foot">银狐（游蛇）木马常通过仿冒官网投递带毒安装包，请勿轻易放行下载。<br>若已安装 IDM 等第三方下载器，请临时关闭其「浏览器接管」，以免其从链接直接抓取下载。</p>';
 
-    // 若该域名已在你的恶意域名黑名单中，按钮直接显示「✓ 已在你的恶意域名黑名单」并禁用
+    // 若该域名已在自定义恶意域名黑名单中，按钮直接显示「✓ 已在自定义恶意域名黑名单」并禁用
     syncBlacklistButton(card);
   }
 
@@ -1388,7 +1411,7 @@
     sfBindUiActions(root, {
       leave: function () { leaveSite(); },
       'cc-back': function () { try { renderWarning(card, result); } catch (e) {} },
-      // 从二次确认返回主卡后，「添加到你的恶意域名黑名单」按钮仍需可用
+      // 从二次确认返回主卡后，「添加到自定义恶意域名黑名单」按钮仍需可用
       'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
       'cc-go': function () {
         dangerAcknowledged = true; // 标记本页已确认继续，不再重复弹报毒浮层
@@ -1846,45 +1869,85 @@
 
   function analyzeAndAct(settings, chained, data) {
     if (!settings.enabledGlobal) { lastResult = { analyzed: true, disabled: true, skip: 'disabled' }; reportVerdict('safe'); return; }
-    // ★ 可信分发域名（网盘 / GitHub 官方及镜像）：直接判安全、跳过分析。
-    //   否则网盘站点（含大量「下载」入口与网盘链接）会被评分引擎判 danger → 进入即弹「危险网站」警告
-    //   并 disable 全部下载按钮（变灰不可点），属严重误伤。与后台 .msi/.zip 豁免同源。
-    // ★ 2026-11-06：区分「用户白名单」与「扩展内置可信分发名单」两种来源，
-    //   供弹窗如实说明为何跳过（原本文案一律写「白名单」，对 GitHub 这类内置名单并不准确）。
-    const _alwUser = isAllowlisted(location.hostname, settings.allowlist);
-    if (_alwUser || isTrustedDispatch(location.hostname)) {
-      // skip 标记：明确告诉弹窗「这一页没有参加评分」，避免弹窗把「无 score」误渲染成「未知」。
-      lastResult = { analyzed: true, allowlisted: true, skip: 'allowlist', skipBy: _alwUser ? 'user' : 'builtin', score: 0, level: 'official', reasons: [] };
-      reportVerdict('safe');
-      return;
-    }
+    // ★ 判定顺序（2026-11-09 定版）：**任意黑名单 > 任意白名单**；
+    //   同色内部按「云端 > 扩展内置 > 自定义」归因。
+    //   为什么白名单全部后置：云端白名单是远端可变数据（Worker → GitHub），一旦被误加或投毒，
+    //   放它先于黑名单就会直接开出一条绕过样本 IOC 的通道。「宁可杀错不可放过」在这里的含义是
+    //   ——冲突时一律按黑处理，且黑名单命中不再被任何白名单豁免。
+    //   注：自定义白名单（用户本机设置）同样降级到黑名单之后；这是明确取舍，不是遗漏。
+    const _hostNow = location.hostname;
+    // ★ 2026-11-09：云端名单支持「主机名/路径」条目，因此先按本页完整 URL 过一遍路径表，
+    //   再退回原有的 hostname 查表。路径条目只作用于这一个链接，不会让整站豁免/整站封禁。
+    const _hrefNow = location.href;
+    const _badKey =
+      (SF.matchCloudBadUrl && SF.matchCloudBadUrl(_hrefNow)) ? 'cloudBlackPath'
+        : (SF.isCloudBad && SF.isCloudBad(_hostNow)) ? 'cloudBlack'
+          : (SF.isBuiltinBad && SF.isBuiltinBad(_hostNow)) ? 'builtinBlack'
+            : isHostBlacklisted(_hostNow, settings.customBadDomains) ? 'customBlack'
+              : '';
 
-    // ★ 用户指定豁免域名（qianwenai.com 等）：整站不拦截、不评分告警、不参与连坐；
-    //   并主动清除其可能残留于连坐集合 sfBlockedHosts 的历史记录（避免此前误判写入的
-    //   连坐记录持续生效，表现为「score 100 / 域名级联动拦截」）。
-    // ⚠️ 2026-11-08 修正：本分支原先独立返回 { exception:true, score:0, level:'safe', reasons:[] }，
-    //   但没有 skip 标记；而 2026-11-08 已把 EXCEPTION_DOMAINS 并入白名单，isExceptionHost()
-    //   现在等价于「命中内置白名单」——于是所有白名单域名都先落到这里并 return，
-    //   下面官方分支的 skip:'official' 永远走不到。弹窗只能按「有 score 数字」渲染，
-    //   就显示成「0 分 / 保持警惕 / 未命中任何风险特征」，看起来像白名单完全没生效。
-    //   现改为：先做连坐清理，再统一走官方分支，由它给出 skip:'official'。
-    if (SF.isExceptionHost && SF.isExceptionHost(location.hostname)) _clearBlockedHost(location.hostname);
-    // 官方白名单（cloud.gjhdr.xyz 及其子域等）→ 直接判安全，且优先级高于域名级联动拦截
-    // ★ 2026-11-05：这里原先是 `{ analyzed: true, official: true }`，没有任何 score/level，
-    //   弹窗就把它渲染成「— / 未知 / 未命中任何风险特征」，与「微步云沙箱」的异常显示同源。
-    //   现已补上 skip 标记与明确的 0 分/官方等级：这类站点确实没跑评分引擎，必须让弹窗
-    //   如实显示「官方域名 · 已跳过评分」，而不是装作「未知」。与上面豁免域名分支的处理保持一致。
-    if (SF.isOfficialDomain(location.hostname)) {
-      lastResult = { analyzed: true, official: true, skip: 'official', score: 0, level: 'official', reasons: [] };
-      reportVerdict('safe');
-      return;
+    if (!_badKey) {
+      // —— 白名单（放行）：仅当黑名单全不命中时才评估，顺序同为 云端 > 内置 > 自定义 ——
+      // 云端信任白名单必须排在「扩展内置白名单」之前单独返回，否则弹窗会把云端名单
+      //   说成「扩展内置的官方可信域名表」，用户会以为域名被误当作官方域名。
+      // 路径级白名单（wwavz.lanzout.com/b01gigjayb 这类）单列一支：它只放行这一个链接，
+      //   同站其它分享页仍走完整检测，所以文案与 skip 值都区别于整站云端白名单。
+      if (SF.matchCloudWhiteUrl && SF.matchCloudWhiteUrl(_hrefNow)) {
+        lastResult = {
+          analyzed: true, official: true, skip: 'cloudWhitePath', score: 0, level: 'official',
+          reasons: [SF.listReason('cloudWhitePath', 0)]
+        };
+        reportVerdict('safe');
+        return;
+      }
+      if (SF.isCloudOfficial && SF.isCloudOfficial(_hostNow)) {
+        lastResult = {
+          analyzed: true, official: true, skip: 'cloudWhite', score: 0, level: 'official',
+          reasons: [SF.listReason('cloudWhite', 0)]
+        };
+        reportVerdict('safe');
+        return;
+      }
+      // 扩展内置白名单（含 isExceptionHost 的「用户指定信任」与可信分发名单）：
+      //   直接判安全，且优先级高于域名级联动拦截。
+      if (SF.isOfficialDomain(_hostNow) || isTrustedDispatch(_hostNow)) {
+        // 用户指定豁免域名（qianwenai.com 等）：整站不拦截、不评分告警、不参与连坐；
+        //   并主动清除其可能残留于连坐集合 sfBlockedHosts 的历史记录，避免「100 分 / 域名级联动」。
+        if (SF.isExceptionHost && SF.isExceptionHost(_hostNow)) _clearBlockedHost(_hostNow);
+        lastResult = {
+          analyzed: true, official: true, allowlisted: true, skip: 'builtinWhite', skipBy: 'builtin',
+          score: 0, level: 'official', reasons: [SF.listReason('builtinWhite', 0)]
+        };
+        reportVerdict('safe');
+        return;
+      }
+      // 自定义白名单（用户本机「规则与名单」里填的那份）
+      if (isAllowlisted(_hostNow, settings.allowlist)) {
+        lastResult = {
+          analyzed: true, official: true, allowlisted: true, skip: 'customWhite', skipBy: 'user',
+          score: 0, level: 'official', reasons: [SF.listReason('customWhite', 0)]
+        };
+        reportVerdict('safe');
+        return;
+      }
     }
     // ★ 域名级联动（祖/父/子/孙 递归连坐）：当前 host 自身或其祖先域名此前已被判危/可疑时，
     //   本页连坐判相应等级（危险→拦截下载/弹层；可疑→提示），但「不记录」统计——
     //   仅「最先被判定（危险或可疑）的那一级」记入，其余子孙仅连坐拦截/提示。
     const _inh = _inheritedLevel(location.hostname);   // 'danger' | 'warn' | null
     let result;
-    if (_inh === 'danger') {
+    if (_badKey) {
+      // ★ 黑名单硬命中（云端 > 内置 > 自定义，已由 _badKey 的取值顺序决定）：
+      //   100 分 danger，直接进入下面的统一处置（弹层 / 禁用下载 / 导航阻断 / 上报）。
+      //   这里不再叠加任何内容特征，也不受 ICP、域名年龄、页面内容影响。
+      result = {
+        analyzed: true, hostname: _hostNow, blockedCount: 0,
+        score: 100, level: 'danger', detected: true, official: false,
+        reasons: [SF.listReason(_badKey, 100)],
+        features: { knownBad: true }, threshold: (SF.thresholds ? SF.thresholds(settings.sensitivity).danger : 72),
+        listKey: _badKey
+      };
+    } else if (_inh === 'danger') {
       result = {
         analyzed: true, hostname: location.hostname, blockedCount: 0,
         score: 100, level: 'danger', detected: true, official: false, inherited: true,
@@ -1905,13 +1968,8 @@
         result.score += 10;
       }
     }
-    if (settings.customBadDomains && settings.customBadDomains.length) {
-      const h = location.hostname.toLowerCase();
-      if (settings.customBadDomains.some((d) => { d = String(d).trim().toLowerCase(); return d && (h === d || h.endsWith('.' + d)); })) {
-        result.reasons.push({ label: '用户自定义黑名单', detail: '该域名在你的恶意域名黑名单中，已强制判定为危险并拦截。', weight: 100 });
-        result.score += 100;
-      }
-    }
+    // 自定义黑名单已在函数入口按「黑名单优先」统一处理（_badKey === 'customBlack'），
+    //   此处不再叠加 100 分，避免同一域名既走快速分支又被加一次分。
     recomputeLevel(result, settings.sensitivity);
 
     // 跳转链污染升级：本标签由危险站跳转而来，且本页有下载入口/网盘/低质量等信号，升级为 danger 强制拦截
@@ -1981,7 +2039,7 @@
       // ★ 2026-11-03 行为变更：判危**不再自动写入黑名单**。
       //   旧逻辑在此调用 _recordBlockedHost(host,'danger')，导致「评分 84 的页面被自动拉黑，
       //   二次访问时被连坐抬到 100 分」，误报既无法复查也无法撤销。
-      //   现在只有用户点击拦截弹窗里的「添加到你的恶意域名黑名单」才写入 customBadDomains。
+      //   现在只有用户点击拦截弹窗里的「添加到自定义恶意域名黑名单」才写入 customBadDomains。
       if (!dangerReported) {
         // 通知保持「同页仅一次」：连坐/复访不再重复弹系统通知，避免刷屏；
         // 但 reportDetection 必须上报——否则连坐/复访的危险页不会被计入「拦截风险网站」记录。
@@ -2023,6 +2081,8 @@
   }
 
   async function run() {
+    // run() 进入时刻：用于快速通道日志计算「从开始检测到宣判」的真实耗时
+    const _runT0 = Date.now();
     // ★ 单次执行守卫：run() 有两个入口（DOMContentLoaded / 2 秒兜底 setTimeout），
     //   原代码只声明了 didRun 却从未置位，导致两者都会执行 → 一次页面加载跑两遍 run()，
     //   情报查询与本地黑名单查询各发两次，横幅就被 append 两遍（同文案上下两条）。
@@ -2134,24 +2194,72 @@
       }
     } catch (e) {}
 
+    // ★ 判定顺序（2026-11-09 定版）：**任意黑名单 > 任意白名单；同色内 云端 > 内置 > 自定义**。
+    //   名单是纯 hostname 查表，结果与页面内容、备案、年龄完全无关，故命中即可直接宣判，
+    //   不必等 waitPageSettled(≤2.8s)、ICP 核验与 RDAP 域名年龄（旧流程 .cn 站最坏 16s）。
+    //   顺序要点：黑名单必须排在白名单之前——冲突时一律按黑处理（宁可杀错，不可放过）。
+    //   位置：放在 sf-check-chain 消息之前——纯本地查表，连一次后台往返都不必等。
+    //   安全性：这里只是提前宣判，具体文案与处置仍由 analyzeAndAct 统一给出。
+    let _fast = '';   // 'cloud-black' | 'cloud-black-path' | ... | 'cloud-white' | 'cloud-white-path' | ...
+    try {
+      // 路径条目（主机名/路径）优先于同色整站条目：命中说明用户精准指定了这个链接
+      if (SF.matchCloudBadUrl && SF.matchCloudBadUrl(location.href)) _fast = 'cloud-black-path';
+      else if (SF.isCloudBad && SF.isCloudBad(_host)) _fast = 'cloud-black';
+      else if (SF.isBuiltinBad && SF.isBuiltinBad(_host)) _fast = 'builtin-black';
+      else if (isHostBlacklisted(_host, settings.customBadDomains)) _fast = 'custom-black';
+      else if (SF.matchCloudWhiteUrl && SF.matchCloudWhiteUrl(location.href)) _fast = 'cloud-white-path';
+      else if (SF.isCloudOfficial && SF.isCloudOfficial(_host)) _fast = 'cloud-white';
+      else if ((SF.isOfficialDomain && SF.isOfficialDomain(_host)) || isTrustedDispatch(_host)) _fast = 'builtin-white';
+      else if (isAllowlisted(_host, settings.allowlist)) _fast = 'custom-white';
+    } catch (e) {}
+    if (_fast) {
+      const dataFast = collectCore();
+      const FAST_TEXT = {
+        'cloud-black': '命中云端黑名单 → 直接拦截',
+        'cloud-black-path': '命中云端黑名单（链接级）→ 直接拦截',
+        'builtin-black': '命中扩展内置黑名单 → 直接拦截',
+        'custom-black': '命中自定义黑名单 → 直接拦截',
+        'cloud-white': '命中云端白名单 → 直接放行',
+        'cloud-white-path': '命中云端白名单（链接级）→ 直接放行',
+        'builtin-white': '命中扩展内置白名单 → 直接放行',
+        'custom-white': '命中自定义白名单 → 直接放行'
+      };
+      try {
+        console.log('[SilverFoxBlocker][快速通道] ' + (FAST_TEXT[_fast] || _fast) +
+          '（跳过页面等待、ICP 与域名年龄查询），耗时 ' + (Date.now() - _runT0) + 'ms');
+      } catch (e) {}
+      analyzeAndAct(settings, false, dataFast);
+      return;
+    }
+
     // 跳转链污染状态（本页是否由已判危站跳转而来）
     let chained = false;
     try { const r = await sendMsg({ type: 'sf-check-chain' }); chained = !!(r && r.tainted); } catch (e) {}
 
     // ★ 单次权威判定流程（2026-10-28 重构，根治「两次检测 / 评分跳变 / 重复记录」）：
-    //   ① 等页面加载到 complete（最多 5s 兜底）——页脚备案号渲染完整后再判定；
-    //   ② await 关键补强（云端官网库 / ICP 核验 / 域名年龄 / 下载黑名单）——
+    //   ① 等页面加载到 complete（有上限，见下方 5s 总预算）——页脚备案号渲染完整后再判定；
+    //   ② await 关键补强（ICP 核验 / 域名年龄 / 下载黑名单）——并行发起；
     //      这些会改判定（尤其 ICP 决定「是否扣缺备案号 18 分」），必须在判定前拿到；
     //   ③ 只做一次 analyzeAndAct；
     //   ④ 深度补强（.txt / BFS 下挖）若补到新下载入口才再重判一次，后台按 tabId 去重不会重复计数。
     //   注：下载拦截由后台「分析闸门」默认拒绝兜底（检测未出前先挂起下载），
-    //       故延后到 5s 判定不会削弱 meta refresh 秒跳下载的防护。
+    //       故延后判定不会削弱 meta refresh 秒跳下载的防护。
+    // ★ 2026-11-09：整段（等待 + 补强）纳入**从 run() 起算的 5s 硬预算**，
+    //   保证「页面加载完成后 5s 内必有结论」。到点即用现有数据判定，绝不无限期等待。
+    //   注：ICP 后台侧另有 4.5s 自己的预算（见 queryIcp），两层兜底互不依赖。
     // ★ 默认拒绝闸门的内容侧兜底：任何异常都按安全放行，绝不因内容脚本报错把用户下载卡死。
     try {
       const data = collectCore();
-      await waitPageSettled(5000);
-      await collectCriticalEnrichments(settings, data);
-      await _ensureBlockedHostsLoaded();   // 载入域名级联动阻断集合（供子页连坐）
+      const budgetLeft = () => Math.max(0, JUDGE_BUDGET_MS - (Date.now() - _runT0));
+      // 等页面就绪最多占 2.8s，给补强留出 ≥2.2s；页面早就绪时它立即返回，不浪费预算
+      await waitPageSettled(Math.min(2800, budgetLeft()));
+      await collectCriticalEnrichments(settings, data, budgetLeft());
+      // 载入域名级联动阻断集合（供子页连坐）：纯本地 storage 读，正常 <10ms；
+      // 给个短上限兜底，避免极端情况下（集合极大 / storage 卡顿）拖延整体 5s 预算。
+      await Promise.race([
+        _ensureBlockedHostsLoaded(),
+        new Promise((resolve) => setTimeout(resolve, Math.min(300, budgetLeft())))
+      ]);
       analyzeAndAct(settings, chained, data);   // 单次权威判定
       enrichDeepAsync(settings, chained, data);  // 后台深度补强（可能再重判一次，已去重）
     } catch (e) {

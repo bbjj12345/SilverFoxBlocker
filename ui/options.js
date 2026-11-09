@@ -15,12 +15,21 @@ const HRKILL_DOWNLOAD_URL = 'https://down7.huorong.cn/hrkill/hrkill_unsign-1.0.0
 // 抓的也是这一条）。每次点击都是「重新下载最新版」。
 const KVRT_DOWNLOAD_URL = 'https://devbuilds.s.kaspersky-labs.com/kvrt/latest/full/kvrt.exe';
 
-// 三个急救工具的 DOM 映射，供下载与复制直链共用。
+// AdwCleaner 官方 release 直链：与 KVRT 一样是「固定地址、始终指向最新版」，
+// 所以不需要探测版本号，每次点击都是重新下载最新版。该地址取自
+// D:\Users\18926\Desktop\AdwCleaner\update_by_aria2.bat 的 DOWNLOAD_URL。
+// ⚠️ URL 末段是 "adwcleaner?channel=release"，不能直接拿来当文件名：
+//    必须用 filename:'adwcleaner.exe'（脚本里 aria2 的 -o 参数也是这个名字）。
+const ADWCLEANER_DOWNLOAD_URL = 'https://adwcleaner.malwarebytes.com/adwcleaner?channel=release';
+
+// 急救 / 清除工具的 DOM 映射，供下载与复制直链共用。
 // direct:true = 直链固定，点按钮直接下载，不经后台探测（见 sfRescueDownload）。
+// filename（可选）= chrome.downloads 保存时使用的文件名，URL 末段不是文件名时必须指定。
 const SF_RESCUE_TOOLS = {
   '360': { btn: 'rescueBtn', url: 'rescueUrl', fallback: RESCUE_DOWNLOAD_URL, store: 'rescue360Url', direct: false },
   hrkill: { btn: 'hrkillBtn', url: 'hrkillUrl', fallback: HRKILL_DOWNLOAD_URL, store: 'hrkillUrl', direct: false },
-  kvrt: { btn: 'kvrtBtn', url: 'kvrtUrl', fallback: KVRT_DOWNLOAD_URL, store: 'kvrtUrl', direct: true }
+  kvrt: { btn: 'kvrtBtn', url: 'kvrtUrl', fallback: KVRT_DOWNLOAD_URL, store: 'kvrtUrl', direct: true },
+  adwcleaner: { btn: 'adwBtn', url: 'adwUrl', fallback: ADWCLEANER_DOWNLOAD_URL, store: 'adwcleanerUrl', direct: true, filename: 'adwcleaner.exe' }
 };
 
 // （银狐系统解锁工具已停止维护并下架，此处不再提供下载入口。）
@@ -1120,12 +1129,15 @@ function openSubById(id) {
   return false;
 }
 
-function sfRescueDirect(btn, urlEl, url, originalText, safety) {
+function sfRescueDirect(btn, urlEl, url, originalText, safety, filename) {
   if (safety) clearTimeout(safety);
   if (btn) { btn.disabled = false; btn.textContent = originalText; }
   if (urlEl) urlEl.textContent = url;
+  // 默认用 URL 末段当文件名；带查询串的直链（AdwCleaner 的 ?channel=release）
+  // 由配置显式给出 filename，避免把 "adwcleaner?channel=release" 当成文件名。
+  const fname = filename || (url.split('/').pop() || 'rescue.bin').split('?')[0];
   if (typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.download) {
-    chrome.downloads.download({ url: url, filename: url.split('/').pop() || 'rescue.bin', conflictAction: 'uniquify' });
+    chrome.downloads.download({ url: url, filename: fname, conflictAction: 'uniquify' });
   } else {
     window.open(url, '_blank', 'noopener');
   }
@@ -1138,16 +1150,16 @@ function sfRescueDownload(tool) {
   const urlEl = $(cfg.url);
   if (!btn) return;
   const originalText = btn.textContent;
-  // KVRT：直链本身就是「最新版」，没有版本探测这一步，直接走下载。
+  // KVRT / AdwCleaner：直链本身就是「最新版」，没有版本探测这一步，直接走下载。
   // 复用同一套 sfRescueDirect（写直链、调 chrome.downloads、无权限时退化为新标签打开）。
   if (cfg.direct) {
-    sfRescueDirect(btn, urlEl, cfg.fallback, originalText, null);
+    sfRescueDirect(btn, urlEl, cfg.fallback, originalText, null, cfg.filename);
     try {
       const kv = {};
       kv[cfg.store] = cfg.fallback;
       if (chrome.storage && chrome.storage.local) chrome.storage.local.set(kv);
     } catch (e) {}
-    showToast('已开始下载：' + (cfg.fallback.split('/').pop() || 'kvrt.exe'));
+    showToast('已开始下载：' + (cfg.filename || cfg.fallback.split('/').pop() || 'tool.exe'));
     return;
   }
   const fallbackUrl = cfg.fallback;
@@ -1184,7 +1196,7 @@ function sfRescueDownload(tool) {
   });
 }
 
-// 直链卡片：点击复制（360 / 火绒 / KVRT 三张卡共用）
+// 直链卡片：点击复制（360 / 火绒 / KVRT / AdwCleaner 四张卡共用）
 function bindRescueCopy(el, fallback) {
   if (!el) return;
   el.textContent = fallback;
@@ -1448,7 +1460,7 @@ function bindRulesIO() {
           if (Array.isArray(data.customKeywords)) patch.customKeywords = data.customKeywords;
           if (Array.isArray(data.customBadDomains)) patch.customBadDomains = data.customBadDomains;
           if (!Object.keys(patch).length) { alert('文件中没有可导入的白名单 / 规则数据。'); return; }
-          if (!confirm('导入将覆盖当前「信任域名白名单 / 自定义风险关键词 / 自定义恶意域名黑名单」三项内容，确定继续？')) return;
+          if (!confirm('导入将覆盖当前「自定义信任域名白名单 / 自定义风险关键词 / 自定义恶意域名黑名单」三项内容，确定继续？')) return;
           if (hasStorage()) chrome.storage.sync.set(patch, () => {
             if (window.__sfSettings) Object.assign(window.__sfSettings, patch);
             // 同步回填到对应文本框（若当前在编辑态）
@@ -1625,6 +1637,26 @@ async function init() {
   })();
 
   bindRescue();
+
+  // 关于 / 版本更新：蓝奏云镜像入口。
+  // 跳转完全复用 GitHub 按钮的原生 <a target="_blank" rel="noreferrer">，这里不拦截、不改写导航，
+  // 只额外把提取码复制到剪贴板，方便用户在蓝奏云页面直接粘贴。
+  // 复制失败时静默保持原提示（提取码仍可见，可手动输入），绝不假装已复制。
+  (function bindLanzouUpdate() {
+    const el = $('lanzouUpdate'), tip = $('lanzouPwdTip');
+    if (!el) return;
+    el.addEventListener('click', function () {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+        navigator.clipboard.writeText('2hxh').then(function () {
+          if (!tip) return;
+          tip.textContent = '提取码 2hxh 已复制，请在蓝奏云页面粘贴';
+          setTimeout(function () { tip.textContent = '提取码：2hxh'; }, 2200);
+        }, function () {});
+      } catch (e) {}
+    });
+  })();
+
   bindDlBlacklist();
   bindRulesIO();
   loadDlBlacklist();
@@ -1872,36 +1904,100 @@ const SF_CLOUD_KEY_BLACK = 'sfCloudBlack';
 const SF_CLOUD_META_KEY = 'sfCloudListMeta';
 
 // 兼容多种云端 JSON 形态：纯数组 / {domains:[]} / {list:[]} / {data:[]} / 换行分隔字符串
-function normalizeCloudList(json) {
-  let arr = null;
-  if (Array.isArray(json)) arr = json;
-  else if (json && typeof json === 'object') {
+function extractCloudArray(json) {
+  if (Array.isArray(json)) return json;
+  if (json && typeof json === 'object') {
     const keys = ['domains', 'list', 'data', 'items', 'all', 'white', 'black'];
     for (let i = 0; i < keys.length; i++) {
-      if (Array.isArray(json[keys[i]])) { arr = json[keys[i]]; break; }
+      if (Array.isArray(json[keys[i]])) return json[keys[i]];
     }
-    if (!arr && json.data && Array.isArray(json.data.domains)) arr = json.data.domains;
-  } else if (typeof json === 'string') {
-    arr = json.split(/[\r\n,]+/);
+    if (json.data && Array.isArray(json.data.domains)) return json.data.domains;
+    return null;
   }
-  const out = new Set();
-  (arr || []).forEach((d) => {
-    let v = String(d == null ? '' : d).trim().toLowerCase();
-    // 带协议头的按 URL 解析取 host，避免把 "https://a.com/x" 截成 "https:" 或 "a"
-    if (v.indexOf('://') !== -1) {
-      try { v = new URL(v).hostname; } catch (e) { return; }
-    } else if (v.indexOf('/') !== -1) {
-      // 无协议的路径式写法（如 "a/b.com"）不是域名，直接丢弃——
-      // 早期版本用 replace(/\/.*$/,'') 会把 "a/b.com" 截成 "a"，把垃圾洗成合法条目
-      return;
-    }
-    v = v.replace(/^www\./, '');
-    if (!v || v.length > 253) return;
-    if (/[\s@]/.test(v) || v.indexOf('..') !== -1) return;
-    out.add(v);
-  });
-  return Array.from(out);
+  if (typeof json === 'string') return json.split(/[\r\n,]+/);
+  return null;
 }
+
+// 被丢弃条目的原因码 → 人话（状态行 / 报错里直接用）
+const CLOUD_DROP_REASON = {
+  'not-string': '不是字符串',
+  'empty': '空条目',
+  'too-long': '超长',
+  'invalid-char': '含空格/斜杠/@ 或连续点',
+  'no-dot': '不是域名（没有点）',
+  'idn-in-wildcard': '通配标签里有中文，请改写为 punycode',
+  'suffix-malformed': '`*.` 后缀写法不合法',
+  'need-two-labels': '至少要有两级域名',
+  'tld-wildcard': '不允许通配顶级域',
+  'bad-length': '长度不合法',
+  'empty-label': '存在空标签',
+  'bad-syntax': '无法编译为正则',
+  'wild-not-allowed': '白名单不支持通配符',
+  'wild-over-limit': '超出 200 条通配上限',
+  'path-over-limit': '超出 500 条路径条目上限'
+};
+function dropReasonText(code) { return CLOUD_DROP_REASON[code] || code || '无效'; }
+function dropReasonBrief(dropped) {
+  const seen = [];
+  (dropped || []).forEach((x) => {
+    const t = dropReasonText(x.reason);
+    if (seen.indexOf(t) === -1) seen.push(t);
+  });
+  return seen.join('、');
+}
+
+// 云端名单清洗的**唯一入口**：先抽出数组，再交给 analyzer 的同一套规则清洗。
+// ★ 为什么必须复用 analyzer：此前设置页自己洗一遍、analyzer 里再洗一遍，两套规则不一致，
+//   结果就是「页面报 205 条、实际只有 200 条生效」以及「白名单写了通配符照样计入条数」这类
+//   静默失效。现在落盘的条目 = 真正会生效的条目，状态行的数字才有意义。
+// 返回 { list, wild, dropped }；analyzer 缺失时退化为「只做基础清洗」（dropped 为空）。
+function normalizeCloudListEx(json, opts) {
+  const arr = extractCloudArray(json) || [];
+  const A = (typeof window !== 'undefined' && window.SF_ANALYZER) || null;
+  if (A && typeof A.sanitizeCloudDomains === 'function') return A.sanitizeCloudDomains(arr, opts);
+  // 兜底路径同样要「报得出丢弃」：否则 analyzer 缺失时又变成静默丢弃。
+  const seen = new Set();
+  const list = [];
+  const wild = [];
+  const dropped = [];
+  arr.forEach((d) => {
+    const raw = String(d == null ? '' : d);
+    let v = raw.trim().toLowerCase();
+    // 2026-11-09：与 analyzer._splitHostPath 同语义——主机名/路径分开校验。
+    // 兜底路径也必须认路径条目，否则 analyzer 缺失时同一份名单在两处得到不同结论。
+    v = v.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+    const cut = v.search(/[?#]/);
+    if (cut !== -1) v = v.slice(0, cut);
+    let path = '';
+    const sl = v.indexOf('/');
+    if (sl !== -1) {
+      path = v.slice(sl).replace(/\/+$/, '');
+      v = v.slice(0, sl);
+      if (path === '/') path = '';
+      else if (/[\s\x00-\x1f]/.test(path) || path.indexOf('..') !== -1) {
+        dropped.push({ entry: raw, reason: 'invalid-char' });
+        return;
+      }
+    }
+    v = v.replace(/^www\./, '').replace(/^\.+/, '').replace(/\.+$/, '');
+    let reason = '';
+    if (!v) reason = 'empty';
+    else if (v.length > 253) reason = 'too-long';
+    else if (v.indexOf('.') === -1) reason = 'no-dot';
+    else if (/[\s@]/.test(v) || v.indexOf('..') !== -1) reason = 'invalid-char';
+    else if (opts && opts.allowWild === false && /[*?]/.test(v)) reason = 'wild-not-allowed';
+    if (reason) { dropped.push({ entry: v || raw, reason: reason }); return; }
+    const stored = v + path;
+    if (!seen.has(stored)) {
+      seen.add(stored);
+      list.push(stored);
+      if (/[*?]/.test(v)) wild.push(stored);
+    }
+  });
+  return { list: list, wild: wild, dropped: dropped, paths: countPathEntries(list) };
+}
+// 旧签名（只取条目），保留给其它调用点
+function normalizeCloudList(json, opts) { return normalizeCloudListEx(json, opts).list; }
 
 function setCloudStatus(text) {
   const el = $('cloudListStatus');
@@ -1910,10 +2006,32 @@ function setCloudStatus(text) {
 
 // 统一的同步状态文案：只报云端名册规模（黑 / 白），不报「新增/合并」这类中间量，
 // 因为合并后本地条数会把内置与云端混在一起，用户真正关心的是云端有多少条。
-function cloudCountsText(w, b, bw) {
+// ★ 2026-11-09：条数改为「实际生效条数」，并单独报出被丢弃的条目数。
+//   此前把被丢弃的也算进去（通配超 200 条、白名单写通配、中文域名），
+//   用户看到「已更新 205 条」却只有 200 条生效，属于最坏的静默失败。
+function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW) {
   // 通配条目单独点出来：否则用户写完 `*web.cdn-deepseek.com` 只看到"黑名单 1 条"，
   // 无法判断那条到底是被当成普通域名（永不命中）还是被当成规则收录了。
-  return '已更新，云端黑名单' + b + '条' + (bw ? '（含 ' + bw + ' 条通配）' : '') + '，云端白名单' + w + '条';
+  // 2026-11-09：路径条目（主机名/路径）同理——只对特定链接生效，必须让用户看得见。
+  const tags = function (wild, path) {
+    const arr = [];
+    if (wild) arr.push(wild + ' 条通配');
+    if (path) arr.push(path + ' 条路径');
+    return arr.length ? '（含 ' + arr.join('、') + '）' : '';
+  };
+  let s = '已更新' + (unchanged ? '（无变化）' : '') +
+    '，云端黑名单' + b + '条' + tags(bw, pathB) +
+    '，云端白名单' + w + '条' + tags(0, pathW);
+  if (ignoredB) s += '；已忽略黑名单 ' + ignoredB + ' 条（格式不合法或超出通配上限）';
+  if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（白名单不支持通配符或格式不合法）';
+  return s;
+}
+// 名单里含路径的条目数（`主机名/路径` 形式；通配条目单独统计）
+function countPathEntries(arr) {
+  return (Array.isArray(arr) ? arr : []).filter(function (d) {
+    const v = String(d == null ? '' : d);
+    return v.indexOf('/') !== -1;
+  }).length;
 }
 // 名单里含通配符（* / ?）的条目数
 function countWildEntries(arr) {
@@ -1923,17 +2041,75 @@ function countWildEntries(arr) {
   }).length;
 }
 
+// 「未生效条目」明细：把 dropped 的原文与原因摊开给用户看。
+// 只列前若干条，其余折成「等 N 条」——这里的目的不是搬运日志，而是让用户能立刻发现
+// 「我写的那条为什么没生效」（白名单写通配、通配超上限、中文通配标签是最常见的三种）。
+function renderCloudDropDetail(mw, mb, strayWhiteEntries) {
+  const row = $('cloudDropRow');
+  const el = $('cloudDropDetail');
+  if (!row || !el) return;
+  const parts = [];
+  const pushAll = function (drops, tag) {
+    (drops || []).forEach(function (d) {
+      const entry = String((d && d.entry) || '');
+      parts.push(tag + (entry ? entry : '(空)') + '：' + dropReasonText(d && d.reason));
+    });
+  };
+  pushAll(mw.drops, '白名单 ');
+  pushAll(mb.drops, '黑名单 ');
+  const stray = (strayWhiteEntries || []).length;
+  // 老快照（升级前写入）没有 drops 明细，只有计数：至少说清「有东西没生效、请重新同步」
+  const known = ((mw && mw.dropped) || 0) + ((mb && mb.dropped) || 0);
+  if (!parts.length && !known && !stray) { row.style.display = 'none'; el.textContent = ''; return; }
+  let text = parts.join('；');
+  if (stray) {
+    const note = '白名单旧快照含 ' + stray + ' 条通配条目（不会生效，重新同步即可清除）' +
+      '：' + strayWhiteEntries.slice(0, 10).join('、');
+    text = text ? text + '；' + note : note;
+  }
+  const shown = parts.length + stray;
+  const total = Math.max(known, shown);
+  if (!text && total) text = '有 ' + total + ' 条未生效，请重新同步以查看原因';
+  else if (total > shown) text += '（共 ' + total + ' 条未生效，仅列出前 ' + shown + ' 条）';
+  el.textContent = text;
+  row.style.display = '';
+}
+
 function refreshCloudListStatus() {
   const el = $('cloudListStatus');
   if (!el) return;
-  if (!hasStorageLocal()) { el.textContent = '未同步（当前环境无扩展存储）'; return; }
+  const dropRow = $('cloudDropRow');
+  const hideDrops = function () { if (dropRow) dropRow.style.display = 'none'; };
+  if (!hasStorageLocal()) { el.textContent = '未同步（当前环境无扩展存储）'; hideDrops(); return; }
   chrome.storage.local.get({ [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_META_KEY]: {} }, (o) => {
     const w = (o[SF_CLOUD_KEY_WHITE] || []).length;
     const b = (o[SF_CLOUD_KEY_BLACK] || []).length;
-    if (!w && !b) { el.textContent = '未同步'; return; }
     const m = o[SF_CLOUD_META_KEY] || {};
     const t = Math.max((m.white && m.white.updated) || 0, (m.black && m.black.updated) || 0);
-    el.textContent = cloudCountsText(w, b, countWildEntries(o[SF_CLOUD_KEY_BLACK]));
+    // 两份名单都为空但存在同步元数据 → 云端确实同步过、只是内容为空，
+    //   报「未同步」会让用户以为没生效（尤其此时还可能有被忽略的条目要展示）。
+    if (!w && !b && !t) { el.textContent = '未同步'; hideDrops(); return; }
+    const mb = m.black || {};
+    const mw = m.white || {};
+    // 通配数 / 忽略数优先取同步时记下的元数据；老快照没有这两个字段时回退到现场统计。
+    // 白名单额外现场扫一遍：升级前同步下来的快照里可能还躺着通配条目，
+    //   它们本来就不会生效，必须在状态行说清楚，而不是等下次同步才消失。
+    const strayWhiteWild = countWildEntries(o[SF_CLOUD_KEY_WHITE]);
+    el.textContent = cloudCountsText(
+      w, b,
+      (mb.wild != null ? mb.wild : countWildEntries(o[SF_CLOUD_KEY_BLACK])),
+      Math.max(mw.dropped || 0, strayWhiteWild),
+      mb.dropped || 0,
+      false,
+      (mb.paths != null ? mb.paths : countPathEntries(o[SF_CLOUD_KEY_BLACK])),
+      (mw.paths != null ? mw.paths : countPathEntries(o[SF_CLOUD_KEY_WHITE]))
+    );
+    // 未生效条目的明细（原文 + 原因）直接列在下面：此前只在 console 里，用户看不到
+    const strayWhiteEntries = (o[SF_CLOUD_KEY_WHITE] || []).filter(function (d) {
+      const v = String(d == null ? '' : d);
+      return v.indexOf('*') !== -1 || v.indexOf('?') !== -1;
+    });
+    renderCloudDropDetail(mw, mb, strayWhiteEntries);
     // 同步时间放在 title 里：正文只保留用户要的那句，鼠标悬停仍能看到上次同步时刻
     if (t) el.title = '上次同步 ' + formatAbsTime(t);
   });
@@ -1951,9 +2127,20 @@ async function fetchCloudList(type) {
   }
   let json;
   try { json = JSON.parse(text); } catch (e) { throw new Error('云端返回的不是合法 JSON'); }
-  const list = normalizeCloudList(json);
-  if (!list.length) throw new Error('云端名单为空，或结构无法识别');
-  return list;
+  const isWhite = type === 'white';
+  const raw = extractCloudArray(json);
+  // 结构都认不出来（例如 Worker 返回了 {error:...}）→ 宁可报错也不要写空名单
+  if (!raw) throw new Error('云端返回的结构无法识别（找不到域名数组）');
+  // 白名单不支持通配：allowWild:false，含 * / ? 的条目会被丢弃并计入 dropped
+  const r = normalizeCloudListEx(json, { allowWild: !isWhite });
+  const name = isWhite ? '白名单' : '黑名单';
+  // 有条目但全被丢弃 → 中止（否则等于把这份名单清空，用户却以为同步成功）
+  if (raw.length && !r.list.length) {
+    throw new Error('云端' + name + ' ' + r.dropped.length + ' 条全部无效，已中止同步（' +
+      dropReasonBrief(r.dropped) + '）');
+  }
+  // 原本就是空数组 → 允许（例如白名单暂时清空），状态行会显示 0 条，不会被误解
+  return r;
 }
 
 // 一次拉取黑 + 白两份云端名单并整体覆盖本地快照。
@@ -1970,6 +2157,8 @@ async function updateCloudLists(btn) {
   setCloudStatus('正在从云端拉取黑白名单…');
   try {
     // 两份并行拉取；任一失败都会抛错，此时本地不做任何写入（不会出现半新半旧）
+    // 两份并行拉取；任一失败都会抛错，此时本地不做任何写入（不会出现半新半旧）
+    // fetchCloudList 返回的是 { list, wild, dropped }：list 已经是「会真正生效」的条目
     const lists = await Promise.all([fetchCloudList('white'), fetchCloudList('black')]);
     const white = lists[0];
     const black = lists[1];
@@ -1987,22 +2176,56 @@ async function updateCloudLists(btn) {
         removed: (prev || []).filter(function (d) { return !n.has(d); }).length
       };
     };
-    const dw = diff(cur[SF_CLOUD_KEY_WHITE], white);
-    const db = diff(cur[SF_CLOUD_KEY_BLACK], black);
+    // 顺序也纳入比较：云端重排但内容相同时，没必要重写 → 不触发后台/各标签页重新注入
+    const sameList = function (a, b) {
+      const x = a || [];
+      if (x.length !== b.length) return false;
+      for (let i = 0; i < x.length; i++) { if (x[i] !== b[i]) return false; }
+      return true;
+    };
+    const sameW = sameList(cur[SF_CLOUD_KEY_WHITE], white.list);
+    const sameB = sameList(cur[SF_CLOUD_KEY_BLACK], black.list);
+    const dw = diff(cur[SF_CLOUD_KEY_WHITE], white.list);
+    const db = diff(cur[SF_CLOUD_KEY_BLACK], black.list);
     const now = Date.now();
     const meta = Object.assign({}, cur[SF_CLOUD_META_KEY] || {});
-    meta.white = { updated: now, count: white.length, pulled: white.length, added: dw.added, removed: dw.removed };
-    meta.black = { updated: now, count: black.length, pulled: black.length, added: db.added, removed: db.removed };
+    // wild / dropped 一并落盘：刷新页面后状态行仍能报出「含 N 条通配、忽略 M 条」，
+    //   不用等到下次点同步才知道上次丢过东西。
+    // drops 是**明细**（原文 + 原因码），上限 40 条：只在设置页展示，不必全存，
+    //   但要保证「为什么这条没生效」能直接看到，而不是只在控制台里躺一份。
+    meta.white = {
+      updated: now, count: white.list.length, pulled: white.list.length + white.dropped.length,
+      added: dw.added, removed: dw.removed, wild: white.wild.length, dropped: white.dropped.length,
+      paths: white.paths || 0, drops: white.dropped.slice(0, 40)
+    };
+    meta.black = {
+      updated: now, count: black.list.length, pulled: black.list.length + black.dropped.length,
+      added: db.added, removed: db.removed, wild: black.wild.length, dropped: black.dropped.length,
+      paths: black.paths || 0, drops: black.dropped.slice(0, 40)
+    };
+    // 内容没变就只写 meta：此前无条件 set 会触发 onChanged → 后台重注入 + 四个缓存清空，
+    //   一份干净的名单也跟着抖一下。
+    const payload = { [SF_CLOUD_META_KEY]: meta };
+    if (!sameW) payload[SF_CLOUD_KEY_WHITE] = white.list;
+    if (!sameB) payload[SF_CLOUD_KEY_BLACK] = black.list;
     await new Promise((resolve) => {
-      chrome.storage.local.set({
-        [SF_CLOUD_KEY_WHITE]: white, [SF_CLOUD_KEY_BLACK]: black, [SF_CLOUD_META_KEY]: meta
-      }, resolve);
+      chrome.storage.local.set(payload, resolve);
     });
     if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message || '写入失败');
     refreshCloudListStatus();
-    setCloudStatus(cloudCountsText(white.length, black.length, countWildEntries(black)));
-    console.log('[云端名单] 黑', black.length, '条（新增', db.added, '/ 移除', db.removed,
-      '）；白', white.length, '条（新增', dw.added, '/ 移除', dw.removed, '）');
+    setCloudStatus(cloudCountsText(
+      white.list.length, black.list.length, black.wild.length,
+      white.dropped.length, black.dropped.length, sameW && sameB,
+      black.paths || 0, white.paths || 0     // 形参顺序：pathB, pathW
+    ));
+    console.log('[云端名单] 黑', black.list.length, '条（通配', black.wild.length,
+      '/ 忽略', black.dropped.length, '；新增', db.added, '/ 移除', db.removed,
+      '）；白', white.list.length, '条（忽略', white.dropped.length,
+      '；新增', dw.added, '/ 移除', dw.removed, '）');
+    // 被忽略的条目一定要可见：控制台里给出原文与原因，用户/作者才有办法修名单
+    if (black.dropped.length || white.dropped.length) {
+      console.warn('[云端名单] 以下条目未生效：', white.dropped.concat(black.dropped));
+    }
     showToast();
   } catch (e) {
     setCloudStatus('名单同步失败：' + (e && e.message ? e.message : '未知错误'));
@@ -2021,7 +2244,7 @@ async function updateCloudLists(btn) {
   else bind();
 })();
 
-// ===== 名单上报：把「信任域名白名单 / 自定义恶意域名黑名单」直接发到作者邮箱 =====
+// ===== 名单上报：把「自定义信任域名白名单 / 自定义恶意域名黑名单」直接发到作者邮箱 =====
 // 与「反馈与建议 → 发送反馈到作者邮箱」共用同一个 Worker 接口（POST { message, contact }），
 // 区别只有三点：
 //   1) 正文由程序拼装，用户不必写任何描述，只需维护自己的域名清单；

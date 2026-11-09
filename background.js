@@ -35,9 +35,24 @@ function applyCloudLists(o) {
     }
   } catch (e) {}
 }
+// 云端名单的「就绪」promise。MV3 的 service worker 随时会被唤醒/回收，
+// 顶层 reloadCloudLists() 是异步的（storage.get 回调），而 downloads.onCreated 可能在
+// 同一个 tick 就触发，此时名单还是空的 → 冷启动后第一次下载会漏判。
+// 所以把「最近一次加载」的 promise 暴露出去，判定前 await 一下（成本近乎为零：
+// 平时它早已 resolve，只是在微任务里排一次队）。
+let _cloudReady = Promise.resolve();
 function reloadCloudLists() {
-  try { chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [] }, applyCloudLists); } catch (e) {}
+  try {
+    _cloudReady = new Promise(function (resolve) {
+      chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [] }, function (o) {
+        applyCloudLists(o);
+        resolve();
+      });
+    });
+  } catch (e) { _cloudReady = Promise.resolve(); }
+  return _cloudReady;
 }
+function cloudReady() { return _cloudReady; }
 reloadCloudLists();
 try {
   chrome.storage.onChanged.addListener(function (ch, area) {
@@ -1505,17 +1520,44 @@ const _KNOWN_BAD_HOSTS = (function () {
   const list = (self.SF_IOCS && self.SF_IOCS.KNOWN_BAD_DOMAINS) || [];
   return list.map(function (d) { return String(d).trim().toLowerCase(); });
 })();
-function isKnownBadHost(h) {
+// 内置名单：样本 IOC，永不豁免（页面级同样是「命中即判危」，不参与白名单以外的豁免）
+function isBuiltinBadHost(h) {
   h = (h || '').toLowerCase();
-  if (_KNOWN_BAD_HOSTS.some(function (d) { return d && (h === d || h.endsWith('.' + d)); })) return true;
-  // 2026-11-09：云端黑名单（含通配符）同样作用于下载拦截。
-  //   本函数原来只查内置 KNOWN_BAD_DOMAINS，云端名单里的落地/载荷域名就会出现
-  //   「页面拦得住、下载拦不住」，与 applyCloudLists 上方注释写明的意图不符。
-  //   isCloudBad 走 analyzer 的同一套后缀 + 通配匹配，故 *web.xxx.com 也能拦下 exe 下载。
+  return _KNOWN_BAD_HOSTS.some(function (d) { return d && (h === d || h.endsWith('.' + d)); });
+}
+// 云端名单：云端黑名单命中与内置 IOC 同等处理（2026-11-09 起统一为「任意黑名单 > 任意白名单」，
+//   不再被白名单豁免——见下载拦截里的顺序）。
+function isCloudBadHost(h) {
   try {
-    if (SF.isCloudBad && SF.isCloudBad(h)) return true;
+    if (SF.isCloudBad && SF.isCloudBad((h || '').toLowerCase())) return true;
   } catch (e) {}
   return false;
+}
+// ★ 2026-11-09：云端名单支持「主机名/路径」条目。上面两个函数只认 hostname，
+//   路径条目必须拿完整 URL 才能判定，因此另开一对（黑白各一）。
+//   下载侧要同时看两处 URL：下载地址本身（item.url）与来源页 URL（referrer/initiator，
+//   回退本标签最近一次顶级导航）——「路径白名单」的典型用法就是放行某个下载页，
+//   下载地址往往落在同站的另一条路径上。
+function isCloudBadUrl(url) {
+  try { return !!(SF.matchCloudBadUrl && SF.matchCloudBadUrl(url)); } catch (e) { return false; }
+}
+function isCloudWhiteUrl(url) {
+  try { return !!(SF.matchCloudWhiteUrl && SF.matchCloudWhiteUrl(url)); } catch (e) { return false; }
+}
+// 来源页完整 URL：优先 referrer/initiator，回退到本标签最近一次顶级导航（与 downloadSourceHost 同源逻辑）
+function downloadSourceUrl(item) {
+  const src = (item && (item.initiator || item.referrer)) || '';
+  if (src) return src;
+  if (item && item.tabId && item.tabId >= 0) return lastTopUrl[item.tabId] || prevTopUrl[item.tabId] || '';
+  return '';
+}
+// 2026-11-09：名单优先级统一为「任意黑名单 > 任意白名单；同色内 云端 > 内置 > 自定义」。
+//   下载侧因此把黑名单（云端/内置/自定义）提到最前，白名单只在全不命中时才放行。
+// 可信下载源：用户白名单 + 官方/云端白名单（与页面级 isOfficialDomain 同源）
+function isTrustedDownloadHost(h, settings) {
+  if (!h) return false;
+  if (settings && hostMatch(h, settings.allowlist)) return true;
+  try { return !!(SF.isOfficialDomain && SF.isOfficialDomain(h)); } catch (e) { return false; }
 }
 
 // 已知木马化投递物文件名（来自样本静态分析 IOC）：bzy.exe / shanlian_VPN_64.exe 等。
@@ -1685,7 +1727,9 @@ async function queryDomainAge(domain) {
   let days = null;
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 6000);
+    // 2026-11-09：6s → 4s。域名年龄只是「加分项」（查不到引擎会优雅跳过），
+    //   不值得为它把首屏判定拖到 6s 之外；4s 对 rdap.org 的正常响应仍绰绰有余。
+    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 4000);
     const resp = await fetch('https://rdap.org/domain/' + encodeURIComponent(domain), {
       redirect: 'follow', signal: ctrl.signal, cache: 'no-store'
     });
@@ -1896,11 +1940,20 @@ async function queryIcp(domain) {
   const cached = _icpCacheGet(domain);
   if (cached !== undefined) return cached;
 
+  // ★ 2026-11-09：给整次查询加总预算（含多源串行）。
+  //   原先每个源各 8s，两源串行最坏 16s，而这段等待**阻塞内容脚本判定**
+  //   （.cn / .com.cn 站点强制走 ICP，实测弹窗因此被拖到 16s）。现在：
+  //   · 单源超时 3s，总预算 4.5s，用完即放弃并返回"查询失败"（引擎回退页面文本扫描，判定仍安全）；
+  //   · 失败结果按 _ICP_FAIL_TTL 短缓存，不会因超时反复重试打爆公共接口。
+  const ICP_TOTAL_BUDGET = 4500;
+  const t0 = Date.now();
   for (const p of ICP_PROVIDERS) {
     if (!_icpAcquire(p)) continue;
+    const left = ICP_TOTAL_BUDGET - (Date.now() - t0);
+    if (left <= 300) break;   // 预算不足，直接放弃（留 300ms 余量避免开了头就超时）
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 8000);
+      const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, Math.min(3000, left));
       const resp = await fetch(p.buildUrl(domain, p), { signal: ctrl.signal, cache: 'no-store' });
       clearTimeout(timer);
       if (!resp.ok) continue;
@@ -2792,7 +2845,9 @@ if (chrome.downloads && chrome.downloads.onCreated) {
   if (isTabTempAllowed(item.tabId)) return;
   if (isSourceReleased(item)) return;
       const host = parseHost(item.url);
-      getSettings().then(function (settings) {
+      // 先等云端名单就绪再取设置判定（见文件顶部 cloudReady 的说明）
+      Promise.all([getSettings(), cloudReady()]).then(function (r) {
+      const settings = r[0];
       if (!settings.enabledGlobal || !settings.autoBlockDownloads) return;
       // ★ 免费加成：Chrome 自带 Safe Browsing 已将该下载标记为恶意
       //   （content=文件已知恶意 / url=网址已知恶意 / host=来源主机已知分发恶意二进制）
@@ -2806,23 +2861,45 @@ if (chrome.downloads && chrome.downloads.onCreated) {
         holdDownload(item.tabId, item);
         return;
       }
-      // 白名单站点（按下载文件所在域名放行）
-      if (hostMatch(host, settings.allowlist)) return;
-      // 用户自定义黑名单域名 → 拦（提示发到当前标签页）
+      // ★ 名单判定顺序（2026-11-09 定版）：**任意黑名单 > 任意白名单**；
+      //   同色内部按「云端 > 扩展内置 > 自定义」归因（此处只影响提示，不影响是否取消）。
+      //   冲突时一律拦：云端白名单是远端可变数据，一旦误加/被投毒，不能让它开出一条
+      //   绕过样本 IOC 的下载通道。故黑名单**不再被任何白名单豁免**。
+      const srcHost = downloadSourceHost(item);
+      const srcUrl = downloadSourceUrl(item);
+      // 1) 云端黑名单（含通配 / 路径）：下载地址或来源页链接命中即拦
+      if (isCloudBadHost(host) || isCloudBadUrl(item.url) || (srcHost && isCloudBadUrl(srcUrl))) {
+        cancelDownload(item.id, host, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
+        return;
+      }
+      if (srcHost && isCloudBadHost(srcHost)) {
+        cancelDownload(item.id, srcHost, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
+        return;
+      }
+      // 2) 扩展内置黑名单（样本 IOC）
+      if (isBuiltinBadHost(host)) {
+        cancelDownload(item.id, host, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
+        return;
+      }
+      if (srcHost && isBuiltinBadHost(srcHost)) {
+        cancelDownload(item.id, srcHost, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
+        return;
+      }
+      // 3) 自定义黑名单（用户本机「规则与名单」）
       if (hostMatch(host, settings.customBadDomains)) {
         cancelDownload(item.id, host, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
         return;
       }
-      // ★ 硬编码银狐木马投递站黑名单（与页面级判定同源）：命中下载 URL 或来源域即强制取消，永不豁免
-      if (isKnownBadHost(host)) {
-        cancelDownload(item.id, host, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
-        return;
-      }
-      const srcHost = downloadSourceHost(item);
-      if (srcHost && isKnownBadHost(srcHost)) {
+      if (srcHost && hostMatch(srcHost, settings.customBadDomains)) {
         cancelDownload(item.id, srcHost, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
         return;
       }
+      // 4) 白名单放行：只有黑名单全不命中后才看（云端 / 内置 / 自定义，效果一致）
+      //    ★ 2026-11-09：路径白名单（主机名/路径）在这里生效——下载地址本身或来源页链接
+      //    命中路径条目即放行。它只覆盖那一个链接，不会让整个主机变成「可信下载源」，
+      //    所以没有并入 isTrustedDownloadHost / _dlBlProtected（那两处只认 host）。
+      if (isTrustedDownloadHost(host, settings)) return;
+      if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;
       // ★ 已知木马化投递物文件名（样本静态分析 IOC）：bzy.exe / shanlian_VPN_64.exe 等
       //   命中即强制取消下载，不受「来源页是否判危」影响（无法读下载字节，文件名是最稳锚点）。
       if (isKnownBadFilename(item.filename) || isKnownBadFilename(item.url)) {
@@ -2841,6 +2918,7 @@ if (chrome.downloads && chrome.downloads.onCreated) {
       //   一律拦截并弹「询问放行」窗——这是对「迅雷/IDM 等绕过浏览器直接下载」的兜底拦截。
       if (item.byExtensionId) {
         if (hostMatch(host, settings.allowlist)) return;
+        if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;  // 路径白名单
         if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist))) return;
         if (_dlBlProtected(host, settings)) return;   // TRUSTED_DOWNLOAD_HOSTS / 官方 / 用户白名单
         if (isHighRiskFile(item.url)) {
@@ -2867,6 +2945,7 @@ if (chrome.downloads && chrome.downloads.onCreated) {
         //   （覆盖「点进网站就下载」「服务端 Content-Disposition 强制下载」等抢跑场景）
         // 文件本身在白名单 / 来源是可信官方域名 → 放行
         if (hostMatch(host, settings.allowlist)) return;
+        if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;  // 路径白名单
         if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist))) return;
         if (isHighRiskFile(item.url)) {
           // 1) 来源域名自身像品牌仿冒（非官方）→ 直接拦，不依赖内容脚本判定

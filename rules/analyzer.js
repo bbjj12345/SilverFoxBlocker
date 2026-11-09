@@ -22,6 +22,32 @@
       ? self.SF_IOCS
       : (typeof require !== 'undefined' ? require('./iocs') : {});
 
+  // ============ 六类名单的统一文案（唯一事实来源）============
+  // 名单命中后要告诉用户「依据是哪一张名单」，此前文案散落在 analyzer / content / popup 三处，
+  //   改一处漏一处（例如云端白名单一度被写成「扩展内置的官方可信域名表」）。
+  //   现全部从这里取，三处消费方不再各写一套：
+  //     cloudBlack / cloudWhite     — 云端黑/白名单（「关于 → 从云端更新名单」同步下来的）
+  //     builtinBlack / builtinWhite — 扩展内置黑/白名单（随扩展发布的 iocs.js）
+  //     customBlack / customWhite   — 自定义黑/白名单（用户在本机「规则与名单」里自己填的）
+  // 措辞约定：黑名单统一「已强制判定为危险并拦截」，白名单统一「未进入评分引擎」。
+  const LIST_TEXT = {
+    cloudBlack: { label: '云端黑名单', detail: '该域名在云端恶意域名黑名单中，已强制判定为危险并拦截。' },
+    builtinBlack: { label: '扩展内置黑名单', detail: '该域名在扩展内置的恶意域名黑名单中，已强制判定为危险并拦截。' },
+    customBlack: { label: '自定义黑名单', detail: '该域名在自定义恶意域名黑名单中，已强制判定为危险并拦截。' },
+    cloudWhite: { label: '云端白名单', detail: '该域名在云端信任域名白名单中，未进入评分引擎。' },
+    builtinWhite: { label: '扩展内置白名单', detail: '该域名在扩展内置的信任域名白名单中，未进入评分引擎。' },
+    customWhite: { label: '自定义白名单', detail: '该域名在自定义信任域名白名单中，未进入评分引擎。' },
+    // 2026-11-09：路径级条目（主机名/路径）。单列两条是为了让用户一眼看出
+    //   「放行/拦截的只是这个链接」，而不是以为整站被放行或整站被封。
+    cloudBlackPath: { label: '云端黑名单（链接级）', detail: '该页面链接命中云端黑名单的路径条目，已强制判定为危险并拦截。' },
+    cloudWhitePath: { label: '云端白名单（链接级）', detail: '该页面链接命中云端白名单的路径条目，未进入评分引擎（同站其它链接照常检测）。' }
+  };
+  // 生成 reasons 条目（label + detail 分开，供浮层「粗体标题 + 说明」两行结构使用）
+  function listReason(key, weight) {
+    const t = LIST_TEXT[key] || LIST_TEXT.builtinBlack;
+    return { label: t.label, detail: t.detail, weight: typeof weight === 'number' ? weight : 0 };
+  }
+
   // ============ 官方域名快速索引（精确 + 子域匹配）============
   const OFFICIAL_SET = new Set((IOCS.OFFICIAL_DOMAINS || []).map(d => d.toLowerCase()));
 
@@ -114,6 +140,8 @@
 
   // 逐个字符转义，只保留 * 与 ? 为通配。
   // 不用「先整体转义再回填 \*」的写法：那样 a*b 的回填顺序与元字符处理容易互相污染。
+  // 2026-11-09：补 'i' 标志。精确条目在 Set 里靠 _suffixHit 统一小写，通配若区分大小写
+  //   就会比精确条目更弱，变成「同一份名单，有的条目认大小写、有的不认」的偶发漏判。
   function _globToRegExp(pat) {
     let out = '';
     for (let i = 0; i < pat.length; i++) {
@@ -122,32 +150,68 @@
       else if (ch === '?') out += '[^.]';
       else out += (/[\\^$.|+()\[\]{}]/.test(ch) ? '\\' + ch : ch);
     }
-    try { return new RegExp('^' + out + '$'); } catch (e) { return null; }
+    try { return new RegExp('^' + out + '$', 'i'); } catch (e) { return null; }
   }
 
-  // 返回 'suffix'（已按后缀条目收录）/ 'wild'（已编译）/ ''（被拒绝，原因进 skipped）
-  function _addBadWild(v, skipped) {
+  // 非 ASCII 标签 → punycode。
+  // 为什么必须转：浏览器给的 location.hostname 一定是 punycode（中文.com → xn--fiq228c.com），
+  //   名单里存中文就永远匹配不上，属于和白名单通配同一类的「静默失效」。
+  // 含 * / ? 又含非 ASCII 的标签无法安全转换（URL 会把 * 当普通字符编成 xn--*-xxxx），
+  //   这里返回 '' 让上层丢弃并计入 ignored，提示用户改写成 punycode，而不是"转了但转歪了"。
+  function _labelToAscii(label) {
+    if (!/[^\x00-\x7f]/.test(label)) return label;
+    if (label.indexOf('*') !== -1 || label.indexOf('?') !== -1) return '';
+    try {
+      const h = new URL('http://' + label + '.invalid').hostname;
+      return h.slice(0, h.length - '.invalid'.length);
+    } catch (e) { return ''; }
+  }
+  // 逐标签转换：整串丢进 URL 会踩两个坑 ——
+  //   1) `ab?c.foo.com` 里的 ? 会被当成 query 起点，hostname 只剩 `ab`；
+  //   2) 通配标签 + 中文会被编码成 xn--*-xxxx 这种永不命中的怪东西。
+  function _toAsciiDomain(v) {
+    if (!/[^\x00-\x7f]/.test(v)) return v;
+    const labels = v.split('.');
+    const out = [];
+    for (let i = 0; i < labels.length; i++) {
+      const a = _labelToAscii(labels[i]);
+      if (!a) return '';
+      out.push(a);
+    }
+    return out.join('.');
+  }
+
+  // 编译单条通配写法（不改动任何全局状态）：{ kind:'suffix'|'wild', value, re } 或 { kind:'', reason }
+  // 单独抽出来的原因：设置页需要**在不影响运行状态的前提下**先判断「这条会不会真正生效」，
+  //   否则「超上限被丢」「格式非法被丢」用户永远看不见（此前正是如此）。
+  function _compileBadWild(v) {
     // 前导 `*.` ⇒ 等价后缀条目
     if (v.slice(0, 2) === '*.') {
       const rest = v.slice(2);
       if (rest.indexOf('*') === -1 && rest.indexOf('?') === -1 && rest.split('.').length >= 2) {
-        EXTRA_BAD_SET.add(rest);
-        return 'suffix';
+        return { kind: 'suffix', value: rest };
       }
-      skipped.push(v);
-      return '';
+      return { kind: '', reason: 'suffix-malformed' };
     }
     const labels = v.split('.');
     // 护栏：至少两个标签（挡掉 *.com 归一后的 com）、TLD 位禁通配、长度上下限、禁空标签
-    if (labels.length < 2) { skipped.push(v); return ''; }
+    if (labels.length < 2) return { kind: '', reason: 'need-two-labels' };
     const tld = labels[labels.length - 1];
-    if (!tld || tld.indexOf('*') !== -1 || tld.indexOf('?') !== -1) { skipped.push(v); return ''; }
-    if (v.length < 4 || v.length > 253) { skipped.push(v); return ''; }
-    for (let i = 0; i < labels.length; i++) { if (!labels[i]) { skipped.push(v); return ''; } }
-    if (EXTRA_BAD_WILD.length >= WILD_MAX) { skipped.push(v); return ''; }
+    if (!tld || tld.indexOf('*') !== -1 || tld.indexOf('?') !== -1) return { kind: '', reason: 'tld-wildcard' };
+    if (v.length < 4 || v.length > 253) return { kind: '', reason: 'bad-length' };
+    for (let i = 0; i < labels.length; i++) { if (!labels[i]) return { kind: '', reason: 'empty-label' }; }
     const re = _globToRegExp(v);
-    if (!re) { skipped.push(v); return ''; }
-    EXTRA_BAD_WILD.push({ src: v, re: re });
+    if (!re) return { kind: '', reason: 'bad-syntax' };
+    return { kind: 'wild', value: v, re: re };
+  }
+
+  // 返回 'suffix'（已按后缀条目收录）/ 'wild'（已编译）/ ''（被拒绝，原因进 skipped）
+  function _addBadWild(v, skipped) {
+    const c = _compileBadWild(v);
+    if (!c.kind) { skipped.push(v); return ''; }
+    if (c.kind === 'suffix') { EXTRA_BAD_SET.add(c.value); return 'suffix'; }
+    if (EXTRA_BAD_WILD.length >= WILD_MAX) { skipped.push(v); return ''; }
+    EXTRA_BAD_WILD.push({ src: c.value, re: c.re });
     return 'wild';
   }
 
@@ -160,13 +224,74 @@
   }
 
   function isKnownBad(hostname) {
-    return _memoHost(_badCache, hostname, (h) =>
+    // 缓存 key 与判定输入统一小写：_memoHost 原本直接用入参做 key，
+    //   大小写不同的同一主机名会各存一份，且通配无法命中（正则现已带 i，这里再统一下更稳）。
+    return _memoHost(_badCache, (hostname || '').toLowerCase(), (h) =>
       _suffixHit(EXTRA_BAD_SET, h) || _wildBadHit(h.replace(WWW_RE, '')) || _suffixHit(BAD_SET, h));
   }
   // 本次命中是否来自云端名单（仅用于给出更准确的「依据」文案，不影响判定强度）
   function isCloudBad(hostname) {
     const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
     return _suffixHit(EXTRA_BAD_SET, h) || _wildBadHit(h);
+  }
+  // 仅扩展内置黑名单（不含云端）。文案要区分「云端/内置」两种来源，故单独提供。
+  //   注意优先级由调用方决定：目前统一为「任意黑名单 > 任意白名单」，
+  //   叠色时按 云端 > 内置 > 自定义 归因（见 content.js 的判定顺序）。
+  function isBuiltinBad(hostname) {
+    return _suffixHit(BAD_SET, (hostname || '').toLowerCase());
+  }
+  // 云端白名单命中（仅云端那份，不含内置 OFFICIAL_SET）。
+  // 单独抽出来是因为判定流程要「先看云端名单，命中即据此处理」——
+  // 内置白名单还有上千条，对它们没必要走快速通道，结果本来就一样。
+  function isCloudOfficial(hostname) {
+    const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    return _suffixHit(EXTRA_OFFICIAL_SET, h);
+  }
+
+  // 设置页专用的「预检」：按真正生效的规则清洗一份名单，返回
+  //   list     — 应写入 storage 的条目（= 实际生效条目；路径条目保留 `主机名/路径` 原样）
+  //   wild     — 其中真正以正则形式生效的通配条数（`*.foo.com` 归一为后缀，不计入）
+  //   paths    — 其中带路径的条目数（状态行用它说明「有 N 条只对特定链接生效」）
+  //   dropped  — [{ entry, reason }]，被丢弃的条目及原因
+  // 这样状态行就能报「实际生效几条、忽略几条」，而不是把被丢的也算进去（此前的静默失效）。
+  // opts.allowWild === false 用于云端白名单：白名单不支持通配，含 * ? 的条目直接计入 dropped。
+  // 2026-11-09：主机名/路径两种写法都接受（见 _normCloudEntryEx），路径条目同样要能报出丢弃原因。
+  function sanitizeCloudDomains(arr, opts) {
+    const allowWild = !(opts && opts.allowWild === false);
+    const seen = new Set();
+    const list = [];
+    const wild = [];
+    const dropped = [];
+    let paths = 0;
+    const src = Array.isArray(arr) ? arr : [];
+    for (let i = 0; i < src.length; i++) {
+      const ex = _normCloudEntryEx(src[i], { allowWild: allowWild });
+      if (!ex.value) {
+        dropped.push({ entry: String(src[i] == null ? '' : src[i]), reason: ex.reason || 'invalid' });
+        continue;
+      }
+      // 主机名带通配：白名单已在 _normCloudEntryEx 里被拒，这里只剩黑名单，需再验一次能否编译
+      if (ex.wild) {
+        const c = _compileBadWild(ex.host);
+        if (!c.kind) { dropped.push({ entry: ex.value, reason: c.reason || 'wild-invalid' }); continue; }
+        if (wild.length >= WILD_MAX) { dropped.push({ entry: ex.value, reason: 'wild-over-limit' }); continue; }
+        const stored = c.value + ex.path;   // `*.foo.com/bar` 归一成 `foo.com/bar`
+        if (!seen.has(stored)) {
+          seen.add(stored);
+          list.push(stored);
+          if (ex.path) paths++;
+        }
+        if (c.kind === 'wild') wild.push(stored);
+        continue;
+      }
+      if (ex.path) {
+        if (paths >= PATH_MAX) { dropped.push({ entry: ex.value, reason: 'path-over-limit' }); continue; }
+        if (!seen.has(ex.value)) { seen.add(ex.value); list.push(ex.value); paths++; }
+        continue;
+      }
+      if (!seen.has(ex.value)) { seen.add(ex.value); list.push(ex.value); }
+    }
+    return { list: list, wild: wild, dropped: dropped, paths: paths };
   }
 
   // ============ 政府/公立机构可信域名（严格资质管控后缀，仿冒概率极低）============
@@ -192,36 +317,165 @@
   //   缓存里存的是「注入前」的判定结果，不清就会出现「明明同步了云端名单却仍被判危」。
   const EXTRA_OFFICIAL_SET = new Set();
   // 云端名单统一清洗：小写、去 www.、剔除含空格/斜杠/协议等明显不是域名的项
-  function _normCloudDomain(d) {
-    if (typeof d !== 'string') return '';
-    const v = d.trim().toLowerCase().replace(WWW_RE, '');
-    if (!v || v.length > 253) return '';
-    if (v.indexOf(' ') !== -1 || v.indexOf('/') !== -1 || v.indexOf('@') !== -1 || v.indexOf('..') !== -1) return '';
+  // 带 reason 的版本：设置页要把「为什么这条没生效」讲清楚，只返回 '' 就只能报"无效"。
+  function _normCloudDomainEx(d) {
+    if (typeof d !== 'string') return { value: '', reason: 'not-string' };
+    let v = d.trim().toLowerCase().replace(WWW_RE, '');
+    if (!v) return { value: '', reason: 'empty' };
+    if (v.length > 253) return { value: '', reason: 'too-long' };
+    if (v.indexOf(' ') !== -1 || v.indexOf('/') !== -1 || v.indexOf('@') !== -1 || v.indexOf('..') !== -1) {
+      return { value: '', reason: 'invalid-char' };
+    }
     // 2026-11-09：首尾多余的点一律削掉。`.foo.com` / `foo.com.` 这类条目进 Set 后
     //   永远匹配不上（后缀查表要求标签对齐），属于和通配符同一类的静默失效；
     //   削点后若已经不含 `.`（如 `.`、`com`），说明不是域名，直接丢弃。
-    const w = v.replace(/^\.+/, '').replace(/\.+$/, '');
-    if (!w || w.indexOf('.') === -1) return '';
-    return w;
+    v = v.replace(/^\.+/, '').replace(/\.+$/, '');
+    if (!v) return { value: '', reason: 'empty' };
+    if (v.indexOf('.') === -1) return { value: '', reason: 'no-dot' };
+    // 2026-11-09：非 ASCII（中文等 IDN）统一转 punycode，否则永远匹配不上浏览器给的 hostname。
+    const ascii = _toAsciiDomain(v);
+    if (!ascii) return { value: '', reason: 'idn-in-wildcard' };
+    return { value: ascii, reason: '' };
   }
+  // 说明：原先还有个 _normCloudDomain（只返回字符串）被 register / sanitize 共用，
+  //   2026-11-09 支持路径条目后统一改走 _normCloudEntryEx（需同时拿到 host 与 path），
+  //   那个只取 value 的包装已无调用方，随本次改造一并删除。
+
+  // ============ 云端名单的「路径级」条目（2026-11-09 新增，黑白名单均支持）============
+  // 背景：蓝奏云这类网盘整站放行风险太大（银狐常用投递渠道），所以名单需要「主机名 + 路径前缀」
+  //   这一级粒度：wwavz.lanzout.com/b01gigjayb 只信任这一个分享链接，同站其它分享页照常检测。
+  // 语义（黑白一致）：
+  //   · 条目写成 `主机名/路径`，路径必须以 / 开头；只写主机名（或末尾只有 /）＝整站条目，
+  //     仍旧进 Set 走 O(标签数) 后缀查表，性能路径完全不变。
+  //   · 路径按**前缀**匹配，且前缀必须落在 / 边界上：
+  //       /b01gigjayb 命中 /b01gigjayb 与 /b01gigjayb/xxx，**不**命中 /b01gigjayb2。
+  //   · 只比对 pathname，query 与 #hash 一律忽略；大小写统一按小写比对。
+  //   · 主机名部分沿用后缀语义：写 wwavz.lanzout.com 同时覆盖 a.wwavz.lanzout.com。
+  //   · 黑名单的路径条目与普通黑名单一条优先级：命中即强制 danger，**不被任何白名单豁免**。
+  // 为什么单开一层而不改 isOfficialDomain 签名：它被 20+ 处按 hostname 调用
+  //   （仿冒判定、下载可信源、_memoHost 缓存），改成吃 URL 会污染全部调用点。
+  const EXTRA_OFFICIAL_PATH = [];  // [{ src, host, path }]
+  const EXTRA_BAD_PATH = [];       // [{ src, host, path, re }]（re 仅主机名带通配时存在）
+  const PATH_MAX = 500;            // 路径条目上限：每条都要线性扫一遍，防止名单把页面判定拖慢
+
+  // 「主机名/路径」拆分：容忍带协议的完整链接、带端口、?query / #hash。
+  // 返回 { host, path }，path 为 '' 表示整站条目。
+  function _splitHostPath(v) {
+    let s = String(v).trim().toLowerCase();
+    s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+    const cut = s.search(/[?#]/);
+    if (cut !== -1) s = s.slice(0, cut);
+    const slash = s.indexOf('/');
+    let host = slash === -1 ? s : s.slice(0, slash);
+    let path = slash === -1 ? '' : s.slice(slash).replace(/\/+$/, '');  // 末尾斜杠无意义：/a/b/ 等价 /a/b
+    host = host.replace(/:\d+$/, '');            // 端口不参与匹配（hostname 本身不含端口）
+    if (path === '/') path = '';
+    return { host: host, path: path };
+  }
+  // 路径合法性：不含空白/控制字符、不含 ..（避免写出可穿越的写法）。长度上限防止超长串拖慢比对。
+  function _pathReason(p) {
+    if (p.length > 512) return 'too-long';
+    if (/[\s\x00-\x1f\x7f]/.test(p)) return 'invalid-char';
+    if (p.indexOf('..') !== -1) return 'invalid-char';
+    return '';
+  }
+  // 统一入口：字符串 → { value, host, path, wild, reason }
+  //   value 是「会真正生效的写法」（主机名 + 路径），设置页按它落盘与计数。
+  //   opts.allowWild === false（云端白名单）时，主机名含 * ? 直接判 wild-not-allowed。
+  function _normCloudEntryEx(d, opts) {
+    const allowWild = !(opts && opts.allowWild === false);
+    if (typeof d !== 'string') return { value: '', host: '', path: '', wild: false, reason: 'not-string' };
+    const sp = _splitHostPath(d);
+    if (!sp.host) return { value: '', host: '', path: '', wild: false, reason: 'empty' };
+    const hostEx = _normCloudDomainEx(sp.host);   // 复用域名校验：IDN→punycode、削首尾点、长度、非法字符
+    if (!hostEx.value) return { value: '', host: '', path: '', wild: false, reason: hostEx.reason || 'invalid-char' };
+    if (sp.path) {
+      const r = _pathReason(sp.path);
+      if (r) return { value: '', host: '', path: '', wild: false, reason: r };
+    }
+    const wild = hostEx.value.indexOf('*') !== -1 || hostEx.value.indexOf('?') !== -1;
+    if (wild && !allowWild) return { value: '', host: '', path: '', wild: true, reason: 'wild-not-allowed' };
+    return { value: hostEx.value + sp.path, host: hostEx.value, path: sp.path, wild: wild, reason: '' };
+  }
+
+  // 主机名后缀命中（与 _suffixHit 同一语义，单条目版）
+  function _hostHit(h, host) {
+    return h === host || (h.length > host.length && h.slice(-(host.length + 1)) === '.' + host);
+  }
+  // 路径前缀命中，且必须落在 / 边界上（/b01gigjayb 不吃 /b01gigjayb2）
+  function _pathPrefixHit(pathname, p) {
+    const a = pathname || '/';
+    if (a === p) return true;
+    if (a.length <= p.length) return false;
+    if (a.lastIndexOf(p, 0) !== 0) return false;   // 只认开头，不分配 slice
+    return a.charAt(p.length) === '/';
+  }
+  // URL → { host, path }；裸主机名也接受（补 https:// 兜底），解析失败返回 null
+  function _urlHostPath(url) {
+    if (typeof url !== 'string' || !url) return null;
+    let s = url;
+    // 只认带 :// 的绝对 URL；否则补协议（裸主机名 / 主机名+端口 都走这条路）
+    if (s.indexOf('://') === -1) s = 'https://' + s.replace(/^\/+/, '');
+    try {
+      const u = new URL(s);
+      // pathname 统一小写：名单条目在 _splitHostPath 里已小写，这里不统一就会出现
+      //   同一份名单「域名认大小写、路径不认」的偶发不命中（与通配符补 'i' 标志同因）。
+      return { host: u.hostname.toLowerCase().replace(WWW_RE, ''), path: (u.pathname || '/').toLowerCase() };
+    } catch (e) { return null; }
+  }
+
+  // 云端白名单路径命中：返回命中的条目原文（用于文案），未命中返回 ''
+  function matchCloudWhiteUrl(url) {
+    if (!EXTRA_OFFICIAL_PATH.length) return '';
+    const u = _urlHostPath(url);
+    if (!u) return '';
+    for (let i = 0; i < EXTRA_OFFICIAL_PATH.length; i++) {
+      const r = EXTRA_OFFICIAL_PATH[i];
+      if (_hostHit(u.host, r.host) && _pathPrefixHit(u.path, r.path)) return r.src;
+    }
+    return '';
+  }
+  function isCloudOfficialUrl(url) { return !!matchCloudWhiteUrl(url); }
+
+  // 云端黑名单路径命中（主机名可带通配）：返回命中条目原文或 ''
+  function matchCloudBadUrl(url) {
+    if (!EXTRA_BAD_PATH.length) return '';
+    const u = _urlHostPath(url);
+    if (!u) return '';
+    for (let i = 0; i < EXTRA_BAD_PATH.length; i++) {
+      const r = EXTRA_BAD_PATH[i];
+      const hostOk = r.re ? r.re.test(u.host) : _hostHit(u.host, r.host);
+      if (hostOk && _pathPrefixHit(u.path, r.path)) return r.src;
+    }
+    return '';
+  }
+  function isCloudBadUrl(url) { return !!matchCloudBadUrl(url); }
   // ★ 覆盖语义（opts.replace）：本地存储的是云端的「镜像」，每次更新是整体替换而非累加，
   //   因此这里也必须先清空再灌入——否则云端删掉的条目会残留在内存集合里，
   //   表现为「云端已移除，浏览器里仍然拦截」，直到重启浏览器才消失。
   //   不传 opts 时保持旧的累加行为，兼容其它调用方。
   function registerCloudOfficial(arr, opts) {
     const replace = !!(opts && opts.replace);
-    const before = EXTRA_OFFICIAL_SET.size;
-    if (replace) EXTRA_OFFICIAL_SET.clear();
+    const before = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_PATH.length;
+    if (replace) {
+      EXTRA_OFFICIAL_SET.clear();
+      EXTRA_OFFICIAL_PATH.length = 0;
+    }
     if (Array.isArray(arr)) {
       for (const d of arr) {
-        const v = _normCloudDomain(d);
-        if (v) EXTRA_OFFICIAL_SET.add(v);
+        // 白名单不支持通配：主机名含 * ? 的条目在这里被拒，与 sanitize 的预检结论一致
+        const ex = _normCloudEntryEx(d, { allowWild: false });
+        if (!ex.value) continue;
+        // 带路径 → 进路径表（线性扫，条目少）；纯主机名 → 仍旧进 Set 走后缀查表
+        if (ex.path) EXTRA_OFFICIAL_PATH.push({ src: ex.value, host: ex.host, path: ex.path });
+        else EXTRA_OFFICIAL_SET.add(ex.host);
       }
     }
-    const added = EXTRA_OFFICIAL_SET.size - (replace ? 0 : before);
+    const after = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_PATH.length;
+    const added = replace ? after : after - before;
     // 覆盖模式下即使集合最终为空（云端清空名单）也必须失效缓存，
     // 否则先前按「官方」缓存的域名会一直判为安全。
-    if (replace || EXTRA_OFFICIAL_SET.size !== before) {
+    if (replace || after !== before) {
       _officialCache.clear();
       // 仿冒判定的三处缓存都依赖「是否官方域名」，一并失效，
       // 否则刚同步进白名单的域名仍会被当作仿冒站（detectSpoof 有独立的 host 级缓存）。
@@ -232,34 +486,53 @@
   }
   function registerCloudBad(arr, opts) {
     const replace = !!(opts && opts.replace);
-    const before = EXTRA_BAD_SET.size;
-    const beforeWild = EXTRA_BAD_WILD.length;
+    const before = EXTRA_BAD_SET.size + EXTRA_BAD_WILD.length + EXTRA_BAD_PATH.length;
     const skipped = [];
     if (replace) {
       EXTRA_BAD_SET.clear();
       EXTRA_BAD_WILD.length = 0;
+      EXTRA_BAD_PATH.length = 0;
     }
     if (Array.isArray(arr)) {
       for (const d of arr) {
-        const v = _normCloudDomain(d);
-        if (!v) continue;
+        const ex = _normCloudEntryEx(d, { allowWild: true });
+        if (!ex.value) continue;
+        if (ex.path) {
+          // 路径条目：主机名可能带通配 → 预先编译正则；不带通配就只存字符串，比对更快
+          if (EXTRA_BAD_PATH.length >= PATH_MAX) { skipped.push(ex.value); continue; }
+          if (!ex.wild) {
+            EXTRA_BAD_PATH.push({ src: ex.value, host: ex.host, path: ex.path, re: null });
+            continue;
+          }
+          const c = _compileBadWild(ex.host);
+          if (!c.kind) { skipped.push(ex.value); continue; }
+          // `*.foo.com/bar` 归一为后缀条目：主机名取 c.value（去掉 *.)，仍然覆盖全部子域
+          EXTRA_BAD_PATH.push({
+            src: c.value + ex.path,
+            host: c.kind === 'suffix' ? c.value : '',
+            path: ex.path,
+            re: c.kind === 'suffix' ? null : c.re
+          });
+          continue;
+        }
         // 含通配符号的条目走独立编译流程；其余仍进 Set（O(标签数) 查表，最快路径）
-        if (v.indexOf('*') !== -1 || v.indexOf('?') !== -1) _addBadWild(v, skipped);
-        else EXTRA_BAD_SET.add(v);
+        if (ex.wild) _addBadWild(ex.host, skipped);
+        else EXTRA_BAD_SET.add(ex.host);
       }
     }
     _wildBadSkipped = skipped;
-    const added = (EXTRA_BAD_SET.size - (replace ? 0 : before)) +
-                  (EXTRA_BAD_WILD.length - (replace ? 0 : beforeWild));
+    const after = EXTRA_BAD_SET.size + EXTRA_BAD_WILD.length + EXTRA_BAD_PATH.length;
+    const added = replace ? after : after - before;
     if (replace || added) _badCache.clear();
     return added;
   }
 
-  // 诊断用：当前生效的通配条目 / 后缀条目 / 被护栏拒掉的条目
+  // 诊断用：当前生效的通配条目 / 后缀条目 / 路径条目 / 被护栏拒掉的条目
   function getCloudBadWild() {
     return {
       active: EXTRA_BAD_WILD.map((x) => x.src),
       suffix: Array.from(EXTRA_BAD_SET),
+      paths: EXTRA_BAD_PATH.map((x) => x.src),
       skipped: _wildBadSkipped.slice()
     };
   }
@@ -2156,27 +2429,39 @@
     }
 
     // ---- 已知木马投递站硬拦截（内置 / 云端黑名单，永不豁免，强制 danger）----
-    if (isKnownBad(data.hostname)) {
+    // ★ 2026-11-09 定版优先级：**任意黑名单 > 任意白名单**（宁可杀错，不可放过）。
+    //   本函数必须把黑名单放在官方/白名单早期退出**之前**，否则直接调用 analyze() 时
+    //   会出现「黑名单域名被判 safe」的漏洞。叠色归因顺序：云端 > 内置 > 自定义。
+    // ★ 2026-11-09：云端名单支持「主机名/路径」条目，所以黑名单判定除了 hostname
+    //   还要看当前页面 URL 是否命中路径条目（例如 bad-site.top/pay/ 只拦那个子路径）。
+    //   路径条目与普通黑名单强度完全一致：命中即强制 danger，且不被任何白名单豁免。
+    const _pageUrl = data.url || (typeof location !== 'undefined' && location ? location.href : '');
+    const _cloudBadPath = matchCloudBadUrl(_pageUrl);
+    if (isKnownBad(data.hostname) || _cloudBadPath) {
       // 区分来源只为文案准确：云端名单是用户自己「从云端更新」拉下来的，写「内置」会说不通。
-      const _fromCloud = isCloudBad(data.hostname);
+      //   若同一域名同时出现在云端黑名单与内置黑名单里，这里归因给「云端黑名单」
+      //   （匹配顺序也是云端在前）；两者判定强度完全一致，都是强制 danger 100，不存在放行差异。
+      const _fromCloud = !!_cloudBadPath || isCloudBad(data.hostname);
       return {
         score: 100, level: 'danger', detected: true, official: false, spoof: null,
-        reasons: [{
-          label: _fromCloud ? '云端黑名单' : '扩展内置黑名单',
-          detail: _fromCloud
-            ? '该域名在你的云端恶意域名名单中，已强制判定为危险并拦截。'
-            : '该域名在扩展内置的恶意域名黑名单中，已强制判定为危险并拦截。',
-          weight: 100
-        }],
+        reasons: [listReason(_cloudBadPath ? 'cloudBlackPath' : (_fromCloud ? 'cloudBlack' : 'builtinBlack'), 100)],
         features: { knownBad: true }, threshold: danger
       };
     }
 
     // ---- 官方早期退出（根治真官网误拦）----
-    if (isOfficialDomain(data.hostname)) {
+    // 路径白名单（wwavz.lanzout.com/b01gigjayb 这类）只放行那一个链接，不一并放行整站：
+    //   因此它排在 isOfficialDomain 之后判定也不会被「整站 official」覆盖，两者是并列的两个入口。
+    const _cloudWhitePath = matchCloudWhiteUrl(_pageUrl);
+    if (isOfficialDomain(data.hostname) || _cloudWhitePath) {
+      // 区分「云端白名单」与「扩展内置白名单」：两者都是直接放行，但文案必须说实话，
+      //   否则用户会以为云端名单里的域名是内置官方域名。
+      const _cloudWhite = isCloudOfficial(data.hostname);
+      const _key = _cloudWhitePath ? 'cloudWhitePath' : (_cloudWhite ? 'cloudWhite' : 'builtinWhite');
       return {
-        score: 0, level: 'safe', detected: false, official: true, spoof: null, skip: 'official',
-        reasons: [{ label: '官方可信域名', detail: `「${data.hostname}」在官方白名单中，直接判定安全`, weight: 0 }],
+        score: 0, level: 'safe', detected: false, official: true, spoof: null,
+        skip: _key,
+        reasons: [listReason(_key, 0)],
         features: {}, threshold: danger
       };
     }
@@ -2338,12 +2623,23 @@
 
   const API = {
     analyze,
+    LIST_TEXT,
+    listReason,
     isOfficialDomain,
     isExceptionHost,
     isBrandSelfSite,
     registerCloudOfficial,
     registerCloudBad,
+    sanitizeCloudDomains,
+    isKnownBad,
     isCloudBad,
+    isBuiltinBad,
+    isCloudOfficial,
+    // 2026-11-09：路径级条目（主机名/路径）的 URL 判定入口，黑白各一对
+    matchCloudWhiteUrl,
+    matchCloudBadUrl,
+    isCloudOfficialUrl,
+    isCloudBadUrl,
     getCloudBadWild,
     isTrustedPlatform,
     detectSpoof,

@@ -100,20 +100,27 @@ function loadCurrentSite() {
     levelEl.textContent = txt; levelEl.className = 'site-level lvl-unknown';
     if (reasonsEl) reasonsEl.innerHTML = '';
   };
-  // 「跳过检测」的几种情形：这类页面根本没有进入评分引擎，分数是不存在的。
+  // 「跳过评分」的几种情形：这类页面根本没有进入评分引擎，分数是不存在的。
   // 既不能显示成「未知」（读起来像引擎出错），也不能显示成「0 分」（读起来像「完全干净」）。
-  // 2026-11-06：等级统一显示「已跳过评分」，说明行统一为「该域名在<哪张名单>中，<结果>。」，
-  // 只替换名单名称，不再出现「已跳过检测 / 官方域名」这类不同说法。
+  // 2026-11-06：等级统一显示「已跳过评分」，说明行统一为「<名单名>：该域名在<哪张名单>中，<结果>。」。
+  // 2026-11-09：白名单细分为 云端 / 扩展内置 / 自定义 三类，与黑名单三分类一一对应。
+  // ⚠️ 文案与 rules/analyzer.js 的 LIST_TEXT 必须逐字一致（test_list_text.js 会做一致性校验）；
+  //    popup 不加载评分引擎，故这里保留一份副本。
   const SKIP_INFO = {
+    customWhite: { text: '已跳过评分', lvl: 'official', reason: '自定义白名单：该域名在自定义信任域名白名单中，未进入评分引擎。' },
+    builtinWhite: { text: '已跳过评分', lvl: 'official', reason: '扩展内置白名单：该域名在扩展内置的信任域名白名单中，未进入评分引擎。' },
+    cloudWhite: { text: '已跳过评分', lvl: 'official', reason: '云端白名单：该域名在云端信任域名白名单中，未进入评分引擎。' },
+    // 2026-11-09：路径级条目（主机名/路径）。只放行这一个链接，同站其它链接照常检测，
+    //   文案必须与 LIST_TEXT.cloudWhitePath 逐字一致。
+    cloudWhitePath: { text: '已跳过评分', lvl: 'official', reason: '云端白名单（链接级）：该页面链接命中云端白名单的路径条目，未进入评分引擎（同站其它链接照常检测）。' },
+    // 兼容旧版内容脚本的 skip 值（allowlist + skipBy / official）
     allowlist: {
       text: '已跳过评分', lvl: 'official',
       reason: (r) => r.skipBy === 'user'
-        ? '该域名在你的信任域名白名单中，未进入评分引擎。'
-        // 内置的可信分发名单（GitHub / 网盘 / 下载站等）与官方域名表同属「扩展内置的可信号名单」，
-        // 用户要求两者说法完全一致，故共用同一句。
-        : '该域名在扩展内置的官方可信域名表中，未进入评分引擎。'
+        ? '自定义白名单：该域名在自定义信任域名白名单中，未进入评分引擎。'
+        : '扩展内置白名单：该域名在扩展内置的信任域名白名单中，未进入评分引擎。'
     },
-    official: { text: '已跳过评分', lvl: 'official', reason: '该域名在扩展内置的官方可信域名表中，未进入评分引擎。' },
+    official: { text: '已跳过评分', lvl: 'official', reason: '扩展内置白名单：该域名在扩展内置的信任域名白名单中，未进入评分引擎。' },
     disabled: { text: '防护已关闭', lvl: 'unknown', reason: '防护已全局关闭，未参与评分。' },
     protocol: { text: '不适用', lvl: 'unknown', reason: '非 http(s) 页面，不参与评分。' },
     localhost: { text: '本地地址', lvl: 'official', reason: '本地开发地址（localhost / 127.0.0.1），未进入评分引擎。' }

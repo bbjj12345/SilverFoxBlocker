@@ -27,12 +27,23 @@
       ['腾讯电脑管家', 'guanjia.qq.com gj.qq.com', ''],
       ['瑞星系', 'rising.com.cn', '瑞星杀毒 / 瑞星个人防火墙'],
       ['金山系', 'duba.net ijinshan.com', '金山毒霸 / 金山卫士'],
-      ['卡巴斯基', 'kaspersky.com kaspersky.com.cn', 'Kaspersky'],
-      ['Bitdefender', 'bitdefender.com bitdefender-cn.com', ''],
-      ['Avast / AVG', 'avast.com avg.com', '同属 Gen Digital'],
-      ['微步在线', 'threatbook.cn threatbook.com', '威胁情报平台'],
+      ['卡巴斯基', 'kaspersky.com kaspersky.com.cn', 'Kaspersky/卡巴斯基，来自俄罗斯的反恶意软件厂商'],
+      ['Bitdefender', 'bitdefender.com bitdefender-cn.com', '来自罗马尼亚的反恶意软件厂商'],
+      ['Avast / AVG / 诺顿', 'avast.com avg.com norton.com', '同属 Gen Digital'],
+      ['ESET', 'eset.com', '来自斯洛伐克的反恶意软件厂商'],
+      ['赛门铁克', 'symantec.com', '属于Broadcom的企业端反恶意软件厂商'],
+      ['Avira', 'avira.com', '来自德国的反恶意软件厂商'],
+      ['Malwarebytes', 'malwarebytes.com', '来自美国的反恶意软件厂商'],
+      ['Dr.Web', 'drweb.com', '大蜘蛛，来自俄罗斯的反恶意软件厂商'],
+      ['McAfee', 'mcafee.com', '迈克菲，来自美国的反恶意软件厂商'],
+      ['F-Secure', 'f-secure.com', '来自芬兰的反恶意软件厂商'],
+      ['Trend Micro', 'trendmicro.com', '趋势科技，来自日本的云端反恶意软件厂商'],
+      ['Sophos', 'sophos.com', '来自英国的反恶意软件厂商'],
+      ['G Data', 'gdata.com', '歌德塔，来自德国的反恶意软件厂商'],
+      ['Comodo', 'comodo.com', '科摩多，又称毛豆，来自美国的反恶意软件厂商'],
+      ['微步在线', 'threatbook.cn threatbook.com', '微步在线威胁情报平台'],
       ['AdGuard', 'adguard.com adguard.org adguard.net adguard-vpn.com adguardteam.com', '广告拦截 / 隐私保护'],
-      ['海外安全软件', 'eset.com mcafee.com norton.com symantec.com trendmicro.com malwarebytes.com avira.com drweb.com panda.com gdata.com f-secure.com sophos.com comodo.com zonealarm.com', 'ESET / McAfee / Norton / 趋势 / 火眼 / 小红伞 / Dr.Web 等'],
+      ['其他海外安全软件', 'panda.com zonealarm.com emsisoft.com', 'Panda / ZoneAlarm / Emsisoft 等'],
     ]],
 
     // ========== 浏览器类 ==========
@@ -45,7 +56,7 @@
       ['UC系', 'uc.cn ucweb.com', 'UC 浏览器 / UC 手机助手'],
       ['Mozilla', 'mozilla.org firefox.com', 'Firefox'],
       ['Google', 'google.com google.cn google.com.hk googlemail.com gmail.com', 'Google / Gmail'],
-      ['海外浏览器', 'brave.com opera.com vivaldi.com yandex.com torproject.org apple.com apple.com.cn safari.com', 'Brave / Opera / Vivaldi / Yandex / Tor / Safari'],
+      ['其他海外浏览器', 'brave.com opera.com vivaldi.com yandex.com torproject.org apple.com apple.com.cn safari.com', 'Brave / Opera / Vivaldi / Yandex / Tor / Safari'],
     ]],
 
     // ========== IM 与社交类 ==========
@@ -283,7 +294,7 @@
     //   命中即「早期退出」——不评分、不拦截、不参与连坐、不参与下载计数。
     //   只放用户明确要求放行的站点，且必须是该站点真实持有者/使用者提出的。
     ['用户指定信任', [
-      ['个人站点', 'example.com', ' 用户指定（曾被品牌仿冒启发式误判，已清除连坐残留）'],
+      ['个人站点', 'example.com', ' 用户指定（示例域名）'],
     ]],
   ];
 
