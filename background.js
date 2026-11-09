@@ -134,12 +134,13 @@ const DEFAULTS = {
   },
   allowlist: [], customKeywords: [], customBadDomains: [],
   // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
-  // 框架化设计：providers 下可动态增加更多情报源（如 URLhaus / NetAPI），UI 当前仅开放 VirusTotal。
+  // 框架化设计：providers 下可动态增加更多情报源；VT / GSB 两个需 Key 的源均以密文存储。
   threatIntel: {
     enabled: false,
     providers: {
+      // 两个 Key 都只以 AES-GCM 密文落盘（crypto-helper 加解密），明文仅在后台 SW 内短暂存在。
+      // 兼容：旧版明文 VT Key 由 handler 直接使用，设置页打开时自动迁移为密文。
       virustotal: { enabled: false, apiKey: '' },
-      // Google Safe Browsing：需自有 API Key，且 Key 以「密文」形式存储（crypto-helper 加解密），不以明文落盘
       googlesafebrowsing: { enabled: false, apiKey: '' }
     }
   },
@@ -436,6 +437,7 @@ const THREAT_INTEL_PROVIDERS = [
     id: 'virustotal',
     name: 'VirusTotal',
     hasScore: true,
+    encryptsKey: true,        // Key 以 AES-GCM 密文落盘，查询前由 handler 解密（明文不出后台）
     async query(domain, apiKey, pageUrl) {
       if (!apiKey) return { error: true, reason: 'no_key' };
       const key = String(apiKey).trim();   // 去除复制粘贴可能带入的首尾空格
@@ -2586,10 +2588,14 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         for (const p of THREAT_INTEL_PROVIDERS) {
           const cfg = providers[p.id];
           if (!cfg || !cfg.enabled) continue;
-          // 需加密存储 Key 的情报源（如 Google Safe Browsing）：先解密再传入 query，明文 Key 不出后台
+          // 需加密存储 Key 的情报源（VirusTotal / Google Safe Browsing）：先解密再传入 query，
+          // 明文 Key 不出后台。兼容旧版：v1.6.1 及更早存下的 VT Key 是明文，此处暂按明文使用，
+          // 用户打开一次设置页即自动迁移为密文（见 options.js 的 migrateVtPlainKey）。
           let key = cfg.apiKey || '';
           if (p.encryptsKey && key) {
-            try { key = await sfDecryptKey(key); } catch (e) { key = ''; }
+            if (typeof sfLooksEncrypted === 'function' && sfLooksEncrypted(key)) {
+              try { key = await sfDecryptKey(key); } catch (e) { key = ''; }
+            }
             if (!key) {
               errors.push({ id: p.id, name: p.name, status: null, reason: 'decrypt', detail: 'API Key 密文无法解密（可能曾手动改动或被篡改），请到「规则与名单」重新填写。' });
               continue;
@@ -2894,18 +2900,23 @@ if (chrome.downloads && chrome.downloads.onCreated) {
         cancelDownload(item.id, srcHost, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
         return;
       }
+      // 3.5) ★ 已知木马化投递物文件名（样本静态分析 IOC）：bzy.exe / shanlian_VPN_64.exe 等
+      //   命中即强制取消下载，不受「来源页是否判危」影响（无法读下载字节，文件名是最稳锚点）。
+      //   ★ 2026-11-09：从白名单之后提到白名单之前——白名单一旦命中就 return，原先排在
+      //   后面等于对所有放行站点（含云端「整站白名单」条目）彻底失效，这正是按主机放行
+      //   蓝奏云分发渠道后最需要补上的一道静态防线。IOC 是极小固定列表、误伤概率极低，
+      //   所以即使在白名单站点上也照拦；下面三处白名单 return（此处 / byExtensionId 分支 /
+      //   自动下载兜底）因此都自动受本检查约束。
+      if (isKnownBadFilename(item.filename) || isKnownBadFilename(item.url)) {
+        cancelDownload(item.id, host || srcHost || '', item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
+        return;
+      }
       // 4) 白名单放行：只有黑名单全不命中后才看（云端 / 内置 / 自定义，效果一致）
       //    ★ 2026-11-09：路径白名单（主机名/路径）在这里生效——下载地址本身或来源页链接
       //    命中路径条目即放行。它只覆盖那一个链接，不会让整个主机变成「可信下载源」，
       //    所以没有并入 isTrustedDownloadHost / _dlBlProtected（那两处只认 host）。
       if (isTrustedDownloadHost(host, settings)) return;
       if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;
-      // ★ 已知木马化投递物文件名（样本静态分析 IOC）：bzy.exe / shanlian_VPN_64.exe 等
-      //   命中即强制取消下载，不受「来源页是否判危」影响（无法读下载字节，文件名是最稳锚点）。
-      if (isKnownBadFilename(item.filename) || isKnownBadFilename(item.url)) {
-        cancelDownload(item.id, host || srcHost || '', item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
-        return;
-      }
       // ★ 下载黑名单跨站复用（#16）：该载荷域名此前已因投递木马被拦过 → 直接取消。
       //   不必等新落地页重新走一遍判危流程（银狐换落地页远比换载荷 CDN 勤快）。
       //   受保护域名（GitHub/微软/官方/用户白名单）永不入库，故此处不会误伤正规下载源。
