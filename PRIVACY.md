@@ -67,7 +67,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 ```
 
 - **发出什么**：只有查询参数 `type`、缓存规避用的时间戳，以及一个随扩展分发的只读 `X-API-Key`（用于接口鉴权，**不是你的身份标识**）。**不发送你的浏览记录、本地名单、设置、设备标识或任何个人信息**。
-- **收到什么**：作者维护的域名清单（纯数据，不含代码）。Worker 实时从私有 GitHub 仓库读取后转发。响应经清洗校验后整体覆盖写入本机 `storage.local`，任一份失败则两份都不写入。
+- **收到什么**：作者维护的域名清单（纯数据，不含代码）。Worker 实时从作者的私有 GitHub 仓库读取后转发；GitHub 不可达时改从作者的私有 Gitee 镜像仓库读取同一份文件（此过程完全发生在服务端，你的浏览器不直接访问 Gitee）。响应经清洗校验后整体覆盖写入本机 `storage.local`，任一份失败则两份都不写入。
 - **日志**：该 Worker 开启了 Cloudflare 调用日志，因此服务端可能记录请求时间、来源 IP 与请求路径；日志中不含有你填写的内容。
 - **备用通道（仅当上述接口不通时）**：会改为从公开 GitHub 仓库（`raw.githubusercontent.com` 及其公共反代）GET 一份**加密快照**（`Cloud/*.json.enc`）。文件本身是密文，只有扩展用内置口令在本机解密后才能得到名单；此请求**不带 `X-API-Key`、不带任何本地数据**，但第三方反代能看到请求方 IP 与所取文件名。解密失败（口令不符 / 文件被篡改）时同步中止，不会把名单清空。
 
@@ -113,6 +113,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 **普通外链跳转**（扩展只调用 `chrome.tabs.create` 或 `<a target="_blank" rel="noreferrer">`，不注入参数、不读取目标页内容）：
 - 蓝奏云版本更新镜像 `wwavz.lanzout.com/b01gigjayb`（点击时把提取码 `2hxh` 复制到剪贴板）
+- Gitee 版本更新镜像 `gitee.com/bbjj12345/SilverFoxBlocker/releases/latest`（国内直连）
 - SoftcnKiller 蓝奏云分享页 `free.lanzoux.com`
 - 123 云盘 / 迅雷光鸭云盘工具目录
 - GitHub 仓库、GitHub Issues
@@ -123,8 +124,9 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 - 优先直连 `https://github.com/bbjj12345/SilverFoxBlocker/releases/latest`（先 HEAD，失败再 GET），从 GitHub 301 后跳转到的 `/releases/tag/vX.Y.Z` 地址里读取版本号；
 - 直连不通时改问 `api.github.com` 的 `releases/latest`（公开 JSON）；
-- 仍不通时经 `gh-proxy.com` 反代读取同一个公开 JSON。
-- 三级通道都只读取**公开的版本号**，不下载安装包、不发送任何本地数据；查询结果仅用于在你本机比对版本，不写入存储、不上报。三次都失败时只提示「查询失败」，不会谎称「无可用更新」。
+- 仍不通时经 `gh-proxy.com` 反代读取同一个公开 JSON；
+- 以上都不通时，改为向 `gitee.com` 查询同一发布信息：先读 OpenAPI `api/v5/repos/bbjj12345/SilverFoxBlocker/releases/latest`，失败再读 `…/releases/latest` 的 302 落点地址。Gitee 是国内站点，该请求**不带任何键值、不带任何本地数据**，但 Gitee 侧可能记录请求 IP 与时间。
+- 四级通道都只读取**公开的版本号**，不下载安装包、不发送任何本地数据；查询结果仅用于在你本机比对版本，不写入存储、不上报。四级都失败时只提示「查询失败」，不会谎称「无可用更新」。
 
 > 下拉菜单里的「一键上报网站」只是快捷打开「关于」页，本身不发送任何数据。
 
@@ -153,7 +155,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 `manifest.json` 的 CSP 为 `script-src 'self'; object-src 'self'; connect-src 'self' https:; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'`。**需要如实说明**：`connect-src` 允许连接任意 HTTPS 主机，并**没有**做域名级白名单；实际请求目标由代码内的固定清单决定，且默认关闭的项在未开启前不会请求。
 
 服务端链路（由作者侧 Worker 发起）：
-`api.github.com`（读取私有仓库的名单 JSON）、`api.brevo.com`（代发邮件）、Cloudflare KV（限流计数）与 Cloudflare 调用日志。Worker 不把反馈正文或名单内容写入数据库，但这些内容会留存在邮件服务商与作者邮箱中。
+`api.github.com`（读取私有仓库的名单 JSON）、`gitee.com/api/v5`（GitHub 不可达时的私有镜像备源）、`api.brevo.com`（代发邮件）、Cloudflare KV（限流计数）与 Cloudflare 调用日志。Worker 不把反馈正文或名单内容写入数据库，但这些内容会留存在邮件服务商与作者邮箱中。
 
 ---
 
@@ -171,6 +173,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 | Cloudflare（Worker） | 云端名单转发、反馈/名单上报邮件、限流与日志 | 需点击（无自动定时） |
 | GitHub（私有仓库 / Issues） | 云端名单内容源、公开反馈 | 需点击 |
 | `kkgithub.com` / `bgithub.xyz` / `gh-proxy.com`（GitHub 镜像与反代） | 直连 `github.com` 不通时打开同一更新页；点「检查更新」时作为兜底通道读取版本号 | 需点击 |
+| `gitee.com`（版本更新镜像） | 「前往 Gitee 查看更新」跳转；「检查更新」在前几级都不通时读取公开版本号 | 需点击 |
 | Brevo | 代发反馈邮件 | 需点击 |
 | Kaspersky / Malwarebytes | KVRT / AdwCleaner 官方直链 | 需点击 |
 | 360 / 火绒官方域名 | 急救工具版本探测与下载 | 需点击 |
@@ -229,7 +232,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 **Optional requests (off by default):** VirusTotal receives base64url domain/URL IDs; Google Safe Browsing receives the **full page URL** (v4 Lookup). Both use your own API key, stored **only as AES-GCM ciphertext** (`v1.salt.iv.ciphertext`); plaintext exists only briefly inside the background service worker, never in storage or page scripts. URLhaus receives domain + page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF) are downloaded as one-way GETs from jsDelivr/GitHub mirrors. VT keys saved as plaintext by older versions are automatically re-encrypted once you open the options page; until then the background still accepts them.
 
-**Author-maintained cloud allow/block lists (v1.6.1):** no automatic sync. Only when you click "从云端更新名单" are two GETs sent to our Cloudflare Worker (`api.silverfoxblocker.dpdns.org/list?type=white|black`) with a bundled read-only `X-API-Key`. Nothing about you or your device is uploaded. The Worker reads `whitelist.json` / `blacklist.json` from a private GitHub repository and returns plain domain strings, which are validated and stored locally in `chrome.storage.local` (`sfCloudWhite`, `sfCloudBlack`, `sfCloudListMeta`).
+**Author-maintained cloud allow/block lists (v1.6.1):** no automatic sync. Only when you click "从云端更新名单" are two GETs sent to our Cloudflare Worker (`api.silverfoxblocker.dpdns.org/list?type=white|black`) with a bundled read-only `X-API-Key`. Nothing about you or your device is uploaded. The Worker reads `whitelist.json` / `blacklist.json` from a private GitHub repository (falling back to a private Gitee mirror if GitHub is unreachable, server-side only) and returns plain domain strings, which are validated and stored locally in `chrome.storage.local` (`sfCloudWhite`, `sfCloudBlack`, `sfCloudListMeta`).
 
 **User-initiated uploads:** posting feedback, or clicking "发送白/黑名单到作者邮箱", sends only the text you typed (feedback body + optional contact, or just your domain list; 2000-character cap) to the same Worker, which emails it to the author via Brevo. Those emails include the source **IP**; a Cloudflare KV key (`rate_limit_{IP}_{date}`, 60/day, 24h TTL) is used for rate limiting. Feedback text is not stored in a database, but it is retained by the mail provider and the author's mailbox. Browsing history, page URLs, settings, API keys and statistics are never included. Do not click these buttons if you do not want to share that content.
 

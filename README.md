@@ -34,7 +34,7 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.6.2**），用�
 
 在「关于 → 云端名单更新」点击一次 **从云端更新名单**，才会发生一次联网拉取；**扩展不会自动定时同步**，建议每天手动更新一次。
 
-- **数据来源**：作者维护的 `whitelist.json` / `blacklist.json`（托管在作者的私有 GitHub 仓库），经自建 Cloudflare Worker 的 `GET /list?type=white|black` 实时读取并转发。请求只带一个随扩展分发的只读 `X-API-Key`（用于 Worker 对扩展鉴权，不是你的身份标识），**不上传任何本地数据**。
+- **数据来源**：作者维护的 `whitelist.json` / `blacklist.json`（托管在作者的私有 GitHub 仓库，作者侧另有 Gitee 私有镜像仓库作为 GitHub 不可达时的服务端备源），经自建 Cloudflare Worker 的 `GET /list?type=white|black` 实时读取并转发。请求只带一个随扩展分发的只读 `X-API-Key`（用于 Worker 对扩展鉴权，不是你的身份标识），**不上传任何本地数据**。响应头 `X-Data-Source` 会注明这次数据取自 `GitHub` 还是 `Gitee`，设置页状态行显示为「数据源：云端接口·Gitee」。
 - **备用通道**：Worker 域名被污染或线路不通时，改用公开仓库里的**加密快照**（`Cloud/*.json.enc`）——经 GitHub raw 或公共反代取回密文，在扩展本机解密后再走同一套清洗/落盘流程。密文用 AES-256-GCM 保护，口令内置在扩展里，因此它挡住的是「随手点开链接看名单」和「改一个域名试试」，挡不住解包阅读源码的人；真正的保密仍然靠 Worker（GitHub 令牌只在服务端）。解密失败（口令不符 / 文件被改）会直接报错中止，绝不会把名单当空写入。快照的生成与发布方式见 [Cloud/README.md](./Cloud/README.md)。
 - **落盘方式**：两份名单并行拉取、清洗校验后**整体覆盖**写入 `chrome.storage.local`（`sfCloudWhite` / `sfCloudBlack` / `sfCloudListMeta`）；后台收到 `storage.onChanged` 立即重新注入，内容脚本在下一次页面加载时读取。是「镜像覆盖」不是「合并追加」，所以云端删掉的误报条目会真正失效；任一份拉取失败则**两份都不写入**，不会出现半新半旧。空响应或全部条目非法时同样中止，不会把本地名单清空。
 - **生效规则**：黑名单支持 `*` / `?` 同级别通配（上限 200 条），白名单不支持通配（避免开出过宽的放行通道）；两份名单都支持路径条目（单次上限 500 条）。被丢弃的条目及原因会在「关于 → 未生效条目」里列出，不会静默失效。
@@ -80,9 +80,11 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.6.2**），用�
 | SoftcnKiller（流氓软件清除） | 蓝奏云分享页 `free.lanzoux.com/b0cpu1guf`（无需提取码） | 打开新标签页，按页面提示自行下载 |
 | 更多工具镜像 | 123 云盘、迅雷光鸭云盘分享目录（设置页「银狐急救」内链接） | 打开新标签页 |
 
-「关于 → 版本更新」提供两个入口：**GitHub 仓库**与**蓝奏云镜像**（`wwavz.lanzout.com/b01gigjayb`，提取码 `2hxh`）。点击蓝奏云按钮时会把提取码复制到剪贴板，方便在分享页粘贴；跳转本身是普通的 `<a target="_blank" rel="noreferrer">`，扩展不拦截、不改写导航，也不读取分享页内容。
+「关于 → 版本更新」提供三个入口：**GitHub 仓库**、**Gitee 镜像**（`gitee.com/bbjj12345/SilverFoxBlocker/releases/latest`，国内直连、内容与 GitHub Release 同步）与**蓝奏云镜像**（`wwavz.lanzout.com/b01gigjayb`，提取码 `2hxh`）。点击蓝奏云按钮时会把提取码复制到剪贴板，方便在分享页粘贴；三个入口跳转都是普通的 `<a target="_blank" rel="noreferrer">`，扩展不拦截、不改写导航，也不读取目标页内容。GitHub 入口额外做了「直连探测 → 公共镜像改道」两级兜底，Gitee 与蓝奏云本身就在国内可达，不需要这一层。
 
-版本号右侧还有 **「检查更新」** 按钮：点击后向 `github.com/…/releases/latest` 查询最新 tag（GitHub 会 301 到 `/releases/tag/vX.Y.Z`，扩展直接读最终地址），与 `manifest.json` 里的版本号逐字节比对——不同且线上更高显示「检测到新版本：vX.Y.Z」，相同（或线上反而更低，例如本地测试版）显示「无可用更新」。直连 `github.com` 失败时依次退到 `api.github.com` 的公开 JSON、再退到 `gh-proxy.com` 反代（与「前往 GitHub 查看更新」同一套兜底通道）；三级都不通时明确提示「查询失败」，不会谎称无更新。全过程只读版本号，不下载安装包、不上传任何数据。
+版本号右侧还有 **「检查更新」** 按钮：点击后向 `github.com/…/releases/latest` 查询最新 tag（GitHub 会 301 到 `/releases/tag/vX.Y.Z`，扩展直接读最终地址），与 `manifest.json` 里的版本号逐字节比对——不同且线上更高显示「检测到新版本：vX.Y.Z」，相同（或线上反而更低，例如本地测试版）显示「无可用更新」。
+
+查询按四级接力，前一级成功即停：**① 直连 `github.com` → ② 直连 `api.github.com` 公开 JSON → ③ `gh-proxy.com` 反代同一 API → ④ Gitee 镜像**（Gitee OpenAPI，失败再读 `…/releases/latest` 的 302 跳转地址）。每级开跑前会看总预算（12s）还剩多少，不够就直接跳到下一级，因此最坏情况也不会让按钮转上半分钟；提示行会随阶段显示「正在查询（GitHub 直连 / 公共代理 / Gitee 镜像）」。四级都不通时明确提示「查询失败」，不会谎称无更新。全过程只读版本号，不下载安装包、不上传任何数据。
 
 银狐急救页还包含 hosts 修复、关闭内存完整性、查杀顺序等分步引导，以及 SoftcnKiller → AdwCleaner 的清理顺序建议。
 
@@ -135,7 +137,7 @@ SilverFoxBlocker/
 │   │                          #   工具中心/急救、统计、关于（云端名单、蓝奏云更新、反馈）
 │   └── feedback-config.js     # 反馈 Worker 端点（字符码存储，避免明文域名）
 ├── crypto-helper.js           # VT / GSB API Key 的 AES-GCM 加密 / 解密
-├── worker/index.js            # Cloudflare Worker：GET /list 转发云端名单 + POST 反馈/名单上报
+├── worker/index.js            # Cloudflare Worker：GET /list 转发云端名单（GitHub → Gitee 双源）+ POST 反馈/名单上报
 ├── wrangler.toml              # Worker 部署配置（KV 绑定、日志开关），不随扩展运行
 ├── tools/rescue-scripts/      # 急救工具直链的本地更新脚本（开发用，不参与打包运行）
 ├── tools/encrypt_cloud.js     # 把私有仓库的明文名单打包成公开仓库用的加密快照（方案 C，需 Node）
@@ -202,14 +204,17 @@ SilverFoxBlocker/
 | 10 | `api.silverfoxblocker.dpdns.org` | 点「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」 | POST：反馈正文（≤2000 字）+ 选填联系方式，或仅域名清单；见 [PRIVACY.md](./PRIVACY.md) |
 | 11 | `weishi.360.cn` / `baoku.360.cn` / `dl.360safe.com` / `*.huorong.cn` | 点击下载 360 急救箱 / 火绒专杀（先探测版本再下载） | 无 |
 | 12 | `devbuilds.s.kaspersky-labs.com` / `adwcleaner.malwarebytes.com` | 点击下载 KVRT / AdwCleaner | 无 |
-| 13 | 外链跳转：`wwavz.lanzout.com`（版本更新，提取码 2hxh）、`free.lanzoux.com`（SoftcnKiller）、123 云盘、光牙盘、GitHub / GitHub Issues、爱发电 | 用户点击链接，普通新标签页打开 | 扩展不注入参数、不读取页面内容；后续行为受目标站点自身政策约束 |
+| 13 | 外链跳转：`wwavz.lanzout.com`（版本更新，提取码 2hxh）、`gitee.com`（版本更新 Gitee 镜像）、`free.lanzoux.com`（SoftcnKiller）、123 云盘、光牙盘、GitHub / GitHub Issues、爱发电 | 用户点击链接，普通新标签页打开 | 扩展不注入参数、不读取页面内容；后续行为受目标站点自身政策约束 |
 | 13b | GitHub 全站镜像 `kkgithub.com` / `bgithub.xyz` | 点「前往 GitHub 查看更新」（落点 `…/releases/latest`）且直连 `github.com` 超时（先探测直连，1.5s 不通才改道） | 无。镜像只用来打开同一个更新页（内容与官网一致），不传键值、不传页面数据 |
 | 13c | `gh-proxy.com` 反代 `api.github.com` | 直连与镜像**都**不通时，退一步只查「有没有新版」 | 无。GET `releases/latest` 公开信息（版本号 / 日期），4s 超时；不下载安装包、不携带任何本地数据 |
-| 13d | `github.com/…/releases/latest`（先 HEAD 后 GET） | 点版本行右侧「检查更新」 | 无。只读 301 后的 `/releases/tag/vX.Y.Z` 版本号；失败依次改道 `api.github.com` → `gh-proxy.com`（同 13c），全程不下载安装包、不上传数据 |
+| 13d | `github.com/…/releases/latest`（先 HEAD 后 GET） | 点版本行右侧「检查更新」 | 无。只读 301 后的 `/releases/tag/vX.Y.Z` 版本号；失败依次改道 `api.github.com` → `gh-proxy.com`（同 13c）→ `gitee.com`（同 13e），全程不下载安装包、不上传数据 |
+| 13e | `gitee.com`（OpenAPI `/api/v5/repos/…/releases/latest`，失败再读 `…/releases/latest` 的 302 落点） | 「检查更新」在 GitHub 直连、公共反代**都**不通时的最后一级；或用户点「前往 Gitee 查看更新」 | 无。只 GET 公开的发行版元数据（版本号 / 发布日期），5s 超时；不下载安装包、不携带任何本地数据、不带任何键值。Gitee 侧可能记录请求 IP |
 
 ### 后端链路（由 Worker 发起，不是扩展）
 
-`GET /list` 由 Worker 向 `api.github.com` 读取私有仓库里的 `whitelist.json` / `blacklist.json`；`POST` 由 Worker 经 `api.brevo.com` 发信到 `feedback@silverfoxblocker.dpdns.org`，再经邮件路由转给作者。**只有 POST**（反馈与名单上报）会走 KV 限流：按「IP + 日期」计数，60 次/天/IP、24 小时过期；Worker 同时开启了调用日志，因此两类请求在服务端都可能留下来源 IP 记录。
+`GET /list` 由 Worker 先向 `api.github.com` 读取私有仓库里的 `whitelist.json` / `blacklist.json`（依次尝试仓库根目录与 `List/` 两种布局）；GitHub 不通或令牌失效时，自动改用 `gitee.com/api/v5/.../raw/...` 读取同一份文件的 Gitee 私有镜像仓库（依次尝试 `main` / `master` / 仓库默认分支）。两个源都读不到时返回 502 并附逐通道的失败原因，扩展侧据此提示「名单同步失败」，不会把本地名单清空。`POST` 由 Worker 经 `api.brevo.com` 发信到 `feedback@silverfoxblocker.dpdns.org`，再经邮件路由转给作者。**只有 POST**（反馈与名单上报）会走 KV 限流：按「IP + 日期」计数，60 次/天/IP、24 小时过期；Worker 同时开启了调用日志，因此两类请求在服务端都可能留下来源 IP 记录。
+
+> 排查用：`GET /list?type=black&diag=1`（同样要 `X-API-Key`）只返回逐通道的尝试结果（哪个源、哪条路径、哪个分支、HTTP 状态、耗时），不返回名单正文。
 
 > 早期上游版本会从 `site-directory-cache.pages.dev` 拉取第三方「官方域名库」，已于 2026-11-01 移除。**当前版本的云端名单是作者自行维护的黑 / 白名单，不是第三方官方站点清单，也不含任何可执行内容。**
 

@@ -2067,14 +2067,93 @@ const SF_GH_API_PROXIES = [
 ];
 const SF_GH_RELEASE_API = 'https://api.github.com/repos/' + SF_GH_REPO_PATH + '/releases/latest';
 
+/* ===== Gitee 镜像（第三个发布地）=========================================
+ * 为什么有它：GitHub 直连超时、公共反代也挂的时候，国内用户还有一条完全独立的路。
+ * 实测（2026-11-10）：
+ *   GET https://gitee.com/bbjj12345/SilverFoxBlocker/releases/latest
+ *       → 302 /releases/tag/v1.6.2（浏览器 UA 下正常渲染更新说明页）
+ *   GET https://gitee.com/api/v5/repos/bbjj12345/SilverFoxBlocker/releases/latest
+ *       → 200 JSON，tag_name=/published_at 齐全，且带 Access-Control-Allow-Origin: *
+ *   ⚠️ 注意：无 UA 的裸请求访问 /releases/latest 会被 302 到仓库归档 zip，
+ *      所以「读页面重定向」这条只在有 host 权限的扩展环境里可靠（浏览器会带 UA）。
+ *      API 那条不依赖 UA，是首选。
+ * ====================================================================== */
+const SF_GITEE_REPO_PATH = 'bbjj12345/SilverFoxBlocker';
+const SF_GITEE_BASE = 'https://gitee.com/';
+const SF_GITEE_UPDATE_PATH = '/releases/latest';
+const SF_GITEE_RELEASE_API = 'https://gitee.com/api/v5/repos/' + SF_GITEE_REPO_PATH + '/releases/latest';
+
+function sfGiteeMirrorUrl() {
+  return SF_GITEE_BASE + SF_GITEE_REPO_PATH + SF_GITEE_UPDATE_PATH;
+}
+
+// 读 Gitee 的最新发行版：先 API（JSON 最稳、不依赖 UA），再退回页面重定向解析 tag。
+// 返回 { tag, at, source } 或 null；不下载任何安装包。
+async function readReleaseViaGitee(ms) {
+  const budget = ms || 5000;
+  const t0 = Date.now();
+  // 两段（API → 页面）共享同一份预算：否则一级失败后第二段又拿满 5s，总时长翻倍
+  const leftIn = function () { return Math.max(600, budget - (Date.now() - t0)); };
+  // 1) Gitee OpenAPI v5
+  {
+    const ctrl = new AbortController();
+    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, leftIn());
+    try {
+      const res = await fetch(SF_GITEE_RELEASE_API + '?_=' + Date.now(), {
+        cache: 'no-store', signal: ctrl.signal, headers: { Accept: 'application/json' }
+      });
+      if (res.ok) {
+        const j = await res.json();
+        if (j && j.tag_name) {
+          return {
+            tag: String(j.tag_name).replace(/^v/i, ''),
+            at: j.published_at || j.created_at || '',
+            source: 'Gitee 镜像'
+          };
+        }
+      }
+    } catch (e) {
+      // API 不通（限流 403 / 超时）：交给下面的页面重定向
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  // 2) 页面重定向：/releases/latest → /releases/tag/vX.Y.Z，读最终 URL 即得 tag
+  {
+    const ctrl = new AbortController();
+    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, Math.min(4000, leftIn()));
+    try {
+      const res = await fetch(sfGiteeMirrorUrl() + '?_=' + Date.now(), {
+        redirect: 'follow', cache: 'no-store', signal: ctrl.signal
+      });
+      // Gitee 的 tag 页 URL 形如 /releases/tag/v1.6.2；个别情况会落到
+      // /releases/latest 不跳转，这时从正文里找一次
+      let m = /\/releases\/tag\/([^\/?#]+)/.exec(res.url || '');
+      if (!m && res.ok) {
+        const html = await res.text();
+        m = /\/releases\/tag\/([^\/?#"']+)/.exec(html || '');
+      }
+      if (m) {
+        return { tag: decodeURIComponent(m[1]).replace(/^v/i, ''), at: '', source: 'Gitee 镜像' };
+      }
+    } catch (e) {
+      // 两条都不通：由调用方报失败
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
 // 直连 github.com 打不开时的「退一步」：不打开网页，只问一句「有没有新版」。
 // 走反代读 releases/latest 的 JSON（纯文件请求，反代能透传），4s 拿不到就放弃。
 // 返回 { tag, at, source } 或 null；不下载任何安装包。
-async function readReleaseViaProxy() {
+async function readReleaseViaProxy(ms) {
+  const budget = ms || 4000;
   for (let i = 0; i < SF_GH_API_PROXIES.length; i++) {
     const p = SF_GH_API_PROXIES[i];
     const ctrl = new AbortController();
-    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 4000);
+    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, budget);
     try {
       const res = await fetch(p.prefix + SF_GH_RELEASE_API, {
         cache: 'no-store', signal: ctrl.signal, headers: { Accept: 'application/vnd.github+json' }
@@ -2159,11 +2238,11 @@ async function openGithubSmart(path) {
     const date = rel.at ? '（' + rel.at.slice(0, 10) + '）' : '';
     const tail = !cur ? '。'
       : (rel.tag === cur ? '，与当前 v' + cur + ' 相同，无需更新。'
-        : '，当前 v' + cur + '，可点右侧「前往蓝奏云查看更新」下载。');
+        : '，当前 v' + cur + '，可点右侧「前往 Gitee 查看更新」或「前往蓝奏云查看更新」下载。');
     setGhNote('GitHub 与镜像均不可达；经' + rel.source + '读到最新版 v' + rel.tag + date + tail);
     console.log('[GitHub 通道] 网页不可达，经 ' + rel.source + ' 读到最新版 v' + rel.tag);
   } else {
-    setGhNote('直连与镜像均超时：可稍后重试，或改用「前往蓝奏云查看更新」。');
+    setGhNote('直连与镜像均超时：可稍后重试，或改用「前往 Gitee 查看更新」/「前往蓝奏云查看更新」。');
     console.log('[GitHub 通道] 直连、镜像与反代均不可达：' + direct);
   }
 }
@@ -2172,7 +2251,7 @@ async function openGithubSmart(path) {
   function bind() {
     const a = $('manualCheckUpdate');
     if (!a) return;
-    a.setAttribute('title', '直连 github.com 不通时会自动改用公共镜像；镜像也不通时，经代理查询最新版本号');
+    a.setAttribute('title', '直连 github.com 不通时会自动改用公共镜像；镜像也不通时，经代理查询最新版本号；仍不行可改用「前往 Gitee 查看更新」');
     a.addEventListener('click', function (ev) {
       // 中键 / Ctrl+点击 / Cmd+点击 交给浏览器原生行为（新标签页打开 href），不做探测
       if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
@@ -2190,7 +2269,7 @@ async function openGithubSmart(path) {
  * 与「前往 GitHub 查看更新」的区别：那个按钮是「把用户送到网页上自己看」，这个按钮
  * 是「只回答一句话」——所以这里从不打开标签页，只取回 tag_name 做比对。
  *
- * 取版本号的三级通道（前一级失败才走下一级，全程不下载安装包）：
+ * 取版本号的四级通道（前一级失败才走下一级，全程不下载安装包）：
  *   1) 直连 https://github.com/bbjj12345/SilverFoxBlocker/releases/latest
  *      GitHub 会 301 到 /releases/tag/vX.Y.Z，读 fetch 的最终 URL 即得 tag。
  *      扩展页有 <all_urls> host 权限，不受 CORS 限制；先 HEAD 再 GET，省流量。
@@ -2198,6 +2277,8 @@ async function openGithubSmart(path) {
  *      网页侧偶发 5xx / 反爬时通常还能拿到）。
  *   3) 复用「前往 GitHub 查看更新」的兜底通道 readReleaseViaProxy()：
  *      gh-proxy.com 反代同一个 API。大陆网络下这一步基本是唯一能通的。
+ *   4) Gitee 镜像 readReleaseViaGitee()：Gitee OpenAPI（带 CORS *）→ 页面重定向。
+ *      与 GitHub 完全独立的线路，前三级全灭时仍能回答「有没有新版」。
  *
  * 比对语义（按用户要求「逐字节」）：先各去掉前导 v 与空白，两串完全相同就是
  *   同一版本；不同时再按 . - + 分段做数值比较，避免纯字典序把 1.6.10 判成比
@@ -2230,9 +2311,9 @@ function sfCmpVersion(remote, local) {
 }
 
 // 直连 api.github.com 读 tag（与 readReleaseViaProxy 的解析口径一致，只是不带反代前缀）
-async function readReleaseViaDirectApi() {
+async function readReleaseViaDirectApi(ms) {
   const ctrl = new AbortController();
-  const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 4500);
+  const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ms || 4500);
   try {
     const res = await fetch(SF_GH_RELEASE_API, {
       cache: 'no-store', signal: ctrl.signal, headers: { Accept: 'application/vnd.github+json' }
@@ -2267,17 +2348,52 @@ async function sfFetchTagViaPage(url, ms, method) {
 }
 
 // 返回 { tag, source } 或 null
-async function sfFetchLatestRelease() {
+// 三级通道，前一级成功就停（全程只读版本号，不下载安装包）：
+//   1) 直连 GitHub 网页 releases/latest（读 301 后的 tag）+ 直连 api.github.com
+//   2) 公共反代 gh-proxy.com 反代 api.github.com（大陆网络下的常用通道）
+//   3) Gitee 镜像：Gitee OpenAPI → Gitee 页面重定向（与 GitHub 完全独立的线路）
+//
+// ⚠️ 四级串行最坏能拖到 20s+（每级都要等满自己的超时），所以这里有三道闸：
+//   · 总预算 SF_CHECK_BUDGET_MS：每级开跑前看剩余时间，不够就直接跳下一级；
+//   · 每级超时取 min(本级默认, 剩余预算 - 后面几级的预留)，不会越界，
+//     也不会出现「前三级慢超时把 Gitee 的额度吃光」——那等于最该保底的一级被跳过；
+//   · onStage 回调把「正在试哪一级」报到界面上，用户看得见在动，不会以为卡死。
+const SF_CHECK_BUDGET_MS = 12000;
+
+async function sfFetchLatestRelease(onStage) {
+  const t0 = Date.now();
+  const left = function () { return SF_CHECK_BUDGET_MS - (Date.now() - t0); };
+  const stage = function (label) { try { if (onStage) onStage(label); } catch (e) {} };
+  // reserve = 给后面各级预留的毫秒数；永远至少跑 600ms，避免"预算不够就干脆不发请求"
+  const take = function (dflt, reserve) {
+    return Math.max(600, Math.min(dflt, left() - (reserve || 0)));
+  };
+
+  // ---- 1) 直连 GitHub ----
+  stage('GitHub 直连');
   const page = SF_GH_DIRECT_BASE + SF_GH_REPO_PATH + SF_GH_UPDATE_PATH;
-  let tag = await sfFetchTagViaPage(page, 4500, 'HEAD');
-  if (!tag) tag = await sfFetchTagViaPage(page, 6000, 'GET');
+  let tag = await sfFetchTagViaPage(page, take(3500, 9000), 'HEAD');
+  if (!tag && left() > 800) tag = await sfFetchTagViaPage(page, take(4500, 7000), 'GET');
   if (tag) return { tag: tag, source: 'github.com' };
 
-  const apiTag = await readReleaseViaDirectApi();
-  if (apiTag) return { tag: apiTag, source: 'api.github.com' };
+  if (left() > 800) {
+    const apiTag = await readReleaseViaDirectApi(take(3500, 5500));
+    if (apiTag) return { tag: apiTag, source: 'api.github.com' };
+  }
 
-  const rel = await readReleaseViaProxy();
-  if (rel) return { tag: rel.tag, source: rel.source };
+  // ---- 2) 公共代理 ----
+  if (left() > 800) {
+    stage('公共代理');
+    const rel = await readReleaseViaProxy(take(4000, 5000));
+    if (rel) return { tag: rel.tag, source: rel.source };
+  }
+
+  // ---- 3) Gitee 镜像（最后一级，吃满剩余预算）----
+  if (left() > 800) {
+    stage('Gitee 镜像');
+    const gi = await readReleaseViaGitee(take(5000));
+    if (gi) return { tag: gi.tag, source: gi.source };
+  }
   return null;
 }
 
@@ -2298,7 +2414,9 @@ async function sfFetchLatestRelease() {
     setTip('正在查询最新版本…', 'is-wait');
     let rel = null;
     try {
-      rel = await sfFetchLatestRelease();
+      rel = await sfFetchLatestRelease(function (label) {
+        setTip('正在查询最新版本…（' + label + '）', 'is-wait');
+      });
     } catch (e) {
       rel = null;
     }
@@ -2306,7 +2424,7 @@ async function sfFetchLatestRelease() {
     btn.textContent = label;
 
     if (!rel) {
-      setTip('查询失败：直连与代理均不可达，请稍后重试，或点「前往 GitHub 查看更新」手动查看。', 'is-fail');
+      setTip('查询失败：GitHub、公共代理与 Gitee 镜像均不可达，请稍后重试，或点「前往 Gitee 查看更新」手动查看。', 'is-fail');
       return;
     }
     const cmp = sfCmpVersion(rel.tag, cur);
@@ -2746,6 +2864,14 @@ async function fetchCloudList(type) {
       }
       // 原本就是空数组 → 允许（例如白名单暂时清空），状态行会显示 0 条，不会被误解
       r.source = c.name;
+      // Worker 会在响应头里注明这份名单最终取自 GitHub 还是 Gitee 镜像，
+      // 转发到状态行（「数据源：云端接口·Gitee」），否则源站切换了用户完全看不出来。
+      if (c.name === '云端接口') {
+        try {
+          const ds = res.headers.get('X-Data-Source');
+          if (ds) r.dataSource = String(ds).slice(0, 20);
+        } catch (e) { /* 读不到头不影响同步结果 */ }
+      }
       if (c.name !== '云端接口') console.log('[云端名单] ' + name + ' 经备用通道「' + c.name + '」获取成功');
       return r;
     } catch (e) {
@@ -2830,7 +2956,12 @@ async function updateCloudLists(btn) {
     if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message || '写入失败');
     refreshCloudListStatus();
     const srcNote = (white.source && white.source !== '云端接口') || (black.source && black.source !== '云端接口')
-      ? (white.source || black.source) : '';
+      ? (white.source || black.source)
+      // 走的是 Worker 直连，但 Worker 自己换了源站（GitHub→Gitee）时也要标出来
+      : ((white.dataSource || black.dataSource)
+        ? '云端接口·' + (white.dataSource === black.dataSource
+          ? white.dataSource : (white.dataSource || '') + '/' + (black.dataSource || ''))
+        : '');
     setCloudStatus(cloudCountsText(
       white.list.length, black.list.length, black.wild.length,
       white.dropped.length, black.dropped.length, sameW && sameB,

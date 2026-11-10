@@ -10,6 +10,10 @@ id = "6d141838347d4cfc86083a479231bf02"
 binding = "FEEDBACK"
 id = "98ac1246bc7746368baf6a071f9fed9f"
 
+[vars]
+GITEE_OWNER = "bbjj12345"
+GITEE_REPO = "silver-fox-blocker-cloud"
+
 [observability.logs]
 enabled = true
 invocation_logs = true

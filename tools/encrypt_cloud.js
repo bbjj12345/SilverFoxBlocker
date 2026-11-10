@@ -103,8 +103,15 @@ function main(argv) {
     return i !== -1 && argv[i + 1] ? argv[i + 1] : def;
   };
   const EXT_DIR = path.resolve(__dirname, '..');
-  const src = path.resolve(getArg('--src', path.join(EXT_DIR, '..', 'SilverFoxBlocker-Cloud')));
+  let src = path.resolve(getArg('--src', path.join(EXT_DIR, '..', 'SilverFoxBlocker-Cloud')));
   const out = path.resolve(getArg('--out', path.join(EXT_DIR, 'Cloud')));
+  // 兼容两种本地布局：名单直接放在仓库根，或放在根下的 List/ 子目录。
+  // （2026-11-10 起私有仓库改成了 List/ 结构，旧布局仍然照常可用）
+  if (!fs.existsSync(path.join(src, 'blacklist.json')) &&
+      !fs.existsSync(path.join(src, 'whitelist.json')) &&
+      fs.existsSync(path.join(src, 'List'))) {
+    src = path.join(src, 'List');
+  }
   const pass = getArg('--pass', DEFAULT_PASS);
   const verify = argv.indexOf('--verify') !== -1;
 

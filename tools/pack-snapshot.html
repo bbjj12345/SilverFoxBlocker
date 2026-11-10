@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SilverFoxBlocker · 云端名单加密打包</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 56px;
+    font: 14px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: #f5f6f8; color: #1c1f23;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.lead { margin: 0 0 22px; color: #5b6270; }
+  .card {
+    background: #fff; border: 1px solid #e3e6eb; border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .drop {
+    display: flex; align-items: center; gap: 12px; cursor: pointer;
+    border: 1px dashed #c3c9d4; border-radius: 10px; padding: 12px 14px;
+    margin-bottom: 10px; transition: border-color .15s, background .15s;
+  }
+  .drop.hot { border-color: #4c7cf3; background: #f0f4ff; }
+  .drop .name { font-weight: 600; min-width: 132px; }
+  .drop .state { color: #5b6270; flex: 1; font-size: 13px; word-break: break-all; }
+  .drop .state.ok { color: #1a7f37; }
+  .drop .state.bad { color: #c4342b; }
+  input[type=file] { display: none; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; padding: 7px 14px;
+    border: 1px solid #c3c9d4; background: #fff;
+  }
+  button:hover { border-color: #9aa3b2; }
+  button.primary {
+    background: #2f6df6; border-color: #2f6df6; color: #fff; font-weight: 600;
+    padding: 9px 20px;
+  }
+  button.primary[disabled] { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  pre {
+    margin: 14px 0 0; padding: 12px 14px; background: #0f1216; color: #d7dce4;
+    border-radius: 10px; font: 12.5px/1.7 Consolas, "Cascadia Mono", monospace;
+    max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  pre:empty { display: none; }
+  ol { margin: 0; padding-left: 20px; color: #3d434e; }
+  ol li { margin: 4px 0; }
+  code { background: #eceff4; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #14171c; color: #e6e9ee; }
+    p.lead, .drop .state, ol { color: #9aa3b2; }
+    .card { background: #1b1f26; border-color: #2b313a; }
+    .drop { border-color: #3a424e; }
+    .drop.hot { background: #1f2a3d; border-color: #4c7cf3; }
+    button { background: #232931; border-color: #3a424e; color: #e6e9ee; }
+    button:hover { border-color: #58616f; }
+    code { background: #262d36; }
+    .drop .state.ok { color: #5fd07a; }
+    .drop .state.bad { color: #ff8a80; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>云端名单 → 加密快照</h1>
+  <p class="lead">把私有仓库里的 <code>blacklist.json</code> / <code>whitelist.json</code> 打包成可公开的 <code>.enc</code> 密文。全程在本机浏览器内完成，文件不会上传到任何服务器。</p>
+
+  <div class="card">
+    <h2>① 选择两个 JSON</h2>
+    <label class="drop" id="dropBlack">
+      <span class="name">blacklist.json</span>
+      <span class="state" id="stateBlack">未选择（点这里选文件，或直接拖进来）</span>
+      <input type="file" id="fileBlack" accept=".json,application/json">
+    </label>
+    <label class="drop" id="dropWhite">
+      <span class="name">whitelist.json</span>
+      <span class="state" id="stateWhite">未选择</span>
+      <input type="file" id="fileWhite" accept=".json,application/json">
+    </label>
+    <p class="lead" style="margin:8px 0 0">两个都要选；内容必须是刚推到私有仓库的那一版（旧文件会打包出旧名单）。</p>
+  </div>
+
+  <div class="card">
+    <h2>② 生成并自检</h2>
+    <div class="row">
+      <button class="primary" id="go" disabled>生成 .enc 并下载</button>
+      <span id="hint" style="color:#5b6270;font-size:13px">会先解密回读比对，通过后才下载</span>
+    </div>
+    <pre id="log"></pre>
+  </div>
+
+  <div class="card">
+    <h2>③ 发布</h2>
+    <ol>
+      <li>把下载到的 <code>blacklist.json.enc</code>、<code>whitelist.json.enc</code> 上传到公开仓库 <code>bbjj12345/SilverFoxBlocker</code> 的 <code>Cloud/</code> 目录（覆盖旧文件）。</li>
+      <li>确认该目录里<b>没有</b>明文 <code>*.json</code> 残留。</li>
+      <li>浏览器若弹「是否允许下载多个文件」选允许，否则只会存下第一个。</li>
+    </ol>
+    <p class="lead" style="margin:10px 0 0">提示：扩展仍优先走 Worker 接口；这两个文件只是「接口不通时」的备用通道。</p>
+  </div>
+</div>
+
+<!-- ============ 加密实现（与 ui/options.js 的解密参数必须一致） ============
+     内联在页面里而不是拆成外部 .js：双击 file:// 打开时，部分浏览器会拦掉
+     本地子资源请求，导致按钮点了没反应。 -->
+<script>
+/*<sfenc>*/
+var SFEncCloud = (function () {
+  'use strict';
+  var PASS = 'aYGJ_rskoMvjXBjKCqQDqTjKMjMRNyH-';
+  var ITER = 120000;
+  var TAG = 'sfenc1';
+  var SALT_BYTES = 16;
+  var IV_BYTES = 12;
+
+  function subtle() {
+    if (!window.crypto || !window.crypto.subtle) throw new Error('当前浏览器不支持 WebCrypto，请用 Chrome / Edge 打开');
+    return window.crypto.subtle;
+  }
+  function b64(buf) {
+    var bytes = new Uint8Array(buf), s = '', step = 0x8000;
+    for (var i = 0; i < bytes.length; i += step) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    }
+    return btoa(s);
+  }
+  function unb64(str) {
+    var s = atob(String(str || '').replace(/-/g, '+').replace(/_/g, '/'));
+    var out = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  }
+  function deriveKey(pass, salt, iter, usage) {
+    var s = subtle();
+    return s.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey'])
+      .then(function (base) {
+        return s.deriveKey(
+          { name: 'PBKDF2', salt: salt, iterations: iter || ITER, hash: 'SHA-256' },
+          base, { name: 'AES-GCM', length: 256 }, false, usage);
+      });
+  }
+  // 信封结构与 tools/encrypt_cloud.js 完全一致，两边产物可以互换
+  function encrypt(obj, pass, meta) {
+    pass = pass || PASS;
+    var salt = window.crypto.getRandomValues(new Uint8Array(SALT_BYTES));
+    var iv = window.crypto.getRandomValues(new Uint8Array(IV_BYTES));
+    var plain = new TextEncoder().encode(JSON.stringify(obj));
+    return deriveKey(pass, salt, ITER, ['encrypt']).then(function (key) {
+      return subtle().encrypt({ name: 'AES-GCM', iv: iv }, key, plain);
+    }).then(function (ct) {
+      return {
+        _enc: TAG, alg: 'AES-256-GCM', kdf: 'PBKDF2-SHA256', iter: ITER,
+        salt: b64(salt), iv: b64(iv), data: b64(ct),
+        file: (meta && meta.file) || '', bytes: plain.length,
+        at: new Date().toISOString()
+      };
+    });
+  }
+  function decrypt(env, pass) {
+    pass = pass || PASS;
+    if (!env || env._enc !== TAG) throw new Error('不是加密快照（缺少 ' + TAG + ' 标记）');
+    var salt = unb64(env.salt), iv = unb64(env.iv), data = unb64(env.data);
+    return deriveKey(pass, salt, env.iter || ITER, ['decrypt']).then(function (key) {
+      return subtle().decrypt({ name: 'AES-GCM', iv: iv }, key, data);
+    }).catch(function () {
+      throw new Error('解密失败（口令不匹配或文件被改动）');
+    }).then(function (plain) {
+      return JSON.parse(new TextDecoder().decode(plain));
+    });
+  }
+  // 打包前自检：加密后立刻解回来逐字比对，避免发布出去才发现解不开
+  function verifyRoundTrip(obj, pass) {
+    return encrypt(obj, pass).then(function (env) {
+      return decrypt(env, pass).then(function (back) {
+        return { env: env, back: back, same: JSON.stringify(back) === JSON.stringify(obj) };
+      });
+    });
+  }
+  function countDomains(obj) {
+    if (Array.isArray(obj)) return obj.length;
+    if (obj && Array.isArray(obj.domains)) return obj.domains.length;
+    return 0;
+  }
+  return {
+    PASS: PASS, ITER: ITER, TAG: TAG,
+    encrypt: encrypt, decrypt: decrypt, verifyRoundTrip: verifyRoundTrip,
+    countDomains: countDomains
+  };
+})();
+/*</sfenc>*/
+</script>
+
+<script>
+(function () {
+  'use strict';
+  var api = SFEncCloud;
+  var log = document.getElementById('log');
+  var go = document.getElementById('go');
+  var hint = document.getElementById('hint');
+  var picked = { black: null, white: null };
+
+  function line(s) { log.textContent += s + '\n'; log.scrollTop = log.scrollHeight; }
+  function refresh() { go.disabled = !(picked.black && picked.white); }
+
+  function readFile(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () {
+        try { resolve(JSON.parse(String(fr.result || ''))); }
+        catch (e) { reject(new Error('不是合法 JSON')); }
+      };
+      fr.onerror = function () { reject(new Error('读取失败')); };
+      fr.readAsText(file, 'utf-8');
+    });
+  }
+
+  function bind(key, dropId, inputId, stateId) {
+    var drop = document.getElementById(dropId);
+    var input = document.getElementById(inputId);
+    var state = document.getElementById(stateId);
+
+    function take(file) {
+      if (!file) return;
+      state.className = 'state';
+      state.textContent = '读取中…';
+      readFile(file).then(function (obj) {
+        picked[key] = { file: file, obj: obj, count: api.countDomains(obj) };
+        state.className = 'state ok';
+        state.textContent = file.name + ' · ' + picked[key].count + ' 条';
+        refresh();
+      }).catch(function (e) {
+        picked[key] = null;
+        state.className = 'state bad';
+        state.textContent = '✗ ' + (e.message || '读取失败');
+        refresh();
+      });
+    }
+
+    input.addEventListener('change', function () { take(input.files && input.files[0]); });
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('hot'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('hot'); });
+    });
+    drop.addEventListener('drop', function (e) {
+      take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+    });
+  }
+
+  bind('black', 'dropBlack', 'fileBlack', 'stateBlack');
+  bind('white', 'dropWhite', 'fileWhite', 'stateWhite');
+
+  function download(name, text) {
+    var blob = new Blob([text], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 4000);
+  }
+
+  go.addEventListener('click', function () {
+    go.disabled = true;
+    log.textContent = '';
+    hint.textContent = '处理中…';
+    var jobs = [{ key: 'black', out: 'blacklist.json.enc' }, { key: 'white', out: 'whitelist.json.enc' }];
+    var bad = 0, chain = Promise.resolve();
+
+    jobs.forEach(function (j) {
+      chain = chain.then(function () {
+        var item = picked[j.key];
+        line('· ' + j.out + '：' + item.count + ' 条，加密中…');
+        return api.verifyRoundTrip(item.obj).then(function (r) {
+          if (!r.same) { bad++; line('  ✗ 回读内容与原文不一致，已跳过（不要发布）'); return; }
+          var text = JSON.stringify(r.env, null, 2);
+          download(j.out, text);
+          line('  ✓ 回读校验通过，已下载 ' + j.out + '（密文 ' + text.length + ' 字节）');
+        });
+      }).catch(function (e) {
+        bad++;
+        line('  ✗ ' + j.out + ' 失败：' + (e.message || e));
+      });
+    });
+
+    chain.then(function () {
+      if (bad) {
+        hint.textContent = '有 ' + bad + ' 项失败，请检查文件后重试';
+      } else {
+        line('');
+        line('全部完成。下一步：把这两个 .enc 上传到公开仓库的 Cloud/ 目录。');
+        hint.textContent = '完成，可以去发布了';
+      }
+      go.disabled = false;
+    });
+  });
+})();
+</script>
+</body>
+</html>

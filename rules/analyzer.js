@@ -363,8 +363,17 @@
   function _splitHostPath(v) {
     let s = String(v).trim().toLowerCase();
     s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
-    const cut = s.search(/[?#]/);
-    if (cut !== -1) s = s.slice(0, cut);
+    // `#` 永远不是通配，直接截掉。
+    // `?` 则要分位置看：落在 `/` 之后才是 query，落在主机名里是**单字符通配**。
+    //   （2026-11-10 修：原先一刀切用 [?#] 截断，`ab?de.bad-site.top` 被截成 `ab`，
+    //    再因 no-dot 整条丢弃、且不进 skipped —— README 承诺的 `?` 通配其实一直失效。）
+    const hashCut = s.search(/#/);
+    if (hashCut !== -1) s = s.slice(0, hashCut);
+    const firstSlash = s.indexOf('/');
+    if (firstSlash !== -1) {
+      const q = s.slice(firstSlash).indexOf('?');
+      if (q !== -1) s = s.slice(0, firstSlash + q);
+    }
     const slash = s.indexOf('/');
     let host = slash === -1 ? s : s.slice(0, slash);
     let path = slash === -1 ? '' : s.slice(slash).replace(/\/+$/, '');  // 末尾斜杠无意义：/a/b/ 等价 /a/b
@@ -496,7 +505,12 @@
     if (Array.isArray(arr)) {
       for (const d of arr) {
         const ex = _normCloudEntryEx(d, { allowWild: true });
-        if (!ex.value) continue;
+        // 含通配符却被判无效的条目一定要记进 skipped：它是「看起来拦了、实际没拦」的
+        // 静默失效，用户只能靠诊断面板发现（2026-11-10 前 `?` 条目正是这样消失的）。
+        if (!ex.value) {
+          if (typeof d === 'string' && /[*?]/.test(d)) skipped.push(d.trim());
+          continue;
+        }
         if (ex.path) {
           // 路径条目：主机名可能带通配 → 预先编译正则；不带通配就只存字符串，比对更快
           if (EXTRA_BAD_PATH.length >= PATH_MAX) { skipped.push(ex.value); continue; }
