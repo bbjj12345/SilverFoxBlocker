@@ -1,8 +1,0 @@
-{
-  "extensionName": {
-    "message": "SilverFoxBlocker"
-  },
-  "extensionDescription": {
-    "message": "拦截银狐木马钓鱼站与仿冒官网：本地启发式检测、下载拦截；可选威胁情报 API 与社区黑名单，数据不上传。"
-  }
-}
