@@ -566,7 +566,10 @@
       <section class="sec" id="about" data-page-node-id="lAKnGBer07g9bqqwhjesxJ">
         <div class="card" data-page-node-id="uzEanhnPcX4DGQWvnfzfH3">
           <div class="about-row" data-page-node-id="U0zHRj4LTnMVwLi7ei0EXy"><span class="ak" data-page-node-id="0kky9oFxafxFZRYE4OfiAD">扩展名称</span><span class="av" data-page-node-id="2yWPjVfCdGaU8sGvqHnei0">SilverFoxBlocker</span></div>
-          <div class="about-row" data-page-node-id="QkzAZvzqJGj0eGl6AoVXqU"><span class="ak" data-page-node-id="UeB2xusyUyvtBfiXJCLmhu">版本</span><span class="av" id="verAbout" data-page-node-id="2kA1YSeEgJK0FWVhFo3UDU">v1.0.0</span></div>
+          <!-- 版本行：「检查更新」按钮与版本号同排。
+               点击后向 github.com/…/releases/latest 查询最新 tag，与本地版本逐字节比对；
+               直连不通时依次退到 api.github.com 与 gh-proxy.com 反代（与「前往 GitHub 查看更新」同一套通道）。 -->
+          <div class="about-row" data-page-node-id="QkzAZvzqJGj0eGl6AoVXqU"><span class="ak" data-page-node-id="UeB2xusyUyvtBfiXJCLmhu">版本</span><span class="av av-btns" data-page-node-id="SF_UC_VER_WRAP"><span id="verAbout" data-page-node-id="2kA1YSeEgJK0FWVhFo3UDU">v1.0.0</span><button class="btn-mini" id="checkUpdateBtn" type="button" title="向 GitHub Releases 查询最新版本号；直连失败时自动改用公共代理" data-page-node-id="SF_UC_CHECK_BTN">检查更新</button><span class="about-note update-tip" id="checkUpdateTip" hidden data-page-node-id="SF_UC_CHECK_TIP"></span></span></div>
           <div class="about-row" data-page-node-id="fk21QpHx5xnayIpYBJ9Pik"><span class="ak" data-page-node-id="JbbL5e2HWqX5LYCJ8QWO1G">隐私政策</span><span class="av" data-page-node-id="ewLZB8QUme2ckphjySGFDn"><a href="https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" data-page-node-id="2JDU7smH0eGm2Bl4mg9DuW">github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md</a></span></div>
           <div class="about-row" data-page-node-id="ZlA8G7QHjra4Ijrc81pZPq"><span class="ak" data-page-node-id="tM4qhnfyTX2IAV1dUYCjEp">项目仓库</span><span class="av" data-page-node-id="MlOWp3serjw4b3xhPnYT6c"><a href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="9PdYDUpYdaZAR3gH1hmKTg">github.com/bbjj12345/SilverFoxBlocker</a></span></div>
           <div class="about-row" data-page-node-id="SF_UC_ROW_VER"><span class="ak" data-page-node-id="SF_UC_AK_VER">版本更新</span><span class="av av-btns"><a class="btn-mini" id="manualCheckUpdate" href="https://github.com/bbjj12345/SilverFoxBlocker/releases/latest" target="_blank" rel="noreferrer" title="直连 github.com 不通时会自动改用公共镜像；镜像也不通时，经代理查询最新版本号" data-page-node-id="SF_UC_GH">前往 GitHub 查看更新</a><a class="btn-mini" id="lanzouUpdate" href="https://wwavz.lanzout.com/b01gigjayb" target="_blank" rel="noreferrer" title="提取码：2hxh（点击后自动复制）" data-page-node-id="SF_UC_LZ">前往蓝奏云查看更新</a><span class="about-note" id="lanzouPwdTip" data-page-node-id="SF_UC_LZ_TIP">提取码：2hxh</span><span class="about-note gh-channel-tip" id="ghChannelTip" hidden data-page-node-id="SF_GH_CHANNEL_TIP"></span></span></div>
@@ -707,6 +710,6 @@
   <script src="../rules/analyzer.js"></script>
   <script src="../crypto-helper.js"></script>
   <script src="feedback-config.js?v=20261102"></script>
-  <script src="options.js?v=20261110c"></script>
+  <script src="options.js?v=20261110d"></script>
 </body>
 </html>

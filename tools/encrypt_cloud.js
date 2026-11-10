@@ -88,6 +88,13 @@ function genKey() {
   console.log('请把 ui/options.js 的 SF_CLOUD_ENC_PASS 与本文件 DEFAULT_PASS 同时改成它，然后重新生成快照。');
 }
 
+// 打包记录：把「这份 .enc 是从哪份明文打出来的」以 sha256 记在 Cloud/.packed.json。
+// 作用有两个：测试可以校验「线上密文 = 当时那份明文」（而不是和本地可能过期的副本比），
+//   以及以后排查「名单明明改了、扩展却没变」时能一眼看出快照是哪次打的。
+function plainSha(obj) {
+  return crypto.createHash('sha256').update(JSON.stringify(obj), 'utf8').digest('hex');
+}
+
 function main(argv) {
   if (argv.indexOf('--gen-key') !== -1) return genKey();
 
@@ -109,6 +116,10 @@ function main(argv) {
   fs.mkdirSync(out, { recursive: true });
 
   let okCount = 0;
+  const packedPath = path.join(out, '.packed.json');
+  let packed = {};
+  try { packed = JSON.parse(fs.readFileSync(packedPath, 'utf8')) || {}; } catch (e) { packed = {}; }
+
   files.forEach(function (f) {
     const p = path.join(src, f);
     if (!fs.existsSync(p)) { console.warn('跳过（不存在）：' + f); return; }
@@ -134,12 +145,14 @@ function main(argv) {
         process.exitCode = 2;
       }
     }
+    packed[f] = { sha256: plainSha(obj), count: n, at: new Date().toISOString(), bytes: fs.statSync(dest).size };
     console.log('✓ ' + f + ' → Cloud/' + f + '.enc（' + n + ' 条，密文 ' +
       fs.statSync(dest).size + ' 字节' + note + '）');
     okCount++;
   });
 
   if (!okCount) { console.error('没有任何文件被处理。'); process.exit(1); }
+  fs.writeFileSync(packedPath, JSON.stringify(packed, null, 2), 'utf8');
   console.log('\n下一步：把 ' + out + ' 下的 *.json.enc 提交到公开仓库的 Cloud/ 目录，');
   console.log('        确保扩展里 SF_CLOUD_MIRROR_REPO / DIR 指向它（当前：bbjj12345/SilverFoxBlocker · Cloud）。');
 }

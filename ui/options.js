@@ -2185,6 +2185,153 @@ async function openGithubSmart(path) {
 })();
 
 /* ============================================================================
+ * 「检查更新」按钮（版本行右侧）
+ * ----------------------------------------------------------------------------
+ * 与「前往 GitHub 查看更新」的区别：那个按钮是「把用户送到网页上自己看」，这个按钮
+ * 是「只回答一句话」——所以这里从不打开标签页，只取回 tag_name 做比对。
+ *
+ * 取版本号的三级通道（前一级失败才走下一级，全程不下载安装包）：
+ *   1) 直连 https://github.com/bbjj12345/SilverFoxBlocker/releases/latest
+ *      GitHub 会 301 到 /releases/tag/vX.Y.Z，读 fetch 的最终 URL 即得 tag。
+ *      扩展页有 <all_urls> host 权限，不受 CORS 限制；先 HEAD 再 GET，省流量。
+ *   2) 直连 https://api.github.com/repos/…/releases/latest（JSON 更轻，
+ *      网页侧偶发 5xx / 反爬时通常还能拿到）。
+ *   3) 复用「前往 GitHub 查看更新」的兜底通道 readReleaseViaProxy()：
+ *      gh-proxy.com 反代同一个 API。大陆网络下这一步基本是唯一能通的。
+ *
+ * 比对语义（按用户要求「逐字节」）：先各去掉前导 v 与空白，两串完全相同就是
+ *   同一版本；不同时再按 . - + 分段做数值比较，避免纯字典序把 1.6.10 判成比
+ *   1.6.9 旧。线上版本号反而更低时仍提示「无可用更新」（多为本地是测试版）。
+ * ========================================================================== */
+function sfOwnVersion() {
+  try { return String((chrome.runtime.getManifest() || {}).version || '').trim(); } catch (e) { return ''; }
+}
+function sfNormTag(t) {
+  return String(t || '').trim().replace(/^v/i, '');
+}
+function sfCmpVersion(remote, local) {
+  const a = sfNormTag(remote), b = sfNormTag(local);
+  if (!a || !b) return 0;
+  if (a === b) return 0;                      // 逐字节相同 → 同一版本
+  const pa = a.split(/[.\-+]/), pb = b.split(/[.\-+]/);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] === undefined ? '0' : pa[i];
+    const y = pb[i] === undefined ? '0' : pb[i];
+    const nx = /^\d+$/.test(x) ? parseInt(x, 10) : NaN;
+    const ny = /^\d+$/.test(y) ? parseInt(y, 10) : NaN;
+    if (!isNaN(nx) && !isNaN(ny)) {
+      if (nx !== ny) return nx > ny ? 1 : -1;
+      continue;
+    }
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+// 直连 api.github.com 读 tag（与 readReleaseViaProxy 的解析口径一致，只是不带反代前缀）
+async function readReleaseViaDirectApi() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 4500);
+  try {
+    const res = await fetch(SF_GH_RELEASE_API, {
+      cache: 'no-store', signal: ctrl.signal, headers: { Accept: 'application/vnd.github+json' }
+    });
+    if (!res.ok) return '';
+    const j = await res.json();
+    if (j && j.tag_name) return String(j.tag_name).replace(/^v/i, '');
+  } catch (e) {
+    // 直连失败交给下一级通道
+  } finally {
+    clearTimeout(timer);
+  }
+  return '';
+}
+
+// 直连 releases/latest 并解析最终 URL 里的 tag；method 用 HEAD 省流量，失败再退 GET
+async function sfFetchTagViaPage(url, ms, method) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ms);
+  try {
+    const res = await fetch(url, {
+      method: method || 'HEAD', redirect: 'follow', cache: 'no-store', signal: ctrl.signal
+    });
+    const m = /\/releases\/tag\/([^\/?#]+)/.exec(res.url || '');
+    if (m) return decodeURIComponent(m[1]).replace(/^v/i, '');
+  } catch (e) {
+    // 超时 / 被重置：调用方换下一级通道
+  } finally {
+    clearTimeout(timer);
+  }
+  return '';
+}
+
+// 返回 { tag, source } 或 null
+async function sfFetchLatestRelease() {
+  const page = SF_GH_DIRECT_BASE + SF_GH_REPO_PATH + SF_GH_UPDATE_PATH;
+  let tag = await sfFetchTagViaPage(page, 4500, 'HEAD');
+  if (!tag) tag = await sfFetchTagViaPage(page, 6000, 'GET');
+  if (tag) return { tag: tag, source: 'github.com' };
+
+  const apiTag = await readReleaseViaDirectApi();
+  if (apiTag) return { tag: apiTag, source: 'api.github.com' };
+
+  const rel = await readReleaseViaProxy();
+  if (rel) return { tag: rel.tag, source: rel.source };
+  return null;
+}
+
+(function initCheckUpdate() {
+  function setTip(text, cls) {
+    const el = $('checkUpdateTip');
+    if (!el) return;
+    el.hidden = !text;
+    el.textContent = text || '';
+    el.className = 'about-note update-tip' + (cls ? ' ' + cls : '');
+  }
+
+  async function run(btn) {
+    const cur = sfOwnVersion();
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '检查中…';
+    setTip('正在查询最新版本…', 'is-wait');
+    let rel = null;
+    try {
+      rel = await sfFetchLatestRelease();
+    } catch (e) {
+      rel = null;
+    }
+    btn.disabled = false;
+    btn.textContent = label;
+
+    if (!rel) {
+      setTip('查询失败：直连与代理均不可达，请稍后重试，或点「前往 GitHub 查看更新」手动查看。', 'is-fail');
+      return;
+    }
+    const cmp = sfCmpVersion(rel.tag, cur);
+    if (cmp > 0) {
+      setTip('检测到新版本：v' + sfNormTag(rel.tag), 'is-new');
+    } else {
+      // cmp === 0：逐字节相同；cmp < 0：线上版本反而更低（多为本地测试版）——都算「无可用更新」
+      setTip('无可用更新', 'is-ok');
+    }
+    console.log('[检查更新] 本地 v' + cur + '，线上 v' + sfNormTag(rel.tag) + '（来源：' + rel.source + '），比较结果 ' + cmp);
+  }
+
+  function bind() {
+    const btn = $('checkUpdateBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      if (btn.disabled) return;   // 连点只跑一次
+      run(btn);
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();
+
+/* ============================================================================
  * 云端名单同步（关于页「从云端更新名单」按钮）
  * ----------------------------------------------------------------------------
  * 数据流：按钮 → worker GET /list?type=white|black（两份并行）→ 清洗去重 →

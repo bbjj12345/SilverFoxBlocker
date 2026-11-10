@@ -1882,6 +1882,21 @@ html.theme-light .about-row .av .about-note { opacity: .7; }
 .about-row .av.av-btns .gh-channel-tip[hidden] { display: none; }
 html.theme-light .about-row .av.av-btns .gh-channel-tip { color: #a96500; opacity: .95; }
 
+/* ===== 版本行「检查更新」1.6.2 =====
+   版本号从 .av 挪进了 .av-btns 里的 <span>，加粗要单独补；
+   结果提示沿用 .about-note 的排版，但按三种状态给颜色（查到新版 / 无更新 / 查询失败）。 */
+.about-row .av.av-btns #verAbout { font-weight: 700; }
+.about-row .av.av-btns .update-tip { flex: 1 1 200px; min-width: 0; opacity: .85; white-space: normal; overflow-wrap: anywhere; }
+.about-row .av.av-btns .update-tip[hidden] { display: none; }
+.about-row .av.av-btns .update-tip.is-new { color: #ffb454; opacity: 1; font-weight: 600; }
+.about-row .av.av-btns .update-tip.is-ok { color: #4ecb8d; opacity: 1; }
+.about-row .av.av-btns .update-tip.is-wait { color: #9db8ff; }
+.about-row .av.av-btns .update-tip.is-fail { color: #ff8a8a; }
+html.theme-light .about-row .av.av-btns .update-tip.is-new { color: #b96a00; }
+html.theme-light .about-row .av.av-btns .update-tip.is-ok { color: #177a4d; }
+html.theme-light .about-row .av.av-btns .update-tip.is-wait { color: #2f6fed; }
+html.theme-light .about-row .av.av-btns .update-tip.is-fail { color: #b03030; }
+
 /* ===== 名单上报按钮（白名单 / 自定义黑名单）1.6.2 =====
    .btn-sec 原本只在 .fb-card 作用域内定义，这里给名单页一套同款外观，
    避免出现「无样式的裸按钮」。 ===== */

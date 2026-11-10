@@ -119,6 +119,13 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 - 爱发电赞助页
 - 这些站点有自己的隐私政策与 Cookie；点击后你在其中的行为与本扩展无关。
 
+**「检查更新」按钮（关于页版本行）**：只在点击时发一次请求，不打开任何标签页：
+
+- 优先直连 `https://github.com/bbjj12345/SilverFoxBlocker/releases/latest`（先 HEAD，失败再 GET），从 GitHub 301 后跳转到的 `/releases/tag/vX.Y.Z` 地址里读取版本号；
+- 直连不通时改问 `api.github.com` 的 `releases/latest`（公开 JSON）；
+- 仍不通时经 `gh-proxy.com` 反代读取同一个公开 JSON。
+- 三级通道都只读取**公开的版本号**，不下载安装包、不发送任何本地数据；查询结果仅用于在你本机比对版本，不写入存储、不上报。三次都失败时只提示「查询失败」，不会谎称「无可用更新」。
+
 > 下拉菜单里的「一键上报网站」只是快捷打开「关于」页，本身不发送任何数据。
 
 ---
@@ -163,7 +170,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 | jsDelivr / GitHub Raw / gh-proxy 等镜像 | 社区名单分发 | 关 |
 | Cloudflare（Worker） | 云端名单转发、反馈/名单上报邮件、限流与日志 | 需点击（无自动定时） |
 | GitHub（私有仓库 / Issues） | 云端名单内容源、公开反馈 | 需点击 |
-| `kkgithub.com` / `bgithub.xyz` / `gh-proxy.com`（GitHub 镜像与反代） | 直连 `github.com` 不通时打开同一更新页；再不通则经反代只查最新版本号 | 需点击 |
+| `kkgithub.com` / `bgithub.xyz` / `gh-proxy.com`（GitHub 镜像与反代） | 直连 `github.com` 不通时打开同一更新页；点「检查更新」时作为兜底通道读取版本号 | 需点击 |
 | Brevo | 代发反馈邮件 | 需点击 |
 | Kaspersky / Malwarebytes | KVRT / AdwCleaner 官方直链 | 需点击 |
 | 360 / 火绒官方域名 | 急救工具版本探测与下载 | 需点击 |
@@ -226,7 +233,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 **User-initiated uploads:** posting feedback, or clicking "发送白/黑名单到作者邮箱", sends only the text you typed (feedback body + optional contact, or just your domain list; 2000-character cap) to the same Worker, which emails it to the author via Brevo. Those emails include the source **IP**; a Cloudflare KV key (`rate_limit_{IP}_{date}`, 60/day, 24h TTL) is used for rate limiting. Feedback text is not stored in a database, but it is retained by the mail provider and the author's mailbox. Browsing history, page URLs, settings, API keys and statistics are never included. Do not click these buttons if you do not want to share that content.
 
-**Other user-initiated requests:** rescue-tool downloads from 360 / Huorong / Kaspersky (KVRT) / Malwarebytes (AdwCleaner) official hosts, plus ordinary external links (Lanzou update mirror with a clipboard-copied extraction code, SoftcnKiller share page, 123pan, GitHub, GitHub Issues, Afdian) opened in new tabs without injected parameters.
+**Other user-initiated requests:** the version-row "检查更新" button (v1.6.2) reads only the public latest tag — first from `github.com/…/releases/latest` (via the post-redirect URL), then `api.github.com`, then the `gh-proxy.com` mirror — and compares it locally; nothing is uploaded and no installer is downloaded. Also rescue-tool downloads from 360 / Huorong / Kaspersky (KVRT) / Malwarebytes (AdwCleaner) official hosts, plus ordinary external links (Lanzou update mirror with a clipboard-copied extraction code, SoftcnKiller share page, 123pan, GitHub, GitHub Issues, Afdian) opened in new tabs without injected parameters.
 
 **Local storage:** settings and custom lists in `chrome.storage.sync` (browser-account sync only, never via our servers), including the two API keys as AES-GCM ciphertext; statistics, downloaded lists, cloud-list snapshot and metadata in `chrome.storage.local`; HaGeZi's Bloom-filter bitmap (~4.8 MB) in IndexedDB. No remote code is loaded; the MV3 CSP is `script-src 'self'; object-src 'self'; connect-src 'self' https:` — note that `connect-src` **allows any HTTPS host** rather than a domain allowlist, so actual destinations are governed by the fixed list in code.
 

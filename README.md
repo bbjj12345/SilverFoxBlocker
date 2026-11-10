@@ -35,7 +35,7 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.6.1**），用�
 在「关于 → 云端名单更新」点击一次 **从云端更新名单**，才会发生一次联网拉取；**扩展不会自动定时同步**，建议每天手动更新一次。
 
 - **数据来源**：作者维护的 `whitelist.json` / `blacklist.json`（托管在作者的私有 GitHub 仓库），经自建 Cloudflare Worker 的 `GET /list?type=white|black` 实时读取并转发。请求只带一个随扩展分发的只读 `X-API-Key`（用于 Worker 对扩展鉴权，不是你的身份标识），**不上传任何本地数据**。
-- **备用通道**：Worker 域名被污染或线路不通时，改用公开仓库里的**加密快照**（`Cloud/*.json.enc`）——经 GitHub raw 或公共反代取回密文，在扩展本机解密后再走同一套清洗/落盘流程。密文用 AES-256-GCM 保护，口令内置在扩展里，因此它挡住的是「随手点开链接看名单」和「改一个域名试试」，挡不住解包阅读源码的人；真正的保密仍然靠 Worker（GitHub 令牌只在服务端）。解密失败（口令不符 / 文件被改）会直接报错中止，绝不会把名单当空写入。
+- **备用通道**：Worker 域名被污染或线路不通时，改用公开仓库里的**加密快照**（`Cloud/*.json.enc`）——经 GitHub raw 或公共反代取回密文，在扩展本机解密后再走同一套清洗/落盘流程。密文用 AES-256-GCM 保护，口令内置在扩展里，因此它挡住的是「随手点开链接看名单」和「改一个域名试试」，挡不住解包阅读源码的人；真正的保密仍然靠 Worker（GitHub 令牌只在服务端）。解密失败（口令不符 / 文件被改）会直接报错中止，绝不会把名单当空写入。快照的生成与发布方式见 [Cloud/README.md](./Cloud/README.md)。
 - **落盘方式**：两份名单并行拉取、清洗校验后**整体覆盖**写入 `chrome.storage.local`（`sfCloudWhite` / `sfCloudBlack` / `sfCloudListMeta`）；后台收到 `storage.onChanged` 立即重新注入，内容脚本在下一次页面加载时读取。是「镜像覆盖」不是「合并追加」，所以云端删掉的误报条目会真正失效；任一份拉取失败则**两份都不写入**，不会出现半新半旧。空响应或全部条目非法时同样中止，不会把本地名单清空。
 - **生效规则**：黑名单支持 `*` / `?` 同级别通配（上限 200 条），白名单不支持通配（避免开出过宽的放行通道）；两份名单都支持路径条目（单次上限 500 条）。被丢弃的条目及原因会在「关于 → 未生效条目」里列出，不会静默失效。
 - **与内置名单的关系**：云端名单、`rules/iocs.js` 内置名单、你手写的名单始终是三份独立数据，互不覆盖；判定时由评分引擎做集合查找（内置 ∪ 云端）。
@@ -81,6 +81,8 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.6.1**），用�
 | 更多工具镜像 | 123 云盘、迅雷光鸭云盘分享目录（设置页「银狐急救」内链接） | 打开新标签页 |
 
 「关于 → 版本更新」提供两个入口：**GitHub 仓库**与**蓝奏云镜像**（`wwavz.lanzout.com/b01gigjayb`，提取码 `2hxh`）。点击蓝奏云按钮时会把提取码复制到剪贴板，方便在分享页粘贴；跳转本身是普通的 `<a target="_blank" rel="noreferrer">`，扩展不拦截、不改写导航，也不读取分享页内容。
+
+版本号右侧还有 **「检查更新」** 按钮：点击后向 `github.com/…/releases/latest` 查询最新 tag（GitHub 会 301 到 `/releases/tag/vX.Y.Z`，扩展直接读最终地址），与 `manifest.json` 里的版本号逐字节比对——不同且线上更高显示「检测到新版本：vX.Y.Z」，相同（或线上反而更低，例如本地测试版）显示「无可用更新」。直连 `github.com` 失败时依次退到 `api.github.com` 的公开 JSON、再退到 `gh-proxy.com` 反代（与「前往 GitHub 查看更新」同一套兜底通道）；三级都不通时明确提示「查询失败」，不会谎称无更新。全过程只读版本号，不下载安装包、不上传任何数据。
 
 银狐急救页还包含 hosts 修复、关闭内存完整性、查杀顺序等分步引导，以及 SoftcnKiller → AdwCleaner 的清理顺序建议。
 
@@ -136,7 +138,8 @@ SilverFoxBlocker/
 ├── worker/index.js            # Cloudflare Worker：GET /list 转发云端名单 + POST 反馈/名单上报
 ├── wrangler.toml              # Worker 部署配置（KV 绑定、日志开关），不随扩展运行
 ├── tools/rescue-scripts/      # 急救工具直链的本地更新脚本（开发用，不参与打包运行）
-├── tools/encrypt_cloud.js     # 把私有仓库的明文名单打包成公开仓库用的加密快照（方案 C）
+├── tools/encrypt_cloud.js     # 把私有仓库的明文名单打包成公开仓库用的加密快照（方案 C，需 Node）
+├── tools/pack-snapshot.html   # 同上，但零安装：双击用浏览器打包（加密逻辑内联，不依赖外部 js）
 ├── Cloud/*.json.enc           # 云端名单的加密快照（备用通道取它；内容不可直接阅读）
 ├── icons/                     # 扩展图标 16 / 48 / 128
 ├── fonts/                     # 界面字体（SmileySans，笑脸模式）
@@ -202,6 +205,7 @@ SilverFoxBlocker/
 | 13 | 外链跳转：`wwavz.lanzout.com`（版本更新，提取码 2hxh）、`free.lanzoux.com`（SoftcnKiller）、123 云盘、光牙盘、GitHub / GitHub Issues、爱发电 | 用户点击链接，普通新标签页打开 | 扩展不注入参数、不读取页面内容；后续行为受目标站点自身政策约束 |
 | 13b | GitHub 全站镜像 `kkgithub.com` / `bgithub.xyz` | 点「前往 GitHub 查看更新」（落点 `…/releases/latest`）且直连 `github.com` 超时（先探测直连，1.5s 不通才改道） | 无。镜像只用来打开同一个更新页（内容与官网一致），不传键值、不传页面数据 |
 | 13c | `gh-proxy.com` 反代 `api.github.com` | 直连与镜像**都**不通时，退一步只查「有没有新版」 | 无。GET `releases/latest` 公开信息（版本号 / 日期），4s 超时；不下载安装包、不携带任何本地数据 |
+| 13d | `github.com/…/releases/latest`（先 HEAD 后 GET） | 点版本行右侧「检查更新」 | 无。只读 301 后的 `/releases/tag/vX.Y.Z` 版本号；失败依次改道 `api.github.com` → `gh-proxy.com`（同 13c），全程不下载安装包、不上传数据 |
 
 ### 后端链路（由 Worker 发起，不是扩展）
 
