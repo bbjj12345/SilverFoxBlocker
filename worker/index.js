@@ -6,11 +6,14 @@ var BRANCH = "main";
 // 名单文件在仓库里的位置（依次尝试）。用户可能把文件放在根目录，也可能放在 List/ 子目录，
 // 两种布局都认，省得挪一次文件就得改代码。
 var LIST_DIRS = ["", "List/"];
-// Gitee 分支名依次尝试：main → master（Gitee 建仓默认是 master）→ 空（用仓库默认分支）
-var GITEE_REFS = ["main", "master", ""];
+// Gitee 分支名依次尝试。实测本仓库镜像的默认分支是 master，所以把它排在最前：
+// 少打一次 404，也少消耗一次 Gitee 的接口配额。空字符串 = 用仓库默认分支。
+var GITEE_REFS = ["master", "main", ""];
 
 var REQ_TIMEOUT_MS = 5000;      // 单次上游请求超时
-var TOTAL_BUDGET_MS = 15000;    // 一次 /list 的总预算，超了就直接报错，别让扩展干等
+var GH_BUDGET_MS = 4500;        // 主源最多占用的时间，剩下的强制留给备源
+var TOTAL_BUDGET_MS = 9000;     // 一次 /list 的总预算；必须小于扩展侧的云端接口超时（10s），
+                                // 否则 Worker 还在跑、扩展已经判超时，用户看到的是「失败」而服务端其实成功了
 var UA = "Cloudflare-Worker-SilverFox";
 
 var corsHeaders = {
@@ -41,6 +44,16 @@ async function getText(url, opts, ms) {
   }
 }
 
+// 只接受「真的是一份名单」的 JSON。两个源出错时都可能回 200 + {"message":...} 之类的 JSON，
+// 那种内容绝不能当名单下发——扩展只会报「结构无法识别」，但响应头已经标成 Gitee，
+// 排查时会误以为是镜像读到了数据。
+function parseList(text) {
+  let j;
+  try { j = JSON.parse(text); } catch (e) { return { ok: false, why: "不是合法 JSON（可能拿到登录页/错误页）" }; }
+  if (!j || !Array.isArray(j.domains)) return { ok: false, why: "JSON 里没有 domains 数组" };
+  return { ok: true, json: j, count: j.domains.length };
+}
+
 // 主源：GitHub 私有仓库（token 只在服务端，浏览器永远拿不到）
 async function readFromGithub(env, file, deadline) {
   const tries = [];
@@ -62,12 +75,13 @@ async function readFromGithub(env, file, deadline) {
     }, ms);
 
     if (r.ok) {
-      try { JSON.parse(r.text); } catch (e) { tries.push({ src: "GitHub", path: path, error: "返回内容不是合法 JSON" }); continue; }
-      return { ok: true, text: r.text, source: "GitHub", path: path, tries: tries };
+      const pi = parseList(r.text);
+      if (!pi.ok) { tries.push({ src: "GitHub", path: path, error: pi.why }); continue; }
+      return { ok: true, text: r.text, source: "GitHub", path: path, count: pi.count, tries: tries };
     }
     tries.push({ src: "GitHub", path: path, status: r.status, error: r.error || ("HTTP " + r.status) });
-    // 401/403 是 token 失效或没权限，换目录也一样，别浪费预算
-    if (r.status === 401 || r.status === 403) break;
+    // 401/403 是 token 失效或没权限；429 是 GitHub 限流。换目录也一样，别浪费预算
+    if (r.status === 401 || r.status === 403 || r.status === 429) break;
   }
   return { ok: false, tries: tries };
 }
@@ -78,11 +92,12 @@ async function readFromGitee(env, file, deadline) {
   const tries = [];
   const owner = env.GITEE_OWNER;
   const repo = env.GITEE_REPO;
+  const token = env.GITEE_TOKEN;
   if (!owner || !repo) return { ok: false, tries: [{ src: "Gitee", error: "未配置 GITEE_OWNER / GITEE_REPO" }] };
-  if (!env.GITEE_TOKEN) return { ok: false, tries: [{ src: "Gitee", error: "未配置 GITEE_TOKEN" }] };
+  if (!token) return { ok: false, tries: [{ src: "Gitee", error: "未配置 GITEE_TOKEN" }] };
 
-  let tokenBad = false;
-  for (let d = 0; d < LIST_DIRS.length && !tokenBad; d++) {
+  let stop = "";
+  for (let d = 0; d < LIST_DIRS.length && !stop; d++) {
     for (let b = 0; b < GITEE_REFS.length; b++) {
       const path = LIST_DIRS[d] + file;
       const ref = GITEE_REFS[b];
@@ -93,23 +108,24 @@ async function readFromGitee(env, file, deadline) {
         (ref ? "?ref=" + encodeURIComponent(ref) : "");
       const r = await getText(url, {
         headers: {
-          "Authorization": "token " + env.GITEE_TOKEN,
+          "Authorization": "token " + token,
           "User-Agent": UA
         }
       }, ms);
 
       if (r.ok) {
-        try { JSON.parse(r.text); } catch (e) {
-          tries.push({ src: "Gitee", path: path, ref: ref || "(默认)", error: "返回内容不是合法 JSON（可能是登录页）" });
-          continue;
-        }
-        return { ok: true, text: r.text, source: "Gitee", path: path, ref: ref || "(默认)", tries: tries };
+        const pi = parseList(r.text);
+        if (!pi.ok) { tries.push({ src: "Gitee", path: path, ref: ref || "(默认)", error: pi.why }); continue; }
+        return { ok: true, text: r.text, source: "Gitee", path: path, ref: ref || "(默认)", count: pi.count, tries: tries };
       }
+
       tries.push({ src: "Gitee", path: path, ref: ref || "(默认)", status: r.status, error: r.error || ("HTTP " + r.status) });
-      // 令牌无效：后面的组合都不用试了
-      if (r.status === 401 || r.status === 403) { tokenBad = true; break; }
+      // 令牌无效（401/403）与接口限流（429）：后面的组合都不会有不同结果，立刻停
+      if (r.status === 401 || r.status === 403) { stop = "令牌无效或无权限"; break; }
+      if (r.status === 429) { stop = "Gitee 接口限流"; break; }
     }
   }
+  if (stop) tries.push({ src: "Gitee", error: stop + "，已停止重试" });
   return { ok: false, tries: tries };
 }
 
@@ -138,14 +154,25 @@ var index_default = {
       const type = url.searchParams.get("type") || "black";
       const fileName = type === "white" ? "whitelist.json" : "blacklist.json";
       const diag = url.searchParams.get("diag");
-      const deadline = Date.now() + TOTAL_BUDGET_MS;
+      // ?force=gitee / ?force=github：只走指定的那一个源，用来「强行验证备源」。
+      // 正常同步（扩展）永远不带这个参数，所以线上行为仍然是 GitHub 优先、Gitee 兜底。
+      const force = String(url.searchParams.get("force") || "").toLowerCase();
+      const useGithub = force !== "gitee";
+      const useGitee = force !== "github";
       const t0 = Date.now();
+      const deadline = t0 + TOTAL_BUDGET_MS;
+      // 主源最多占 GH_BUDGET_MS，剩下的时间强制留给 Gitee：
+      // 否则「GitHub 卡死」这种最需要备源的场景，预算反而被主源吃光，备源一次都跑不到。
+      const ghDeadline = Math.min(deadline, t0 + GH_BUDGET_MS);
 
-      const gh = await readFromGithub(env, fileName, deadline);
+      const gh = useGithub
+        ? await readFromGithub(env, fileName, ghDeadline)
+        : { ok: false, skipped: true, tries: [{ src: "GitHub", error: "已跳过（force=gitee）" }] };
       if (gh.ok) {
         if (diag) {
           return new Response(JSON.stringify({
-            ok: true, type: type, source: gh.source, path: gh.path,
+            ok: true, type: type, source: gh.source, path: gh.path, count: gh.count,
+            force: force || null,
             elapsedMs: Date.now() - t0, tries: gh.tries, giteeAttempted: false
           }, null, 2), {
             status: 200,
@@ -162,14 +189,18 @@ var index_default = {
         });
       }
 
-      console.warn("[list] GitHub 拉取失败，切换到 Gitee 镜像：" + JSON.stringify(gh.tries));
+      if (useGithub) console.warn("[list] GitHub 拉取失败，切换到 Gitee 镜像：" + JSON.stringify(gh.tries));
 
-      const gt = await readFromGitee(env, fileName, deadline);
+      const gt = useGitee
+        ? await readFromGitee(env, fileName, deadline)
+        : { ok: false, skipped: true, tries: [{ src: "Gitee", error: "已跳过（force=github）" }] };
 
       if (diag) {
         return new Response(JSON.stringify({
           ok: gt.ok, type: type, source: gt.ok ? gt.source : null,
           path: gt.ok ? gt.path : null, ref: gt.ok ? gt.ref : null,
+          count: gt.ok ? gt.count : null,
+          force: force || null,
           elapsedMs: Date.now() - t0,
           github: gh.tries, gitee: gt.tries
         }, null, 2), {

@@ -2508,6 +2508,15 @@ const SF_CLOUD_MIRROR_DIR = 'Cloud';
 // 公开快照是否使用加密文件（.json.enc）。改成 false 则回退到旧的明文 .json 方案，
 //   但明文意味着任何人打开 raw 链接就能看到整份名单，仅在临时排查时使用。
 const SF_CLOUD_MIRROR_ENCRYPTED = true;
+// Gitee 镜像（发布在 gitee.com 的同一份**加密**快照）：GitHub 直连与所有公共反代都失败时
+//   的最后一跳。顺序上排在 GitHub 之后，符合「优先 GitHub、失败才用 Gitee」。
+//   Gitee 的 raw 路径对公开库可直接匿名读取，且同样只有密文，安全性不降级。
+//   注意：Gitee 仓库**不会自动同步**，改完名单要手动推一次，否则这里拿到的是旧快照。
+const SF_GITEE_MIRROR_ENABLED = true;
+// 用 SF_CLOUD_MIRROR_REPO（两个平台同名）而不是 SF_GITEE_REPO_PATH：
+//   这段代码会被测试整段 eval 出去，只带得动切片内的常量，少一个外部依赖少一处踩空。
+const SF_GITEE_MIRROR_RAW = 'https://gitee.com/' + SF_CLOUD_MIRROR_REPO + '/raw/' +
+  SF_CLOUD_MIRROR_BRANCH + '/' + SF_CLOUD_MIRROR_DIR + '/';
 // ⚠️ 必须与 tools/encrypt_cloud.js 的 DEFAULT_PASS 一致；改口令要两处同步 + 重新生成快照
 const SF_CLOUD_ENC_PASS = 'aYGJ_rskoMvjXBjKCqQDqTjKMjMRNyH-';
 const SF_CLOUD_ENC_TAG = 'sfenc1';
@@ -2522,6 +2531,10 @@ const SF_GH_PROXIES = [
 ];
 // 单通道超时：直连卡住时不能无限等（原来没有超时，断网时会一直「正在拉取…」）
 const SF_CLOUD_FETCH_TIMEOUT = 6000;
+// 云端接口（Worker）自己最多花 9s（GitHub 4.5s + Gitee 兜底），所以给它 10s；
+// 镜像/反代还是 6s。若两者一样大，Worker 还在跑、这边已经判超时，用户看到的是「失败」
+// 而服务端其实成功了，还会白跑一遍镜像通道。
+const SF_CLOUD_API_TIMEOUT = 10000;
 
 // 兼容多种云端 JSON 形态：纯数组 / {domains:[]} / {list:[]} / {data:[]} / 换行分隔字符串
 function extractCloudArray(json) {
@@ -2756,8 +2769,9 @@ async function fetchWithTimeout(url, opts, ms) {
   }
 }
 
-// 按「直连 → GitHub raw → 各公共反代」生成候选通道。
+// 按「直连 Worker → GitHub raw → 各公共反代 → Gitee raw」生成候选通道。
 // 只有直连通道带 API Key：把密钥发给第三方反代等于公开密钥。
+// 顺序即优先级：GitHub 系全部在前，Gitee 只作最后一跳（用户要求：优先 GitHub，失败才用 Gitee）。
 function cloudUrlCandidates(type) {
   const q = type === 'white' ? 'white' : 'black';
   const file = (q === 'white' ? 'whitelist.json' : 'blacklist.json') +
@@ -2776,6 +2790,19 @@ function cloudUrlCandidates(type) {
   SF_GH_PROXIES.forEach(function (p) {
     out.push({ name: p.name + ' 代理', url: p.prefix + raw, headers: {}, mirror: true, enc: SF_CLOUD_MIRROR_ENCRYPTED });
   });
+  // Gitee 兜底：走的是自己的域名与 CDN，不受 github.com / raw.githubusercontent.com /
+  // 各反代的可用性影响；gitee:true 让上面的「镜像未发布」短路判断分开计数
+  // （GitHub 404 不代表 Gitee 也没有）。
+  if (SF_GITEE_MIRROR_ENABLED) {
+    out.push({
+      name: 'Gitee 镜像',
+      url: SF_GITEE_MIRROR_RAW + file + '?_=' + Date.now(),
+      headers: {},
+      mirror: true,
+      enc: SF_CLOUD_MIRROR_ENCRYPTED,
+      gitee: true
+    });
+  }
   return out;
 }
 
@@ -2816,21 +2843,25 @@ async function decryptCloudSnapshot(env) {
 async function fetchCloudList(type) {
   const cands = cloudUrlCandidates(type);
   const errs = [];
-  let mirrorMissing = false;   // 公开镜像整批不可用（404/403）后不再逐个反代试，省掉几次超时
+  // 两套短路标记必须分开：GitHub 侧 404（快照没发布）不代表 Gitee 也没有；
+  //   合成一个会让 Gitee 兜底被误跳过，等于白加。
+  let ghMirrorMissing = false;   // GitHub raw + 各反代整批不可用（404/403）
+  let giteeMissing = false;      // Gitee raw 不可用（仓库不存在 / 分支或目录不同 / 未同步）
   const isWhite = type === 'white';
   const name = isWhite ? '白名单' : '黑名单';
 
   for (let i = 0; i < cands.length; i++) {
     const c = cands[i];
-    if (c.mirror && mirrorMissing) continue;
+    if (c.mirror && (c.gitee ? giteeMissing : ghMirrorMissing)) continue;
     try {
-      const res = await fetchWithTimeout(c.url, { headers: c.headers });
+      const res = await fetchWithTimeout(c.url, { headers: c.headers },
+        c.name === '云端接口' ? SF_CLOUD_API_TIMEOUT : SF_CLOUD_FETCH_TIMEOUT);
       const text = await res.text();
       if (!res.ok) {
         if (res.status === 401) throw new Error('鉴权失败：API Key 与 worker 的 LIST_API_KEY 不一致');
         if (c.mirror && (res.status === 404 || res.status === 403 || res.status === 400)) {
-          // 镜像还没发布 / 反代拒绝：剩下的反代拿的也是同一个 404，直接跳过
-          mirrorMissing = true;
+          // 镜像还没发布 / 反代拒绝：同一侧的后续通道拿的也是同一个 404，直接跳过
+          if (c.gitee) giteeMissing = true; else ghMirrorMissing = true;
           errs.push(c.name + '：镜像未发布（HTTP ' + res.status + '）');
           continue;
         }
@@ -2880,7 +2911,14 @@ async function fetchCloudList(type) {
       errs.push(c.name + '：' + (/abort/i.test(msg) || msg === 'The user aborted a request.' ? '超时' : msg));
     }
   }
-  throw new Error('所有通道均失败（' + errs.slice(0, 4).join('；') + (errs.length > 4 ? ' 等' : '') + '）');
+  throw new Error('所有通道均失败（' + (function () {
+    // 头部几条有代表性，但 Gitee（最后一跳）的失败原因同样关键，
+    //   只截前 4 条会把「Gitee 为什么也不行」整段吞掉。
+    const head = errs.slice(0, 3);
+    const last = errs.length > head.length ? errs[errs.length - 1] : null;
+    const shown = head.concat(last && head.indexOf(last) === -1 ? [last] : []);
+    return shown.join('；') + (errs.length > shown.length ? ' 等' : '');
+  })() + '）');
 }
 
 // 一次拉取黑 + 白两份云端名单并整体覆盖本地快照。

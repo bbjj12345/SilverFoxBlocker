@@ -2,7 +2,7 @@
 
 **SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期：2026-11-10　|　适用版本：v1.6.2（本次修订：两个情报源 API Key 均为 AES-GCM 密文存储）
+生效日期：2026-11-10　|　适用版本：v1.7.2（本次修订：两个情报源 API Key 均为 AES-GCM 密文存储）
 
 ---
 ## 一、概述
@@ -69,7 +69,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 - **发出什么**：只有查询参数 `type`、缓存规避用的时间戳，以及一个随扩展分发的只读 `X-API-Key`（用于接口鉴权，**不是你的身份标识**）。**不发送你的浏览记录、本地名单、设置、设备标识或任何个人信息**。
 - **收到什么**：作者维护的域名清单（纯数据，不含代码）。Worker 实时从作者的私有 GitHub 仓库读取后转发；GitHub 不可达时改从作者的私有 Gitee 镜像仓库读取同一份文件（此过程完全发生在服务端，你的浏览器不直接访问 Gitee）。响应经清洗校验后整体覆盖写入本机 `storage.local`，任一份失败则两份都不写入。
 - **日志**：该 Worker 开启了 Cloudflare 调用日志，因此服务端可能记录请求时间、来源 IP 与请求路径；日志中不含有你填写的内容。
-- **备用通道（仅当上述接口不通时）**：会改为从公开 GitHub 仓库（`raw.githubusercontent.com` 及其公共反代）GET 一份**加密快照**（`Cloud/*.json.enc`）。文件本身是密文，只有扩展用内置口令在本机解密后才能得到名单；此请求**不带 `X-API-Key`、不带任何本地数据**，但第三方反代能看到请求方 IP 与所取文件名。解密失败（口令不符 / 文件被篡改）时同步中止，不会把名单清空。
+- **备用通道（仅当上述接口不通时）**：会改为从公开仓库（GitHub 的 `raw.githubusercontent.com` 及其公共反代；都失败时再改用 `gitee.com` 上的同一份文件）GET 一份**加密快照**（`Cloud/*.json.enc`），顺序上始终是「GitHub 优先、Gitee 兜底」。文件本身是密文，只有扩展用内置口令在本机解密后才能得到名单；此请求**不带 `X-API-Key`、不带任何本地数据**，但第三方反代能看到请求方 IP 与所取文件名。解密失败（口令不符 / 文件被篡改）时同步中止，不会把名单清空。
 
 早期上游版本的第三方「云端官方域名库」（`site-directory-cache.pages.dev`）已于 2026-11-01 完整移除，当前版本拉取的是作者自行维护的黑 / 白名单，不含官方站点整库。
 
@@ -114,6 +114,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 **普通外链跳转**（扩展只调用 `chrome.tabs.create` 或 `<a target="_blank" rel="noreferrer">`，不注入参数、不读取目标页内容）：
 - 蓝奏云版本更新镜像 `wwavz.lanzout.com/b01gigjayb`（点击时把提取码 `2hxh` 复制到剪贴板）
 - Gitee 版本更新镜像 `gitee.com/bbjj12345/SilverFoxBlocker/releases/latest`（国内直连）
+- Gitee 仓库镜像 `gitee.com/bbjj12345/SilverFoxBlocker`（「关于」页的隐私政策与项目仓库两行各附一条，内容与 GitHub 相同、仅域名不同）
 - SoftcnKiller 蓝奏云分享页 `free.lanzoux.com`
 - 123 云盘 / 迅雷光鸭云盘工具目录
 - GitHub 仓库、GitHub Issues
@@ -173,7 +174,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 | Cloudflare（Worker） | 云端名单转发、反馈/名单上报邮件、限流与日志 | 需点击（无自动定时） |
 | GitHub（私有仓库 / Issues） | 云端名单内容源、公开反馈 | 需点击 |
 | `kkgithub.com` / `bgithub.xyz` / `gh-proxy.com`（GitHub 镜像与反代） | 直连 `github.com` 不通时打开同一更新页；点「检查更新」时作为兜底通道读取版本号 | 需点击 |
-| `gitee.com`（版本更新镜像） | 「前往 Gitee 查看更新」跳转；「检查更新」在前几级都不通时读取公开版本号 | 需点击 |
+| `gitee.com`（版本更新镜像、公开仓库加密快照） | 「前往 Gitee 查看更新」跳转；「检查更新」在前几级都不通时读取公开版本号；「从云端更新名单」在 GitHub 与公共反代全部失败时取 `Cloud/*.json.enc` 密文（仅本机解密） | 需点击 |
 | Brevo | 代发反馈邮件 | 需点击 |
 | Kaspersky / Malwarebytes | KVRT / AdwCleaner 官方直链 | 需点击 |
 | 360 / 火绒官方域名 | 急救工具版本探测与下载 | 需点击 |

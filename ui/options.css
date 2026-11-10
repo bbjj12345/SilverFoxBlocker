@@ -394,6 +394,10 @@ html.theme-light .dlbl-item .dx { border-color: rgba(0,0,0,.16); }
 .about-row .av { flex: 1; font-weight: 700; }
 .about-row .av a { color: #9db8ff; text-decoration: none; }
 .about-row .av a:hover { text-decoration: underline; }
+/* 一行两个地址时的第二行（Gitee 镜像）：单独成行、字重放轻，避免与主地址抢视觉焦点 */
+.about-row .av .mirror-line { display: block; margin-top: 5px; font-weight: 400; line-height: 1.85; }
+.about-row .av .mirror-line a { font-weight: 700; word-break: break-all; }
+.about-row .av .mirror-tag { display: inline-block; margin-right: 7px; padding: 0 6px; border-radius: 5px; font-size: calc(11px * var(--sf-scale)); font-weight: 600; background: rgba(255,255,255,.09); opacity: .7; }
 
 /* 银狐急救 */
 .rescue-hero { display: flex; align-items: flex-start; gap: 18px; padding: 22px 24px; }
@@ -568,6 +572,7 @@ html.theme-light .stat-box { background: rgba(255,255,255,.7); border: 1px solid
 html.theme-light .stat-box .n { background: linear-gradient(135deg,#3a7bf0,#7a5cff); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 html.theme-light .about-row { border-top: 1px solid rgba(20,34,64,.07); }
 html.theme-light .about-row .av a { color: #2f6fed; }
+html.theme-light .about-row .av .mirror-tag { background: rgba(20,34,64,.07); }
 html.theme-light .rescue-ico { background: rgba(27,166,114,.12); border: 1px solid rgba(27,166,114,.3); }
 html.theme-light .btn-rescue { color: #04241a; }
 html.theme-light .rescue-url { color: #2f6fed; background: rgba(255,255,255,.7); border: 1px solid rgba(20,34,64,.12); }
