@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="avb7zxDkLyMCVtO98Djhcd">
+<head data-page-node-id="81KAsaFcaYcxcl9eKMQGIa">
+  <meta charset="UTF-8" data-page-node-id="TiKiToe2DkSXA5DyeAZSTZ">
+  <meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="0hKgigSsRCGrCphUQ76StR">
+  <link rel="stylesheet" href="options.css" data-page-node-id="C1F3se8wxmxXSheCQDAPm4">
+  <title>SilverFoxBlocker · 设置</title>
+</head>
+<body data-page-node-id="D29IL5pFGf6790hGXFxGlf">
+  <!-- AI 提供商图标：均取自官方/公开品牌 SVG（Simple Icons / Iconify），非自行绘制 -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" data-page-node-id="Hlpo6gAaqHM3Ac9jdILYdt">
+    <symbol id="prov-openai" viewBox="0 0 24 24" data-page-node-id="7B1iSPyLHEEJ3WB6iH9uBD"><path fill="#10A37F" d="M22.282 9.821a6 6 0 0 0-.516-4.91a6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9a6.05 6.05 0 0 0 .743 7.097a5.98 5.98 0 0 0 .51 4.911a6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206a6 6 0 0 0 3.997-2.9a6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081l4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085l4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354l-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023l-.141-.085l-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365l2.602-1.5l2.607 1.5v2.999l-2.597 1.5l-2.607-1.5Z" data-page-node-id="eOrqJTTaZd4VwbN523hs5y"/></symbol>
+    <symbol id="prov-deepseek" viewBox="0 0 24 24" data-page-node-id="D7Qf8VNjhhUVtKFYoxJS57"><path fill="#4D6BFE" d="M23.748 4.651c-.254-.124-.364.113-.512.233c-.051.04-.094.09-.137.137c-.372.397-.806.657-1.373.626c-.829-.046-1.537.214-2.163.848c-.133-.782-.575-1.248-1.247-1.548c-.352-.155-.708-.311-.955-.65c-.172-.24-.219-.509-.305-.774c-.055-.16-.11-.323-.293-.35c-.2-.031-.278.136-.356.276c-.313.572-.434 1.202-.422 1.84c.027 1.436.633 2.58 1.838 3.393c.137.094.172.187.129.323c-.082.28-.18.553-.266.833c-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836c.27-.098.094-.433-.778-.428c-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136a9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653c1.857 1.533 3.997 2.284 6.438 2.14c1.482-.085 3.132-.284 4.994-1.86c.47.234.962.328 1.78.398c.629.058 1.235-.031 1.705-.129c.735-.155.684-.836.418-.961c-2.155-1.004-1.682-.595-2.112-.926c1.095-1.295 2.768-3.598 3.284-6.733c.05-.346.115-.834.108-1.114c-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517c.02-.23-.004-.467-.247-.588M11.58 18.168c-2.088-1.642-3.101-2.183-3.52-2.16c-.39.024-.32.472-.234.763c.09.288.207.487.371.74c.114.167.192.416-.113.603c-.673.416-1.842-.14-1.897-.168c-1.361-.801-2.5-1.86-3.301-3.306c-.775-1.393-1.225-2.888-1.299-4.482c-.02-.385.094-.522.477-.592a4.7 4.7 0 0 1 1.53-.038c2.131.311 3.946 1.264 5.467 2.774c.868.86 1.525 1.887 2.202 2.89c.72 1.066 1.494 2.082 2.48 2.915c.348.291.626.513.892.677c-.802.09-2.14.109-3.055-.615zm1.001-6.44a.306.306 0 0 1 .415-.287a.3.3 0 0 1 .113.074a.3.3 0 0 1 .086.214c0 .17-.136.307-.308.307a.303.303 0 0 1-.306-.307m3.11 1.596c-.2.081-.4.151-.591.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.551-.758a1.7 1.7 0 0 1 .015-.588c.07-.327-.007-.537-.238-.727c-.188-.156-.426-.199-.689-.199a.6.6 0 0 1-.254-.078a.253.253 0 0 1-.114-.358a1 1 0 0 1 .192-.21c.356-.202.767-.136 1.146.016c.352.144.618.408 1.001.782c.392.451.462.576.685.915c.176.264.336.536.446.848c.066.194-.02.353-.25.45" data-page-node-id="2nN7XlDmzv8Bg9U6D1GEor"/></symbol>
+    <symbol id="prov-moonshot" viewBox="0 0 24 24" data-page-node-id="Cz2aqCfGOD4m1y9YxZ4uXX"><path fill="#5B5BF5" d="m1.053 16.91l9.538 2.55a21 20.981 0 0 0 .06 2.031l5.956 1.592a12 11.99 0 0 1-15.554-6.172m-1.02-5.79l11.352 3.035a21 20.981 0 0 0-.469 2.01l10.817 2.89a12 11.99 0 0 1-1.845 2.004L.658 15.918a12 11.99 0 0 1-.625-4.796m1.593-5.146L13.573 9.17a21 20.981 0 0 0-1.01 1.874l11.297 3.02a21 20.981 0 0 1-.67 2.362l-11.55-3.087L.125 10.26a12 11.99 0 0 1 1.499-4.285ZM6.067 1.58l11.285 3.016a21 20.981 0 0 0-1.688 1.719l7.824 2.091a21 20.981 0 0 1 .513 2.664L2.107 5.218a12 11.99 0 0 1 3.96-3.638M21.68 4.866L7.222 1.003A12 11.99 0 0 1 21.68 4.866" data-page-node-id="ZRkV1YIClOEeFnFI5qOB9J"/></symbol>
+    <symbol id="prov-kimi" viewBox="0 0 24 24" data-page-node-id="hBGAUDcsObudrgyAFVMOjn"><path fill="#3B6BFF" d="M21.765.351C22.998.351 24 1.353 24 2.586S22.998 4.82 21.765 4.82h-1.974c-.15 0-.26-.12-.26-.26V2.586A2.237 2.237 0 0 1 21.765.35M9.41 13.388l8.447-8.377c.16-.16.07-.471-.14-.471h-4.55s-.1.02-.14.06l-9.099 9.029c-.14.14-.35.02-.35-.21V4.81c0-.15-.1-.27-.221-.27H.22c-.12 0-.22.12-.22.27v18.57c0 .15.1.27.22.27h3.137c.12 0 .22-.12.22-.27v-3.79c0-.08.03-.16.08-.21l2.826-2.796c.07-.07.16-.08.241-.03l7.546 5.551a8.9 8.9 0 0 0 4.018 1.493c.12.01.23-.11.23-.27V19.76c0-.14-.08-.25-.19-.26a5.8 5.8 0 0 1-2.355-.942l-6.533-4.73c-.14-.09-.15-.32-.03-.441" data-page-node-id="Eep1zV6eB6P0r7w6V2LfVh"/></symbol>
+    <!-- 智谱 GLM：用户提供的官方图标 SVG（32x32 方形 Z 标志，黑底白Z） -->
+    <symbol id="prov-zhipu" viewBox="0 0 32 32" data-page-node-id="pCwumBJ0NfDwh94Nz3XbsR">
+      <path d="M23.8899 5H8.11011C6.39244 5 5 6.39244 5 8.11011V23.8899C5 25.6076 6.39244 27 8.11011 27H23.8899C25.6076 27 27 25.6076 27 23.8899V8.11011C27 6.39244 25.6076 5 23.8899 5Z" fill="#000000" data-page-node-id="LGYsdjyfNdDuYQtAGuNGYs"/>
+      <path d="M16.3809 9.56601L15.3215 11.0715C15.2382 11.1898 15.1279 11.2864 14.9996 11.3533C14.8713 11.4201 14.7289 11.4552 14.5842 11.4556H8.81006V9.55981L16.3809 9.56601Z" fill="#ffffff" data-page-node-id="qwki38bJ3pqMd0FOoTrG7M"/>
+      <path d="M23.5741 9.56616L14.4854 22.4403H8.42627L17.515 9.56616H23.5741Z" fill="#ffffff" data-page-node-id="u8pgCIuLQZYN5bIBbiHJi4"/>
+      <path d="M15.625 22.4402L16.6906 20.9285C16.7742 20.8109 16.8848 20.7152 17.0131 20.6494C17.1414 20.5837 17.2837 20.5497 17.4279 20.5506H23.1958V22.4092L15.625 22.4402Z" fill="#ffffff" data-page-node-id="let6J8j7IRxX8asSMj5BFq"/>
+    </symbol>
+    <symbol id="prov-custom" viewBox="0 0 24 24" data-page-node-id="00LONRDODPHkctO1UYWeAN">
+      <rect x="3" y="3" width="18" height="18" rx="5" fill="#7C8698" data-page-node-id="oS7NypACHaMvit8w8opEHt"/>
+      <path d="M12 7.5v9M7.5 12h9" stroke="#fff" stroke-width="2" stroke-linecap="round" data-page-node-id="QnEj835khBFh7WHIGbbkz6"/>
+      <circle cx="12" cy="12" r="2.4" fill="#fff" data-page-node-id="TE8t6JxFBRIN8YBULHyC8R"/>
+    </symbol>
+  </svg>
+  <div class="app" data-page-node-id="vaGO3HUgrtCuCoBnnsyCyA">
+    <!-- 左侧边栏 -->
+    <aside class="sidebar" data-page-node-id="hGbDNilxopqAFHDH3IsXIZ">
+      <div class="brand" id="brandEgg" role="button" tabindex="0" aria-label="SilverFoxBlocker" data-page-node-id="2X4f0A1w5wr3CwuRBNYCkE">
+        <img class="logo" src="../icons/icon128.png" alt="SilverFoxBlocker" data-page-node-id="NkDf1XxLSICSP9bdU8AOMp">
+        <div class="brand-t" data-page-node-id="9aohTHY4hcsEPXZF2apDQY">
+          <div class="b1" data-page-node-id="jiEWVDBnAWkq5Scg8V6OjB">SilverFoxBlocker</div>
+          <div class="b2" data-page-node-id="6SlxDNEPAvCuloZ0E8fyU7">拦截银狐木马投递站点</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav" data-page-node-id="sBB2gUSalM16DgBZLXVegO">
+        <button class="nav-item" data-target="detect" data-title="检测维度" data-desc="独立评分的检测项，可逐项开启或关闭" data-page-node-id="kCszHPKKhmn8D8hHROJXmz">
+          <svg viewBox="0 0 24 24" data-page-node-id="Bq3Jf3eMvOBikdZBstwJuH"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" data-page-node-id="5TAVFqo8iQndYaRR69BRAv"/></svg>
+          <span data-page-node-id="GkEizow1tkNYGyFLY2vsQO">检测维度</span>
+        </button>
+        <button class="nav-item" data-target="behavior" data-title="拦截行为" data-desc="命中风险时如何提醒与处置" data-page-node-id="tBctwAlwXEHzaH6I5cs0IE">
+          <svg viewBox="0 0 24 24" data-page-node-id="KYBXSJ1PKQmaJ3nLMDNys7"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" data-page-node-id="eHbiqtw6H48IaglOqM92iN"/><path d="M9 12l2 2 4-4" stroke-width="2" fill="none" data-page-node-id="NZ2KATsdaUjuNQsOKqcXJE"/></svg>
+          <span data-page-node-id="VnQnvmSm9bZjZ1loRcjgVc">拦截行为</span>
+        </button>
+        <button class="nav-item" data-target="rules" data-title="规则与名单" data-desc="信任域名、自定义关键词与黑名单" data-page-node-id="juN3TIa37ALsqG7v48F3B7">
+          <svg viewBox="0 0 24 24" data-page-node-id="79Gf9T3IpmGIDZl3Ki8wH3"><path d="M5 4h11l3 3v13H5z" data-page-node-id="S5VDbhIzJL4EFiziTnqA91"/><path d="M8 11h8M8 15h8M8 7h4" stroke-width="1.8" fill="none" data-page-node-id="OFl8Tv481zHRvgnyvd2Y2S"/></svg>
+          <span data-page-node-id="RjyYPUzBW27eLWh7kCpE7E">规则与名单</span>
+        </button>
+        <button class="nav-item" data-target="stats" data-title="防护统计" data-desc="已拦截风险与下载次数" data-page-node-id="fEE4ms6g7h4SyyGJk5txGR">
+          <svg viewBox="0 0 24 24" data-page-node-id="flwMexte8aBeNtHdbXmFpa"><path d="M5 19V5M5 19h14M9 15v-4M13 15V8M17 15v-7" data-page-node-id="pymLHWfl7PWNF4KPae8CoH"/></svg>
+          <span data-page-node-id="p7a4r4K8yGdH1gElNN58BZ">防护统计</span>
+        </button>
+        <button class="nav-item" data-target="rescue" data-title="银狐急救" data-desc="中招后的下载与查杀引导" data-page-node-id="NyiDmeVdFlqWVqK3KaESqp">
+          <svg viewBox="0 0 24 24" data-page-node-id="3ExVNkisqa5WgeG4XL9dTY"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" data-page-node-id="epnoz4pKw7RiHAz2JOdYhj"/><path d="M12 8v8M8 12h8" stroke-width="2" fill="none" stroke-linecap="round" data-page-node-id="54qGzFEYXxBiAPCo2CYRvM"/></svg>
+          <span data-page-node-id="WxVH7sV5wcTMRnMr6mn8Mi">银狐急救</span>
+        </button>
+        <button class="nav-item" data-target="about" data-title="关于" data-desc="版本信息与说明" data-page-node-id="yhCQcVhST1YyfUdWXHGNF7">
+          <svg viewBox="0 0 24 24" data-page-node-id="1yDe9R3OzC8umLbxuX9EbU"><circle cx="12" cy="12" r="9" data-page-node-id="xRR1VlK4yTG4UwdZWUw2io"/><path d="M12 11v5M12 8h.01" stroke-width="2" fill="none" stroke-linecap="round" data-page-node-id="96GdKEUoGQkg9FTDiG9ab1"/></svg>
+          <span data-page-node-id="EiEXoE1lazQ26UmyzPmjaS">关于</span>
+        </button>
+      </nav>
+
+      <div class="side-foot" data-page-node-id="IO99sfsOJDzMqQ4peye3zi">
+        <span class="mini-pill on" id="masterPill" data-page-node-id="Dyp9jDnKs1TJRRvRDxaR86">防护中</span>
+        <span class="ver" id="verTop" data-page-node-id="xuNk59EQj77jDSZgBCbNGk">v1.0.0</span>
+      </div>
+    </aside>
+
+    <!-- 右侧内容 -->
+    <main class="content" id="content" data-page-node-id="8bi2RXeE06SiFru803z6ro">
+      <header class="content-head" data-page-node-id="sIHxXW7pAj5chRCDhUK4Gh">
+        <button class="back-btn" id="backBtn" type="button" hidden data-page-node-id="Ok97xUrFvMhpgkSUPl3fzM">
+          <svg viewBox="0 0 24 24" data-page-node-id="muI3zFCiyFFU23nZW49muH"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="w6CqAG04TdBttx5CU2NERE"/></svg>
+          <span data-page-node-id="ZrBobTLvAmRS6iVGHgn946">返回</span>
+        </button>
+        <div data-page-node-id="qo5fYhklVUSS7xnkRvWoPo">
+          <h1 id="secTitle" data-page-node-id="q26o7CTk5PxtyJ5rxim8Xs">检测与拦截</h1>
+          <p id="secDesc" data-page-node-id="tx7SPsFfk45ELVe8GAZJM4">检测维度与命中后的处置方式</p>
+        </div>
+      </header>
+
+
+      <!-- 检测维度 -->
+      <section class="sec active" id="detect" data-page-node-id="Yee5TDjaXYVKhJYv52k1W6">
+        <div class="card" data-page-node-id="Fh3APDsfvsWYU5vZyjvdXw">
+          <p class="sec-desc" data-page-node-id="oPiNuQfxTNdeAdF7MVWrz9">下列每一项都会独立评分并累加风险分。可单独关闭你认为易误报的维度，也可用「调整权重」改变每一项的分值力度，点击底部「保存设置」生效。</p>
+          <div id="catList" data-page-node-id="rFH2yC95MYiCKgEltFCtVN"></div>
+        </div>
+      </section>
+
+      <!-- 拦截行为 -->
+      <section class="sec" id="behavior" data-page-node-id="QkcILvJtKCWOc2F9L3ZmQV">
+        <div class="card" data-page-node-id="NK4E36GvTPuS0Q5pMjIJyN">
+          <div class="row" data-page-node-id="8KD4KX8QfjSxhhIsh5bE1C">
+            <div class="rl" data-page-node-id="RE0eCvtRreR3xLCt97rJsA"><div class="rt" data-page-node-id="a6AzFj0z9OK7iqoZLf5dBK">弹出警告浮层</div><div class="rd" data-page-node-id="68KQ9QC6gsQi8Kck3hdeXQ">命中风险时，在页面上弹出美观的警告提示</div></div>
+            <label class="switch" data-page-node-id="oKKDR23f2d6hsFhzC28EGw"><input type="checkbox" id="showWarning" data-page-node-id="j6NuxR00MsCKK5fwAGGwL6"><span class="slider" data-page-node-id="BCMZZvEw28Zyp1sE9P4CTa"></span></label>
+          </div>
+          <div class="row" data-page-node-id="ZdETCnVc3IbQ4UGgEF6CSI">
+            <div class="rl" data-page-node-id="1B8BTc76Kij1ODLueKVAxz"><div class="rt" data-page-node-id="1xthWSHHZsZuDwoQUbTc9A">自动禁用下载/跳转链接</div><div class="rd" data-page-node-id="trVZlAJ5Vikdj1jkrlFdhm">命中风险后，禁用页面全部下载与重定向链接（推荐保持开启）</div></div>
+            <label class="switch" data-page-node-id="UOnCCyis8KLY5ZoMMsmoBw"><input type="checkbox" id="autoBlockDownloads" data-page-node-id="tQGJEttsEvdFXb1zQZmaCg"><span class="slider" data-page-node-id="Pwp6AuRhLPVsxVdJyaBjHL"></span></label>
+          </div>
+          <div class="row" data-page-node-id="asjUb6kPzi7o1BzJgJElLf">
+            <div class="rl" data-page-node-id="94fTv5JrgV6fEUREZLGqwP"><div class="rt" data-page-node-id="btUxFFXfB8yq6Hn0qR5AHY">Windows 系统弹窗提醒</div><div class="rd" data-page-node-id="JzYnRX6mcZZJ13mLwffXXG">命中风险时在 Windows 右下角弹出系统通知（toast），更易引起注意（默认开启）</div></div>
+            <label class="switch" data-page-node-id="vy3Rr4I0YQSwYHpDSIeFSk"><input type="checkbox" id="notify" data-page-node-id="lctJC4lCFBg8w0FyOqQjcW"><span class="slider" data-page-node-id="8RMHJXuDnrRywTBvR0Y8uS"></span></label>
+          </div>
+          <div class="row" data-page-node-id="ysProwmv0DaMcqPHPjh88q">
+            <div class="rl" data-page-node-id="sanHwCrBJLZFI7lwnvM94b"><div class="rt" data-page-node-id="DSNRMZFGCgG0TCnjdSw3u1">ICP 备案权威核验</div><div class="rd" data-page-node-id="LiGfADR5ayiW75tEjvp0CD">向公开备案查询接口核实域名备案真伪：确有备案则不再误判仿冒，页面写了备案号但查无记录则判定为盗用他人备案。仅在核验有价值时才发起（页面展示备案号、.cn 站查不到备案标识、或已判仿冒），且只发送域名、不发送任何浏览内容。关闭后仅做页面文字扫描</div></div>
+            <label class="switch" data-page-node-id="LKyNO2knmOG3uy5oCVfGGn"><input type="checkbox" id="icpApiVerify" data-page-node-id="WGZsogT2ltw1kHtlNN2m2d"><span class="slider" data-page-node-id="7Hhy7YrKNspBHLpcD9WSrb"></span></label>
+          </div>
+        </div>
+      </section>
+
+      <!-- 规则与名单（枢纽页：点各卡片进入独立子页面） -->
+      <section class="sec" id="rules" data-page-node-id="upkBCwMV8LGlcpMdVUqFvB">
+        <div class="card" data-page-node-id="lG7m5Fz0oaghWLCMRVmO1P">
+          <p class="sec-desc" data-page-node-id="HbVBZNdQwm9yr0MHpCBCiX">下列三类规则各自独立成页，点击进入编辑。修改后均需点击底部「保存设置」生效。</p>
+          <div class="rule-cards" data-page-node-id="ggwIAKA2iCwGD303uYRYOd">
+            <button class="rule-card" data-sub="rules-allowlist" type="button" data-page-node-id="Rwx7jj3qwpYOVjE9qWlO7l">
+              <span class="rc-ico" data-page-node-id="itDQEJEBMTi0snQlFLqnVD">
+                <svg viewBox="0 0 24 24" data-page-node-id="mkAgQDiJJxDDfnV8s5WaqM"><path d="M12 3 5 6v6c0 4.5 3 7.6 7 9 4-1.4 7-4.5 7-9V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" data-page-node-id="zKKDisoQEfnDHmr6zA3ePp"/><path d="M9 12l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="0cw1xxT7b2CvXk0LLQ5g9c"/></svg>
+              </span>
+              <span class="rc-t" data-page-node-id="TJplIPLWxQsPNny2J8VNpp">自定义信任域名白名单</span>
+              <span class="rc-d" data-page-node-id="1yBzULwqKXAgrPTkAFLJAb">命中后不拦截；若同一域名同时命中任一黑名单，仍按黑名单处理（黑名单优先）</span>
+            </button>
+            <button class="rule-card" data-sub="rules-keywords" type="button" data-page-node-id="3BFVlEvheoelsbOFBEbHww">
+              <span class="rc-ico" data-page-node-id="NDaV4qZaUtr611GcGYQ7o1">
+                <svg viewBox="0 0 24 24" data-page-node-id="m3BZbWhEkc05h6RafYTGME"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" data-page-node-id="AZab7bYs1ieVPs3GFLI4xl"/><circle cx="18" cy="17" r="2.4" fill="none" stroke="currentColor" stroke-width="1.8" data-page-node-id="YsQh1YhiPSqEcNiao9khU4"/></svg>
+              </span>
+              <span class="rc-t" data-page-node-id="A9aotrwKIgSrgoC0qouz7d">自定义风险关键词</span>
+              <span class="rc-d" data-page-node-id="crJdS2AsaOaJcZJwagC6RE">页面命中即加风险分</span>
+            </button>
+            <button class="rule-card" data-sub="rules-baddomains" type="button" data-page-node-id="EBcW7INJxwdmECG26hvfuo">
+              <span class="rc-ico" data-page-node-id="3dAyMcxDjSM1bWTRV1B3Nj">
+                <svg viewBox="0 0 24 24" data-page-node-id="u9GzjPliij5vouQdkN3LVq"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" data-page-node-id="ZWHrTsY5rpN5PfpdIPKcfj"/><path d="M7.5 7.5l9 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" data-page-node-id="C2p1KFP2cQ8cb64Rs7jDvc"/></svg>
+              </span>
+              <span class="rc-t" data-page-node-id="BpmzdKrswQSD2aYIMcziG7">自定义恶意域名黑名单</span>
+              <span class="rc-d" data-page-node-id="WbYsBTlFwPiOeoI5UuYdSK">命中直接判危</span>
+            </button>
+          </div>
+        </div>
+        <!-- 威胁情报 API（可选，默认关闭；启用后用户输入自己的 Key，扩展直连第三方情报库） -->
+        <div class="card" data-page-node-id="sfTiCard">
+          <div class="field" data-page-node-id="sfTiField">
+            <div class="row" style="border:0;padding:0" data-page-node-id="sfTiRow1">
+              <div class="rl" data-page-node-id="sfTiRl1">
+                <div class="rt" data-page-node-id="sfTiRt1">威胁情报 API（可选）</div>
+                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal（需自有 Key）、URLhaus（无需 Key）、NetAPI（无需 Key）、Google Safe Browsing（需自有 Key）。四者横幅自上而下依次为 VirusTotal → URLhaus → NetAPI → Google Safe Browsing，仅显示判为恶意的情报源；任一未检出则后续自动上移补位。</div>
+              </div>
+              <label class="switch" data-page-node-id="sfTiSw1"><input type="checkbox" id="tiEnabled" data-page-node-id="sfTiCb1"><span class="slider" data-page-node-id="sfTiSl1"></span></label>
+            </div>
+            <div id="tiProviders" class="ti-providers" style="display:none" data-page-node-id="sfTiProv">
+              <div class="ti-provider" data-page-node-id="sfTiVt">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRow2">
+                  <div class="rl" data-page-node-id="sfTiRl2">
+                    <div class="rt" data-page-node-id="sfTiRt2">VirusTotal</div>
+                    <div class="rd" data-page-node-id="sfTiRd2">免费额度有限（每分钟约 4 次查询）。密钥仅保存在本地，扩展直连 virustotal.com，不经过任何中转服务器。命中后按检出引擎的可信度分三档提示：仅小众引擎检出（或二级引擎少于 3 个）→「可能是误报」；1 个顶级引擎或 ≥3 个二级引擎检出 →「请保持谨慎，不要点击来路不明的链接」；≥2 个顶级引擎检出 →「请提高警惕」。</div>
+                    <div class="ti-guide" data-page-node-id="sfTiGuideVt">
+                      <button type="button" class="ti-guide-btn" aria-expanded="false" data-page-node-id="sfTiGuideBtnVt">如何获取 API？</button>
+                      <div class="ti-guide-body">
+                        <ol class="ti-guide-steps">
+                          <li>创建 VirusTotal 账号
+                            <ul class="ti-guide-sub">
+                              <li>打开浏览器，访问 VirusTotal 官方网站 <span class="ti-guide-url">https://www.virustotal.com/gui/home/upload</span>。</li>
+                              <li>点击页面右上角的注册按钮，填写必要的个人信息。</li>
+                              <li>验证邮箱地址后，完成账号创建。</li>
+                            </ul>
+                          </li>
+                          <li>查找你的 VirusTotal API 密钥
+                            <ul class="ti-guide-sub">
+                              <li>成功登录 VirusTotal 账号后，点击页面顶部导航栏中的「API」选项；</li>
+                              <li>在 API 页面中，找到「API Key」部分；</li>
+                              <li>复制显示的 64 位字符串，这就是你的 API 密钥。</li>
+                            </ul>
+                          </li>
+                          <li>添加 API Key
+                            <ul class="ti-guide-sub">
+                              <li>回到 SilverFoxBlocker 扩展的设置页，添加 VT API Key，保存设置即可。</li>
+                              <li>免费用户限额：每分钟 4 次、每日 500 次。</li>
+                            </ul>
+                          </li>
+                        </ol>
+                        <div class="ti-guide-note">注意：请妥善保管你的 API 密钥，不要分享给他人，以免账号被滥用。</div>
+                      </div>
+                    </div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfTiSw2"><input type="checkbox" id="tiVtEnabled" data-page-node-id="sfTiCb2"><span class="slider" data-page-node-id="sfTiSl2"></span></label>
+                </div>
+                <div id="tiVtKeyWrap" style="display:none;margin:4px 0 2px" data-page-node-id="sfTiKeyWrap">
+                  <input type="password" id="tiVtKey" class="ti-input" placeholder="粘贴你的 VirusTotal API Key（x-apikey）" autocomplete="off" spellcheck="false" data-page-node-id="sfTiKey">
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfTiUrlhaus">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowUH">
+                  <div class="rl" data-page-node-id="sfTiRlUH">
+                    <div class="rt" data-page-node-id="sfTiRtUH">URLhaus（abuse.ch）</div>
+                    <div class="rd" data-page-node-id="sfTiRdUH">无需 API Key，免费查询域名/网址是否被收录为恶意样本投递源。只在存在<b>活跃证据</b>时断言风险：当前网址被收录且状态为 online，或该主机仍有在线恶意 URL；仅有历史（已离线）记录时只提示「曾被标记、目前无活跃记录」。威胁类型、在线/离线数量、最近记录时间可在横幅「详情」中查看。由扩展直连 urlhaus-api.abuse.ch。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfTiSwUH"><input type="checkbox" id="tiUrlhausEnabled" data-page-node-id="sfTiCbUH"><span class="slider" data-page-node-id="sfTiSlUH"></span></label>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfTiNetapi">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowNA">
+                  <div class="rl" data-page-node-id="sfTiRlNA">
+                    <div class="rt" data-page-node-id="sfTiRtNA">NetAPI（netapi.com）</div>
+                    <div class="rd" data-page-node-id="sfTiRdNA">无需 API Key，免费查询域名是否在失陷情报库。过去 24 小时内被报（listed_now）判为「当前在列」并提示谨慎；仅有历史记录（listed_ever）时，若最近一次在 1 年内则提示「历史记录，仅供参考」，超过 1 年不再打扰。横幅「详情」中可查看首次/最近记录、来源标签与匹配值。注意：域名在列不代表持有者恶意，很多站点是在不知情的情况下被入侵，扩展文案不会断言「该网站是恶意的」。由扩展直连 netapi.com。</div>
+                  </div>
+                    <label class="switch" data-page-node-id="sfTiSwNA"><input type="checkbox" id="tiNetapiEnabled" data-page-node-id="sfTiCbNA"><span class="slider" data-page-node-id="sfTiSlNA"></span></label>
+                  </div>
+                </div>
+                <div class="ti-provider" data-page-node-id="sfTiGs">
+                  <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowGS">
+                    <div class="rl" data-page-node-id="sfTiRlGS">
+                      <div class="rt" data-page-node-id="sfTiRtGS">Google Safe Browsing（v4 Lookup API）</div>
+                      <div class="rd" data-page-node-id="sfTiRdGS">需自有 API Key。说明：Google 已为 Safe Browsing API 推出后继版本 v5（本地哈希列表方案），v4 仍可使用但官方主推 v5；本功能使用 v4 的 Lookup API。横幅仅作「疑似」提示，不断言网站已确认不安全。Key 以<b>密文</b>形式保存（AES-GCM 加密，非明文落盘）。创建 Key 时请勿限制 HTTP 来源（或放行 chrome-extension://），否则扩展请求会被拒。</div>
+                      <div class="ti-guide" data-page-node-id="sfTiGuideGs">
+                        <button type="button" class="ti-guide-btn" aria-expanded="false" data-page-node-id="sfTiGuideBtnGs">如何获取 API？</button>
+                        <div class="ti-guide-body">
+                          <ol class="ti-guide-steps">
+                            <li>登录 Google Cloud Console
+                              <ul class="ti-guide-sub">
+                                <li>使用 Google 账号登录：<span class="ti-guide-url">console.cloud.google.com</span></li>
+                                <li>如果没有账号，则先注册账号后登录。可以使用 QQ 邮箱、Gmail 邮箱等注册。</li>
+                              </ul>
+                            </li>
+                            <li>创建或选择项目
+                              <ul class="ti-guide-sub">
+                                <li>在控制台顶部选择项目；没有项目就新建一个。</li>
+                                <li>记住项目 ID，后面会用到。</li>
+                              </ul>
+                            </li>
+                            <li>启用 Safe Browsing API
+                              <ul class="ti-guide-sub">
+                                <li>进入左侧菜单「API 和服务」→「库」。</li>
+                                <li>搜索「Safe Browsing API」。</li>
+                                <li>点击进入后选择「启用」。</li>
+                              </ul>
+                            </li>
+                            <li>创建 API Key
+                              <ul class="ti-guide-sub">
+                                <li>进入「API 和服务」→「凭据」。</li>
+                                <li>点击「创建凭据」→「API 密钥」。</li>
+                                <li>复制生成的 Key，建议保存到文本文档，关闭弹窗后通常无法再查看完整值。</li>
+                              </ul>
+                            </li>
+                            <li>限制 API Key
+                              <ul class="ti-guide-sub">
+                                <li>在凭据页面打开刚创建的 Key。</li>
+                                <li>建议设置：API 限制只允许访问 Safe Browsing API；应用限制若走后端调用可限制服务器 IP，不要把这个 Key 放到浏览器扩展前端代码里。</li>
+                              </ul>
+                            </li>
+                            <li>添加 API Key
+                              <ul class="ti-guide-sub">
+                                <li>回到 SilverFoxBlocker 扩展的设置页，添加 GSB API Key，保存设置即可。</li>
+                                <li>启用后会有默认配额，可在 Google Cloud Console →「API 和服务」→「配额」查看和申请提升。</li>
+                              </ul>
+                            </li>
+                          </ol>
+                        </div>
+                      </div>
+                    </div>
+                    <label class="switch" data-page-node-id="sfTiSwGS"><input type="checkbox" id="tiGsEnabled" data-page-node-id="sfTiCbGS"><span class="slider" data-page-node-id="sfTiSlGS"></span></label>
+                  </div>
+                  <div id="tiGsKeyWrap" style="display:none;margin:4px 0 2px" data-page-node-id="sfTiGsKeyWrap">
+                    <input type="password" id="tiGsKey" class="ti-input" placeholder="粘贴你的 Google Safe Browsing API Key（保存时自动加密）" autocomplete="off" spellcheck="false" data-page-node-id="sfTiGsKey">
+                    <div class="hint" id="tiGsKeyHint" style="margin:6px 0 2px" data-page-node-id="sfTiGsKeyHint"></div>
+                  </div>
+                </div>
+              </div>
+          </div>
+        </div>
+        <!-- 社区维护的本地黑名单（可选，默认关闭；开启后展开各名单子开关。新增名单只需在同结构内追加一个 .ti-provider） -->
+        <div class="card" data-page-node-id="sfClCard">
+          <div class="field" data-page-node-id="sfClField">
+            <div class="row" style="border:0;padding:0" data-page-node-id="sfClRow1">
+              <div class="rl" data-page-node-id="sfClRl1">
+                <div class="rt" data-page-node-id="sfClRt1">社区维护的本地黑名单（可选）</div>
+                <div class="rd" data-page-node-id="sfClRd1">启用后展示可选的社区名单。名单每日自动抓取并保存在本地（chrome.storage.local / IndexedDB，不上传、不发送任何查询内容），浏览器启动时载入内存常驻，访问网站时在本地比对，命中即渲染横幅。默认关闭，不影响任何本地检测。当前开放 OpenPhish、PhishDestroy 与 HaGeZi's Threat Intelligence Feeds；需各自单独开启才会参与比对，横幅自上而下依次为 OpenPhish → PhishDestroy → HaGeZi's TIF。</div>
+              </div>
+              <label class="switch" data-page-node-id="sfClSw1"><input type="checkbox" id="communityListsEnabled" data-page-node-id="sfClCb1"><span class="slider" data-page-node-id="sfClSl1"></span></label>
+            </div>
+            <div id="communityProviders" class="ti-providers" style="display:none" data-page-node-id="sfClProv">
+              <div class="ti-provider" data-page-node-id="sfClOp">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClOpRow">
+                  <div class="rl" data-page-node-id="sfClOpRl">
+                    <div class="rt" data-page-node-id="sfClOpRt">OpenPhish 本地钓鱼黑名单</div>
+                    <div class="rd" data-page-node-id="sfClOpRd">启用后，扩展每日自动从 OpenPhish 免费 feed 抓取最新钓鱼 URL 名单并保存在本地（chrome.storage.local，不上传）；访问网站时与本地静态名单（域名集合）实时比对，命中即渲染横幅「OpenPhish 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClOpSw"><input type="checkbox" id="openphishEnabled" data-page-node-id="openphishEnabledId"><span class="slider" data-page-node-id="sfClOpSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="openphishUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="openphishStatus" class="hint" style="margin:0"></span>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfClPd">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClPdRow">
+                  <div class="rl" data-page-node-id="sfClPdRl">
+                    <div class="rt" data-page-node-id="sfClPdRt">PhishDestroy 本地钓鱼黑名单</div>
+                    <div class="rd" data-page-node-id="sfClPdRd">与 OpenPhish 并列的第二个静态名单源（约 14 万条域名）。启用后扩展每日自动从 PhishDestroy Destroylist 抓取最新名单并保存在本地（chrome.storage.local，不上传）；浏览器启动时即载入内存常驻，访问网站时与本地名单（域名集合）实时比对，命中即渲染横幅「PhishDestroy 已将其拉黑」。也可随时手动「立即更新」。无需 API Key。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClPdSw"><input type="checkbox" id="phishdestroyEnabled" data-page-node-id="phishdestroyEnabledId"><span class="slider" data-page-node-id="sfClPdSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="phishdestroyUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="phishdestroyStatus" class="hint" style="margin:0"></span>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfClHg">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClHgRow">
+                  <div class="rl" data-page-node-id="sfClHgRl">
+                    <div class="rt" data-page-node-id="sfClHgRt">HaGeZi's Threat Intelligence Feeds 黑名单</div>
+                    <div class="rd" data-page-node-id="sfClHgRd">第三个静态名单源，规模约 181 万条域名（恶意软件、挖矿、诈骗、垃圾邮件与钓鱼）。启用后扩展每日自动从 hagezi/dns-blocklists 的 tif.txt 抓取，并以「布隆过滤器位图」形式保存在本地 IndexedDB（约 5MB，不上传、不保存明文域名）；浏览器启动时直接读取该位图常驻内存，访问网站时与本地名单实时比对（精确 + 父域回溯），命中即渲染横幅「HaGeZi's TIF 已将其拉黑」。也可随时手动「立即更新」，更新过程会实时显示下载进度。无需 API Key。误判率约 2.5e-5，且不会漏判。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClHgSw"><input type="checkbox" id="hageziEnabled" data-page-node-id="hageziEnabledId"><span class="slider" data-page-node-id="sfClHgSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="hageziUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="hageziStatus" class="hint" style="margin:0"></span>
+                </div>
+                <div style="margin:0 0 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                  <label for="hageziVariant" style="font-size:13px">名单版本</label>
+                  <select id="hageziVariant" class="ti-select">
+                    <option value="full">完整版（181 万条，约 36MB 下载，最全）</option>
+                    <option value="medium">中等版（31.8 万条，约 6.6MB 下载，更轻快）</option>
+                  </select>
+                  <span class="hint" style="margin:0">切换版本后会自动重新抓取一次</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">
+          <div class="field" data-page-node-id="oOItSmLqHP6DxMGlyjQtdD">
+            <label data-page-node-id="Ol7axpG3tDeKZDnTWkWPDA">自动学习的下载黑名单</label>
+            <div class="hint" style="margin:0 0 10px" data-page-node-id="sBAydBiDlqog7AExbalZSf">每次成功拦截一次可疑下载，该文件所在域名会被自动记下；此后任何页面指向同一域名都会加分或直接拦截（银狐换落地页不换载荷服务器）。90 天未再命中自动移除，最多保留 500 条。GitHub、微软等可信下载源与自定义信任白名单永不入库。如遇误拦，删除对应条目即可恢复下载。</div>
+            <div id="dlBlList" class="dlbl-list" data-page-node-id="QqOYCkUFdlkjxhAgD5Qnst"><div class="dlbl-empty" data-page-node-id="n8ABGTP8WjHPSA2pUBKNXD">暂无记录</div></div>
+            <div class="row" style="border:0;padding:10px 0 0" data-page-node-id="P4nUgox4RtsqIe7N2y7UNu">
+              <div class="rl" data-page-node-id="LJQEqK6sFEuwws5KWPWMGh"><div class="rd" id="dlBlCount" data-page-node-id="2jyArmVFPgNNywIxcGquFE">共 0 条</div></div>
+              <button class="btn ghost" id="dlBlClear" type="button" data-page-node-id="4IMwR0NqzjzlgmNhZNIjb7">清空全部</button>
+            </div>
+          </div>
+        </div>
+        <div class="card" data-page-node-id="bHnC8LeOotNOPYVMe5sokZ">
+          <p class="sec-desc" data-page-node-id="WabToYe47XI8DFrMI11jbc">白名单与规则可导出为 JSON 备份，或导入他人分享的配置（仅含信任域名、风险关键词、恶意域名黑名单，不含其他设置）。</p>
+          <div class="row" style="border:0;padding:6px 0 0;flex-wrap:wrap;gap:10px" data-page-node-id="Kir4HPuvU2wnxGW1ONgbHz">
+            <button type="button" class="btn btn-ghost" id="rulesExport" data-page-node-id="FZTYVjdHF9bq5YmIWjNeAh">导出配置 (JSON)</button>
+            <button type="button" class="btn btn-ghost" id="rulesImport" data-page-node-id="dUE2HgT6Le9adw3xVQZsZs">导入配置 (JSON)</button>
+            <input type="file" id="rulesImportFile" accept="application/json,.json" hidden data-page-node-id="UQtSBAycncTuR2ENdm3I8d">
+          </div>
+        </div>
+      </section>
+
+      <!-- 子页面：自定义信任域名白名单 -->
+      <section class="sec subpage" id="rules-allowlist" data-page-node-id="DZKQUmjQuTV6vnmpQmOPE4">
+        <div class="card" data-page-node-id="NWddfWkhJ8LTtYgw6ZkJXz">
+          <div class="field" data-page-node-id="jDlQ29lEEyfjarTIksHNJn">
+            <label data-page-node-id="uVK2NcPxJOx7wrHK2FKdsP">自定义信任域名白名单（每行一个，命中后不拦截；与黑名单冲突时按黑名单处理；不支持通配符）</label>
+            <textarea id="allowlist" placeholder="每行一个域名，例如：&#10;my-company.com&#10;trusted-site.cn"></textarea>
+            <div class="hint" data-page-node-id="hxewy5k5Ol9hGfa8FSKkjc">支持精确域名与后缀（子域）匹配：填写 example.com 将同时信任 a.example.com、a.b.example.com（标签对齐，即必须以 . 分隔，不会匹配 myexample.com）。<strong>不支持通配符</strong>：* 与 ? 只被当作普通字符，永远不会命中。</div>
+            <div class="list-mail" data-page-node-id="SF_MAIL_WHITE">
+              <button class="btn btn-sec" id="mailWhiteBtn" type="button" data-page-node-id="SF_MAIL_WHITE_BTN">发送白名单到作者邮箱</button>
+              <span class="upd-checking" id="mailWhiteSpin" hidden>发送中…</span>
+            </div>
+            <div class="hint list-mail-note" data-page-node-id="SF_MAIL_WHITE_NOTE">只发送上方输入框里的域名（每行一个），不会上传浏览记录。作者整理后会择优并入云端白名单。</div>
+            <div class="hint list-mail-msg" id="mailWhiteMsg" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 子页面：自定义风险关键词 -->
+      <section class="sec subpage" id="rules-keywords" data-page-node-id="rU1QebEBGNa2FkQ4xmUJ98">
+        <div class="card" data-page-node-id="CJMZa96DjrM56ALhuHg7aV">
+          <div class="field" data-page-node-id="lOHXyLHvWrUBxcIktVHCVh">
+            <label data-page-node-id="soNkyv8vvkAree4nZymOKa">自定义风险关键词（命中即加风险分）</label>
+            <textarea id="customKeywords" placeholder="每行一个，例如：&#10;内部福利&#10;专属客服"></textarea>
+            <div class="hint" data-page-node-id="NEwJisO7QAxg8DPHkCCJWO">页面 HTML 中出现这些词会触发风险提示。</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 子页面：自定义恶意域名黑名单 -->
+      <section class="sec subpage" id="rules-baddomains" data-page-node-id="XjZwnkAAFxKrmb5hmqDW8x">
+        <div class="card" data-page-node-id="66srwWN5kEVmpuM3PTCaS7">
+          <div class="field" data-page-node-id="y3DDoYBoz80Vu1XJdUEsIf">
+            <label data-page-node-id="mYDrheFoC3k5YjwRnTUJ4Q">自定义恶意域名黑名单（命中直接判危；不支持通配符）</label>
+            <textarea id="customBadDomains" placeholder="每行一个域名，例如：&#10;bad-site.top"></textarea>
+            <div class="hint" data-page-node-id="DuU6p8uIlapO2ICPNd88hI">这些域名一旦出现即视为银狐风险站点，填写父域名即覆盖其全部子域。<strong>不支持通配符</strong>：* 与 ? 只被当作普通字符，永远不会命中；需要批量覆盖时可逐条列出；目前只有<b>云端黑名单</b>支持通配符（在「关于」页的「从云端更新名单」处同步）。</div>
+            <div class="list-mail" data-page-node-id="SF_MAIL_BLACK">
+              <button class="btn btn-sec" id="mailBlackBtn" type="button" data-page-node-id="SF_MAIL_BLACK_BTN">发送黑名单到作者邮箱</button>
+              <span class="upd-checking" id="mailBlackSpin" hidden>发送中…</span>
+            </div>
+            <div class="hint list-mail-note" data-page-node-id="SF_MAIL_BLACK_NOTE">只发送上方输入框里的域名（每行一个），不会上传浏览记录。作者复核后会择优并入云端黑名单。</div>
+            <div class="hint list-mail-msg" id="mailBlackMsg" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 防护统计 -->
+      <section class="sec" id="stats" data-page-node-id="VNWXt4Td9GZJDaJqSPAytm">
+        <div class="card" data-page-node-id="336suCDF9LKVqDCit4ROSW">
+          <div class="stat-grid" data-page-node-id="GMJzw0APxTLgvQhTMOKCKA">
+            <div class="stat-box" data-page-node-id="zuvH4tAXGGOSFUlvn6x2X8"><div class="n" id="stWarn" data-page-node-id="lWvT3dfMwjJZRZkWSezMFs">0</div><div class="c" data-page-node-id="GLuSvOknrZrYc3wRY7f8AA">拦截风险网站</div></div>
+            <div class="stat-box" data-page-node-id="lOmUxYb8Wrv8IXirgO83FJ"><div class="n" id="stBlock" data-page-node-id="MOmr17wnTN9GN8g1AB8mle">0</div><div class="c" data-page-node-id="cbGFQHCltPrj2MUU1kWHtL">拦截下载次数</div></div>
+          </div>
+          <div class="dash-levels" data-page-node-id="8DaCV8vBqVHgY6ZUrH7bYn">
+            <div class="dl-title" data-page-node-id="YHSfcHBt4GAEoI07nj36OZ">最近 30 次拦截等级分布</div>
+            <div class="dl-bar" id="dlBar" data-page-node-id="NPFBOzbyKvgv8jtgrAGCIg"><span class="dl-empty" data-page-node-id="hSdXx8Bhk05vjpULHR4nMK">暂无记录</span></div>
+            <div class="dl-legend" id="dlLegend" data-page-node-id="eOffc1UL5k220CdafmC7BJ"></div>
+          </div>
+          <div class="dash-recent" data-page-node-id="di0WC0fi3YGbbE9A8gmGSf">
+            <div class="dl-title" data-page-node-id="tI6AIQmsYQ6U0vOIKKuuy1">最近拦截记录</div>
+            <div id="dlRecent" class="dl-recent-list" data-page-node-id="XVIidCeLsWYuqqiY7HLCNB"><div class="dl-empty" data-page-node-id="avmtcjUV32k0kBtciFN6kD">暂无记录</div></div>
+          </div>
+          <div class="tip" data-page-node-id="RkcydIhGC7fC2EHxHW27vA">统计仅保存在本地浏览器，不会上传。重置只清空计数，不影响白名单与规则。</div>
+        </div>
+      </section>
+
+      <!-- 360急救箱 / 银狐急救 -->
+      <section class="sec" id="rescue" data-page-node-id="rIQrVFDFHtkoyZ8ZkYlTG5">
+        <div class="card rescue-hero" data-page-node-id="NE5Dr486rx4qBOVAGhHBEw">
+          <div class="rescue-ico" data-page-node-id="SLjM6idKeJMGD2okIrLWwM">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="lYD3oQioAfPEvgGygvNgYq"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" stroke="#9fe0c0" stroke-width="1.5" stroke-linejoin="round" data-page-node-id="MFWPDyivlUpGS32vfNGyD4"/><path d="M12 8v8M8 12h8" stroke="#9fe0c0" stroke-width="2" stroke-linecap="round" data-page-node-id="nbh7lsfUd6hbEtS6CCnHtW"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="kBAaICSvgHTfJrKbPcWzRQ">
+            <h2 data-page-node-id="6u3AQx93VVjLVWHFlNA2jp">360系统急救箱独立版64位</h2>
+            <p data-page-node-id="oTVg3IeD8wiqWk4p2TULCT">如果你的系统已经感染了银狐木马，且火绒恶性木马专杀工具未能解决问题，可点击右侧按钮，自动获取并下载最新版 360 系统急救箱进行急救。如果在运行急救箱的过程中，程序兼容性助手弹窗提示‘无法在此设备上加载驱动程序’，请关闭‘内存完整性’后重启电脑，再次运行急救箱。急救箱完成扫描后，建议立即重启以确保彻底清除。</p>
+          </div>
+          <button class="btn btn-rescue" id="rescueBtn" data-page-node-id="U0q9FstPenD2kOQSZ1Phxh">下载 360 系统急救箱</button>
+        </div>
+
+        <div class="card rescue-linkcard" data-page-node-id="en3TeUhULicXsrBhcuX8Ep">
+          <p class="sec-desc" data-page-node-id="0BiD08OAmII24P2hpxG4Ap">官方下载直链（按钮已自动获取最新 64 位版，可手动复制备用）：</p>
+          <div class="rescue-url" id="rescueUrl" title="点击复制" data-page-node-id="e4db8NlvmxdBIOtKeePsYu">加载中…</div>
+        </div>
+
+        <!-- 火绒专杀（无签名版）：可解除银狐对杀毒软件的打开限制 -->
+        <div class="card rescue-hero rescue-hero-hr" data-page-node-id="6algCBbgMesEFcZs9uJdEe">
+          <div class="rescue-ico rescue-ico-hr" data-page-node-id="fFlepUgj8imQ5WA6zx3SWm">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="WuCUjlmSvAPOvmdZH9uCOp"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" stroke="#7db4ff" stroke-width="1.5" stroke-linejoin="round" data-page-node-id="BEIrfiKKC3cxmHu3hNjq8x"/><path d="M9 12l2 2 4-4" stroke="#7db4ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="F32pi3UdIiBUa13BzDMsG1"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="fufvL4OLmEqrnMFBGi6IB2">
+            <h2 data-page-node-id="fNWo6Y5QAXY1UJzhnHJHUF">火绒恶性木马专杀工具（无签名版）</h2>
+            <p data-page-node-id="foLkH2sAwontyqRaJ1jL6n">银狐木马通常会劫持C:\Windows\System32\drivers\etc\hosts文件，并使用C:\Windows\System32\CodeIntegrity\SiPolicy.p7b策略文件阻止常规杀毒软件的安装和运行。火绒恶性木马专杀工具可解除此类限制，便于你正常启动杀毒软件，进行彻底查杀。建议关闭‘内存完整性’后使用；每运行一次专杀工具，重启一次，再运行一次专杀工具。如果遇到顽固威胁，火绒专杀连续两次无法清除，则在结束后重启，并换用360系统急救箱。</p>
+            <div class="tip tip-warn" data-page-node-id="zRgy8Ff1wjfHDpiFNSpE0R">注意：本工具为<strong data-page-node-id="seWdc9YkLjdkQpqZ1T3IDY">无签名版</strong>，Windows Defender 与安全下载检测会<strong data-page-node-id="LuS2n5P1H4iu3DdzPjNVBo">拦截它</strong>——这是正常现象，放行即可。有签名版同样会被银狐木马阻止运行，故只提供无签名版。</div>
+            <div class="tip tip-hint" data-page-node-id="SF_HR_HINT_DL"><strong data-page-node-id="SF_HR_HINT_DL_T">如何下载hrkill_unsign.exe：</strong>浏览器的“下载”页面会出现“通常不会下载hrkill_unsign.exe。请在打开前确保信任hrkill_unsign.exe。”。此时点击右侧的“...”，选择“保留”，会出现“打开前请确保信任 hrkill_unsign.exe。Microsoft Defender SmartScreen 无法验证此文件是否安全，因为通常不会下载此文件。请确保在打开之前信任正在下载的文件或其源。”。点击右下角“删除∨”的“∨”，选择“仍然保留”即可。</div>
+            <div class="tip tip-hint" data-page-node-id="SF_HR_HINT_RUN"><strong data-page-node-id="SF_HR_HINT_RUN_T">如何运行hrkill_unsign.exe：</strong>运行火绒恶性木马专杀工具无签名版时，可能遇到“Microsoft Defender SmartScreen阻止了无法识别的应用启动。运行此应用可能会导致你的电脑存在风险。”的弹窗。点击“更多信息”，选择“仍然运行”或类似表述的按钮即可。也可以右键打开hrkill_unsign.exe的“属性”，在“常规”底部选择“解除锁定”，再依次点击“应用”和“确定”即可。</div>
+          </div>
+          <button class="btn btn-rescue btn-rescue-hr" id="hrkillBtn" data-page-node-id="WwJ3Iat5leNsTisFTDHIYk">下载火绒专杀</button>
+        </div>
+
+        <div class="card rescue-linkcard" data-page-node-id="OGbG0Cu0zmg79zqncNiGb4">
+          <p class="sec-desc" data-page-node-id="Kq2J8fgbCvVmlQVE6ouT3P">火绒专杀官方下载直链（无签名版，按钮已自动获取最新版，可手动复制备用）：</p>
+          <div class="rescue-url" id="hrkillUrl" title="点击复制" data-page-node-id="CgUlKFP1fdk0bVjONhvvDm">加载中…</div>
+        </div>
+
+        <!-- Kaspersky Virus Removal Tool（KVRT）：卡巴斯基官方免费扫描器 -->
+        <div class="card rescue-hero rescue-hero-kvrt" data-page-node-id="SF_KVRT_HERO">
+          <div class="rescue-ico rescue-ico-kvrt" data-page-node-id="SF_KVRT_ICO">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="SF_KVRT_SVG"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" stroke="#ffb86b" stroke-width="1.5" stroke-linejoin="round" data-page-node-id="SF_KVRT_SVG_SHIELD"/><circle cx="11" cy="11" r="2.6" stroke="#ffb86b" stroke-width="1.6" data-page-node-id="SF_KVRT_SVG_C"/><path d="m13 13 2.4 2.4" stroke="#ffb86b" stroke-width="1.8" stroke-linecap="round" data-page-node-id="SF_KVRT_SVG_L"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="SF_KVRT_TXT">
+            <h2 data-page-node-id="SF_KVRT_TITLE">Kaspersky Virus Removal Tool（KVRT）</h2>
+            <p data-page-node-id="SF_KVRT_DESC">KVRT是由卡巴斯基实验室提供的扫描器，可以在紧急情况下提供接近卡巴斯基本体的杀毒效果。建议打开下载好的kvrt.exe，创建快捷方式；右键快捷方式，打开‘属性’，在‘目标’栏的末尾添加‘ -freboot’（注意有空格），这会导致自动重启并加载反Rootkit驱动，在KVRT左下角的‘Change parameters’勾选‘All volumes’，随后正常启动扫描。如果KVRT要求‘Disinfect and restart the computer’，点击允许并在重启后进入‘高级清除模式’。在扫描和高级清除期间，应关闭正在运行的应用、不要试图打开任何新应用，保持电源适配器接通、屏幕保持常亮，鼠标远离KVRT的窗口（否则容易误触，导致扫描被意外取消）；检出结果后，自行检查KVRT的扫描结果和处理方式，如Delete（删除）、Copy to quarantine（隔离）、Skip（跳过），确认每一项操作均无误后点击右下角的Continue执行操作。</p>
+          </div>
+          <button class="btn btn-rescue btn-rescue-kvrt" id="kvrtBtn" data-page-node-id="SF_KVRT_BTN">下载 KVRT</button>
+        </div>
+
+        <div class="card rescue-linkcard" data-page-node-id="SF_KVRT_LINKCARD">
+          <p class="sec-desc" data-page-node-id="SF_KVRT_LINKDESC">KVRT 官方下载直链（该直链由卡巴斯基持续更新，始终指向最新版，可手动复制备用）：</p>
+          <div class="rescue-url" id="kvrtUrl" title="点击复制" data-page-node-id="SF_KVRT_URL">加载中…</div>
+        </div>
+
+        <div class="card" data-page-node-id="gTah7gKPbKroVgQZjpBvfB">
+          <p class="sec-desc" data-page-node-id="6lgtt3tsiDbkbavYDeIq0B">中招后急救步骤：</p>
+          <ol class="rescue-steps" data-page-node-id="VWrJdUd5nZ8mioitT0HO5o">
+            <li>修改 hosts 文件。hosts 文件位于 <code>C:\Windows\System32\drivers\etc</code>，一般有 hosts（文件类型为"文件"）和 hosts.ics（文件类型为"ICS 文件"）。文件类型为"文件"的 hosts 才是需要修改的。将 hosts 文件复制到桌面，用记事本打开，可能会看到类似 <code>127.0.0.1 weishi.360.cn</code> 的内容，可以删掉这些内容，或者用 # 注释掉它们。把修改后的 hosts 文件覆盖回 <code>C:\Windows\System32\drivers\etc</code> 即可。</li>
+            <li>关闭内存完整性。在"设置 → 隐私和安全性 → Windows 安全中心 → 设备安全性 → 内核隔离"关闭"内存完整性"，重启后生效。</li>
+            <li>使用火绒恶性木马专杀工具无签名版。让专杀工具清除所有检测到的威胁，完成后重启。如果可以正常安装杀毒软件，则认为银狐木马被清除；记得用杀毒软件进行全盘扫描，确认银狐木马已被清除干净。</li>
+            <li>若杀毒软件安装失败、无法正常打开，或专杀工具被阻止运行，且判断为"被银狐木马阻止"，则下载 360 系统急救箱独立版。解压后运行 <code>360急救箱运行不了请点我-加强版.bat</code>，勾选"强力模式"进行全盘扫描。让急救箱清除所有检测到的威胁，完成后重启。清除完成后，再尝试安装杀毒软件。若成功安装，则更新病毒库，进行全盘扫描。</li>
+            <li>重新开启内存完整性，做好后续防护。在日常生活中，请优先信任杀毒软件的判断。</li>
+            <li>如果需要更多工具，请访问以下链接：
+              <ul class="rescue-links">
+                <li><a href="https://1858003587.share.123pan.cn/123pan/ZRjSvd-KZIbd" target="_blank" rel="noreferrer">https://1858003587.share.123pan.cn/123pan/ZRjSvd-KZIbd</a>（请先注册 123 云盘账号，访问该链接，将需要的工具转存到自己的网盘再下载；每月免费下载限额 10GB）</li>
+                <li><a href="https://www.guangyapan.com/s/1954847952132091917_arVsxnd6zFGA_T1j" target="_blank" rel="noreferrer">https://www.guangyapan.com/s/1954847952132091917_arVsxnd6zFGA_T1j</a>（每日高速下载限额 2GB）</li>
+              </ul>
+              建议先查看目录树，熟悉网盘的结构。文件具体位置以目录树为准。
+              使用分享的工具前，先查看 Readme.txt 和其他 .txt 格式的文档，这可以帮你建立对该工具最基本的认识。
+              如果有任何不明白、想深入研究的，可以自己上网查询或向 AI 提问。
+              如果实在看不懂说明，则这款工具不适合你，不要乱动。
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- 流氓软件清除：SoftcnKiller（蓝奏云分享页） + AdwCleaner（官方最新版直链） -->
+      <section class="sec" id="adwcleaner" data-page-node-id="SF_ADW_SEC">
+        <!-- SoftcnKiller：下载逻辑复用「关于 / 版本更新」的蓝奏云按钮 —— 原生 <a target="_blank">，
+             打开分享页后按页面提示下载；此分享链接无需提取码。 -->
+        <div class="card rescue-hero rescue-hero-soft" data-page-node-id="SF_SOFT_HERO">
+          <div class="rescue-ico rescue-ico-soft" data-page-node-id="SF_SOFT_ICO">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="SF_SOFT_SVG"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" stroke="#7db4ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="SF_SOFT_TXT">
+            <h2 data-page-node-id="SF_SOFT_TITLE">SoftcnKiller（流氓软件清除工具）</h2>
+            <p data-page-node-id="SF_SOFT_DESC">用于清理先入的流氓软件与捆绑安装行为：随其它软件静默装上的推广程序、弹窗广告、浏览器主页与搜索引擎被篡改、以及难以卸载的预装软件。下载入口是蓝奏云分享页，点击后会在新标签页打开，按页面提示下载即可（本分享链接无需提取码）。</p>
+            <div class="tip tip-hint" data-page-node-id="SF_SOFT_USAGE"><strong>使用说明：</strong>解压下载好的压缩包，先运行“使用前更新流氓软件黑名单.bat”，完成后运行“SoftCnKiller.exe”。扫描完成后，点击窗口左下角的“全选”，再点击右下角的“处理选中”即可。完成后建议重启电脑。</div>
+          </div>
+          <a class="btn btn-rescue btn-rescue-soft" id="softcnkillerBtn" href="https://free.lanzoux.com/b0cpu1guf" target="_blank" rel="noreferrer" title="前往蓝奏云分享页（无需提取码）" data-page-node-id="SF_SOFT_BTN">前往蓝奏云下载 SoftcnKiller</a>
+        </div>
+
+        <!-- AdwCleaner：下载逻辑复用 KVRT —— 固定官方直链始终指向最新版，direct:true 直接调用
+             chrome.downloads.download，并配一张可点击复制的直链卡片。 -->
+        <div class="card rescue-hero rescue-hero-adw" data-page-node-id="SF_ADW_HERO">
+          <div class="rescue-ico rescue-ico-adw" data-page-node-id="SF_ADW_ICO">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="SF_ADW_SVG"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" stroke="#ffb86b" stroke-width="1.5" stroke-linejoin="round"/><circle cx="11" cy="11" r="2.6" stroke="#ffb86b" stroke-width="1.6"/><path d="m13 13 2.4 2.4" stroke="#ffb86b" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="SF_ADW_TXT">
+            <h2 data-page-node-id="SF_ADW_TITLE">AdwCleaner（Malwarebytes）</h2>
+            <p data-page-node-id="SF_ADW_DESC">AdwCleaner 是 Malwarebytes 提供的免费清除工具，用于查找并清理广告软件、PUP / LPI（可能不受欢迎的程序）、工具栏、劫持者（擅自篡改浏览器主页）与预装软件。这里使用官方 release 直链，每次点击都重新下载最新版，等同于「使用前先更新」；扫描完成后按提示重启一次以彻底生效。</p>
+            <div class="tip tip-hint" data-page-node-id="SF_ADW_USAGE"><strong>使用说明：</strong>直接运行adwcleaner.exe即可。默认全选所有被检出的项目，点击“隔离”即可在隔离区隔离30天。建议优先选择隔离；若确认为不需要的软件、被捆绑安装的流氓软件，可在隔离区选择彻底删除。可能造成误报，处理前建议人工复核。</div>
+          </div>
+          <button class="btn btn-rescue btn-rescue-adw" id="adwBtn" type="button" data-page-node-id="SF_ADW_BTN">下载 AdwCleaner</button>
+        </div>
+
+        <div class="card rescue-linkcard" data-page-node-id="SF_ADW_LINKCARD">
+          <p class="sec-desc" data-page-node-id="SF_ADW_LINKDESC">AdwCleaner 官方最新直链（release 通道始终指向最新版，可手动复制备用）：</p>
+          <div class="rescue-url" id="adwUrl" title="点击复制" data-page-node-id="SF_ADW_URL">加载中…</div>
+        </div>
+
+        <div class="card" data-page-node-id="SF_ADW_STEPS">
+          <p class="sec-desc" data-page-node-id="SF_ADW_STEPS_DESC">建议顺序：先用 SoftcnKiller 清掉流氓软件与捆绑安装，再用 AdwCleaner 扫描广告软件、工具栏与主页劫持；处理完重启一次。删除前逐项确认扫描结果，避免误删需要的软件。</p>
+        </div>
+      </section>
+
+      <!-- 急救与工具（父页面：工具中心，卡片 → 子页） -->
+      <section class="sec" id="tools" data-page-node-id="toolsSec">
+        <div class="card" data-page-node-id="toolsCard">
+          <div class="rule-cards">
+            <button class="rule-card" data-sub="rescue" data-sub-title="银狐急救" data-sub-desc="中招后的下载与查杀引导" type="button">
+              <span class="rc-ico">
+                <svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 8v8M8 12h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </span>
+              <span class="rc-t">银狐急救</span>
+              <span class="rc-d">中招后的下载与查杀引导</span>
+            </button>
+            <button class="rule-card" data-sub="adwcleaner" data-sub-title="流氓软件清除" data-sub-desc="清除先入的流氓软件和捆绑安装行为" type="button" data-page-node-id="SF_TOOLS_ADW_CARD">
+              <span class="rc-ico" data-page-node-id="SF_TOOLS_ADW_ICO">
+                <svg viewBox="0 0 24 24" data-page-node-id="SF_TOOLS_ADW_SVG"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+              <span class="rc-t" data-page-node-id="SF_TOOLS_ADW_T">流氓软件清除</span>
+              <span class="rc-d" data-page-node-id="SF_TOOLS_ADW_D">清除先入的流氓软件和捆绑安装行为</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+
+
+      <!-- 子页面：外观主题（下钻，与规则与名单同款进入/返回逻辑） -->
+      <!-- 关于 -->
+      <section class="sec" id="about" data-page-node-id="lAKnGBer07g9bqqwhjesxJ">
+        <div class="card" data-page-node-id="uzEanhnPcX4DGQWvnfzfH3">
+          <div class="about-row" data-page-node-id="U0zHRj4LTnMVwLi7ei0EXy"><span class="ak" data-page-node-id="0kky9oFxafxFZRYE4OfiAD">扩展名称</span><span class="av" data-page-node-id="2yWPjVfCdGaU8sGvqHnei0">SilverFoxBlocker</span></div>
+          <div class="about-row" data-page-node-id="QkzAZvzqJGj0eGl6AoVXqU"><span class="ak" data-page-node-id="UeB2xusyUyvtBfiXJCLmhu">版本</span><span class="av" id="verAbout" data-page-node-id="2kA1YSeEgJK0FWVhFo3UDU">v1.0.0</span></div>
+          <div class="about-row" data-page-node-id="fk21QpHx5xnayIpYBJ9Pik"><span class="ak" data-page-node-id="JbbL5e2HWqX5LYCJ8QWO1G">隐私政策</span><span class="av" data-page-node-id="ewLZB8QUme2ckphjySGFDn"><a href="https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" data-page-node-id="2JDU7smH0eGm2Bl4mg9DuW">github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md</a></span></div>
+          <div class="about-row" data-page-node-id="ZlA8G7QHjra4Ijrc81pZPq"><span class="ak" data-page-node-id="tM4qhnfyTX2IAV1dUYCjEp">项目仓库</span><span class="av" data-page-node-id="MlOWp3serjw4b3xhPnYT6c"><a href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="9PdYDUpYdaZAR3gH1hmKTg">github.com/bbjj12345/SilverFoxBlocker</a></span></div>
+          <div class="about-row" data-page-node-id="SF_UC_ROW_VER"><span class="ak" data-page-node-id="SF_UC_AK_VER">版本更新</span><span class="av av-btns"><a class="btn-mini" id="manualCheckUpdate" href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="SF_UC_GH">前往 GitHub 查看更新</a><a class="btn-mini" id="lanzouUpdate" href="https://wwavz.lanzout.com/b01gigjayb" target="_blank" rel="noreferrer" title="提取码：2hxh（点击后自动复制）" data-page-node-id="SF_UC_LZ">前往蓝奏云查看更新</a><span class="about-note" id="lanzouPwdTip" data-page-node-id="SF_UC_LZ_TIP">提取码：2hxh</span></span></div>
+          <div class="about-row" data-page-node-id="SF_UC_ROW_CLOUD"><span class="ak" data-page-node-id="SF_UC_AK_CLOUD">云端名单更新</span><span class="av av-btns"><button class="btn-mini" id="cloudPullList" type="button" data-page-node-id="SF_CLOUD_LST">从云端更新名单</button><span class="about-note" data-page-node-id="SF_CLOUD_TIP">云端名单可作为拦截危险网站的重要补充依据，建议每天更新一次</span></span></div>
+          <!-- 云端名单同步状态：由 ui/options.js 的 refreshCloudListStatus() 回填，
+               展示「黑白各多少条 / 上次同步时间」，避免同步完看不出是否真的生效。 -->
+          <div class="about-row" data-page-node-id="SF_CLOUD_STATUS_ROW"><span class="ak">云端名单</span><span class="av" id="cloudListStatus" data-page-node-id="SF_CLOUD_STATUS">未同步</span></div>
+          <!-- 未生效条目明细：云端名单里被丢弃的条目（白名单写通配、通配超上限、IDN 通配等）
+               以前只在控制台 console.warn 里出现，等于对用户静默。这里把原文 + 原因直接列出来，
+               让用户/作者能照着自己改名单。默认隐藏，无丢弃时不占位。 -->
+          <div class="about-row" id="cloudDropRow" data-page-node-id="SF_CLOUD_DROP_ROW" style="display:none"><span class="ak">未生效条目</span><span class="av" id="cloudDropDetail" data-page-node-id="SF_CLOUD_DROP" style="font-weight:400;opacity:.75;word-break:break-all"></span></div>
+          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75">云端黑名单支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）；云端白名单、以及「规则与名单」里的两个本地名单不支持通配。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域。<br>另支持<b>路径条目</b>（黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；单次最多收录 500 条路径条目。</span></div>
+        </div>
+
+        <!-- 反馈与建议：两个通道 —— 打开预填的 GitHub Issues 新建页，或经自建 Worker 代发邮件到作者邮箱。
+             邮件通道只在你点击时发送正文与选填联系方式，内容会出现在作者收到的邮件中。
+             ★ 控件一律用项目自带的 .seg（分段），不用原生 select；原生控件在深色主题下风格突兀。 -->
+        <div class="card fb-card" id="fbCard" data-page-node-id="SF_FB_CARD">
+          <div class="field" data-page-node-id="SF_FB_HEAD">
+            <label data-page-node-id="SF_FB_TITLE">反馈与建议</label>
+            <div class="hint" data-page-node-id="SF_FB_HINT">误报、漏报、想要的功能，可点击「发送反馈到GitHub Issue」提交到项目 Issues，或点击「发送反馈到作者邮箱」直接发邮件给作者。均不经第三方表单服务。</div>
+          </div>
+          <div class="field" data-page-node-id="SF_FB_TYPE">
+            <label data-page-node-id="SF_FB_TYPE_L">问题类型</label>
+            <div class="seg" id="fbSeg">
+              <button type="button" data-v="误报" class="active">误报</button>
+              <button type="button" data-v="漏报">漏报</button>
+              <button type="button" data-v="其他">其他</button>
+              <i class="seg-glider"></i>
+            </div>
+            <div class="hint">误报＝把正常网站判成了危险；漏报＝危险网站没被拦下。</div>
+          </div>
+          <div class="field" data-page-node-id="SF_FB_TEXT">
+            <label for="fbText">问题描述</label>
+            <textarea id="fbText" rows="4" maxlength="2000" placeholder="越具体越好：哪个网站、你做了什么操作、期望的结果是什么。&#10;例：访问 example.com 时弹出高危警告，但那是我们公司官网；点击下载按钮也被拦了。"></textarea>
+            <div class="fb-text-meta">
+              <span class="hint">请不要粘贴账号密码、身份证号等敏感信息。最大长度不超过2000个字符。</span>
+              <span class="fb-count" id="fbCount">0 / 2000</span>
+            </div>
+          </div>
+          <div class="field" data-page-node-id="SF_FB_CONTACT">
+            <label for="fbContact">邮件联系方式（选填）</label>
+            <input id="fbContact" type="email" class="fb-input" placeholder="选填，方便我们回复你；也可留空。" autocomplete="off" />
+          </div>
+          <div class="field" data-page-node-id="SF_FB_ACTIONS">
+            <div class="fb-actions">
+              <button class="btn btn-primary" id="fbSend" type="button">发送反馈到GitHub Issue</button>
+              <button class="btn btn-sec" id="fbMail" type="button">发送反馈到作者邮箱</button>
+              <span class="upd-checking" id="fbSpin" hidden>发送中…</span>
+            </div>
+            <div class="hint" id="fbMsg" hidden></div>
+          </div>
+        </div>
+
+        <!-- 支持作者 / 鸣谢 -->
+        <div class="card sponsor-card" data-page-node-id="UkWpTQikUvGRu5Z5iC8KJ8">
+          <div class="sponsor-head" data-page-node-id="OKGWwLMYz23fU3Pw4HJcbJ">
+            <span class="sponsor-title" data-page-node-id="HoC4iY6izPWz3zT1npuUuF">支持作者</span>
+          </div>
+          <p class="sponsor-desc" data-page-node-id="kDvpiT4TAadQBqtxalKLeM">SilverFoxBlocker 是一个免费、开源的浏览器扩展。如果你的上网安全因它而多了一分保障，欢迎到爱发电支持作者，让检测规则持续更新、误报持续修复。</p>
+          <a class="sponsor-btn" href="https://ifadian.net/a/SilverFoxBlocker" target="_blank" rel="noopener" data-page-node-id="7OzFuEBo4n2pwFuaZbT2A0">前往爱发电赞助</a>
+          <div class="sponsor-list" id="sponsorList" hidden data-page-node-id="V2KRjoKMxbzXtGFvsnB3aI">
+            <div class="sponsor-list-title" data-page-node-id="ivGRpUHIsykcMDJg3eipSM">鸣谢 · 以下赞助者让 SilverFoxBlocker 走得更远</div>
+            <ul class="sponsor-names" id="sponsorNames" data-page-node-id="mCGF3imj0BC7pMJPEO7mwj"></ul>
+          </div>
+        </div>
+
+        <div class="tip" data-page-node-id="hxsKA8MWRfO3z7ZC5c7DGS">银狐（又称"游蛇"）木马常通过仿冒知名软件官网、网盘分发带毒安装包、钓鱼诱导话术传播。本扩展基于网页代码特征分析进行预警，仅供参考，无法替代专业杀毒软件。</div>
+      </section>
+
+
+      <!-- 底部操作栏 -->
+      <footer class="action-bar" data-page-node-id="3zmaG2ikVFJq0vjTjEF1h1">
+        <span class="auto-note" data-page-node-id="G6TjqqEH8wpUqzzI8TFdQj">修改后点击「保存设置」生效</span>
+        <div class="btn-row" data-page-node-id="wbX07qR6FgQUxG7BbT5cj8">
+          <button class="btn btn-ghost" id="resetBtn" data-page-node-id="ELEkLd4breTve7uC22ZKbk">重置统计</button>
+          <button class="btn btn-primary" id="saveBtn" data-page-node-id="SLr9F5dZ3BaPQpfJbCJ7Cx">保存设置</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <div class="toast-save" id="toast" data-page-node-id="XxfKVwuGkljCTlgzCZpHRs">已保存 ✓</div>
+
+  <!-- 扩展自动更新提示（独立悬浮窗，不归任何主题；仅版本升级时弹出，首次安装不弹） -->
+  <div class="upd-toast" id="updToast" role="status" aria-live="polite" hidden data-page-node-id="31fJaGcEvGicnaJ6pz8sEb">
+    <div class="upd-ico" aria-hidden="true" data-page-node-id="tPozaO5ADpQfG7MRwgZhZU">
+      <svg viewBox="0 0 24 24" fill="none" data-page-node-id="qs0FmiV67kgxTvjZv0JxYV">
+        <path d="M12 3 5 6v6c0 4.6 3 7.7 7 9 4-1.3 7-4.4 7-9V6l-7-3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" data-page-node-id="TQtR8DughitSCA7tQiviQk"/>
+        <path d="M15.5 9.5 11 14l-2.5-2.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="mudOnObhBpQRySV5z6MD7T"/>
+        <path d="M18.5 14.5a2.4 2.4 0 0 1 0 4.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" data-page-node-id="amRFZguWghHKc28006H8Ni"/>
+        <path d="M20 16.6v2.9h-2.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="xdn56ZStguKaXke0nCk3Bo"/>
+      </svg>
+    </div>
+    <div class="upd-body" data-page-node-id="025JnrPFGD0TmpbcieoqVq">
+      <div class="upd-title" data-page-node-id="7VzSXHnVK7GsCVfGzGcThj">SilverFoxBlocker 已更新到版本 <b id="updVer" data-page-node-id="jsdyobBmHl2UespaDsDqrE">v1.0.0</b></div>
+      <ul class="upd-points" id="updPoints" data-page-node-id="ZHJQFpUhzxbQLp7plCHqgz"></ul>
+    </div>
+    <button class="upd-close" id="updClose" type="button" aria-label="关闭提示" data-page-node-id="cEcnM7wTuKA7HDD50XWh4d">
+      <svg viewBox="0 0 24 24" fill="none" data-page-node-id="TKsUfBsuYx04EMvhSdQJK4"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" data-page-node-id="zl4oA4vyciklCdSrzYj1dn"/></svg>
+    </button>
+  </div>
+
+  <!-- 减小/减弱动画效果：开启确认弹窗 -->
+  <div class="modal-overlay" id="rmModal" data-page-node-id="ozqE0DfPaly2KXLGegzEVa">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="rmTitle" data-page-node-id="AA6ygSWqo2xJOYHjCA7084">
+      <div class="modal-ico" data-page-node-id="j4dlC9UDOqWpoUhngsUlEG">
+        <svg viewBox="0 0 24 24" fill="none" data-page-node-id="wWgS2Wxd75sikbU8LDbdTI"><circle cx="12" cy="12" r="9" stroke="#7db4ff" stroke-width="1.6" data-page-node-id="hI7L0QtGzJDWgsQaGmvpqR"/><path d="M12 8v5M12 16h.01" stroke="#7db4ff" stroke-width="2" stroke-linecap="round" data-page-node-id="VwSOvju9UhyTOtTP944JGz"/></svg>
+      </div>
+      <h3 id="rmTitle" data-page-node-id="BQ0ofQoIa35SEd28LccnpR">减弱动画效果</h3>
+      <p data-page-node-id="7BGgDUIskE1yZwDx5LqTOz">开启后，将关闭所有界面动画（过渡、弹跳、悬停光晕等）。</p>
+      <div class="modal-actions" data-page-node-id="ukvXweCSAiM8i7LHym114U">
+        <button class="btn btn-ghost" id="rmCancel" data-page-node-id="15HyoagFD4kqNjhRD63UkU">取消</button>
+        <button class="btn btn-primary" id="rmConfirm" data-page-node-id="Sc2rmImjtgbjGkMQ01MrVl">确认</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Pixel 主题解锁弹窗（彩蛋：连点左上角标志 3 下触发；不归任何主题） -->
+  <div class="egg-overlay" id="eggOverlay" role="dialog" aria-modal="true" aria-labelledby="eggTitle" data-page-node-id="YnVbER6YHkBFeNBEirQ5mO">
+    <div class="egg-modal" data-page-node-id="FRZALokMp2oxzfX5FU7j68">
+      <h3 class="egg-title" id="eggTitle" data-page-node-id="UKF9cJUwMU8B8SvlTTk1L8">输入口令</h3>
+      <p class="egg-sub" data-page-node-id="nYrbfgeoymlTNJSjlMbUuf">验证通过后可解锁一项隐藏外观。</p>
+      <input class="egg-input" id="eggInput" type="text" autocomplete="off" spellcheck="false"
+             placeholder="在此输入口令…" aria-label="解锁口令" data-page-node-id="MCgj9UJ3EtypyFRW7pttUh">
+      <div class="egg-ok" id="eggOk" data-page-node-id="D8yPpKezlX2EewRfoEAdJx">已解锁 ✓</div>
+      <div class="egg-hint" data-page-node-id="K6S7jHDVOxTsQHHRhjFYoE">提示：Google 自家的「类原生安卓」系统，其英文代号是？</div>
+      <div class="egg-actions" data-page-node-id="YjBlCzh1NhNLSWLvpjED87">
+        <button class="egg-cancel" id="eggCancel" type="button" data-page-node-id="LhI3CVYjggt6QKCrAacgqQ">取消</button>
+        <button class="egg-confirm" id="eggConfirm" type="button" data-page-node-id="QFVchKkW97Q03eRdR1oLdn">确认</button>
+      </div>
+    </div>
+  </div>
+
+
+  <script src="../rules/iocs.js"></script>
+  <script src="../rules/analyzer.js"></script>
+  <script src="../crypto-helper.js"></script>
+  <script src="feedback-config.js?v=20261102"></script>
+  <script src="options.js?v=20261109c"></script>
+</body>
+</html>

@@ -61,10 +61,11 @@ const DEFAULTS = {
   threatIntel: {
     enabled: false,
     providers: {
+      // VirusTotal / Google Safe Browsing 的 Key 一律以 AES-GCM 密文存储（crypto-helper 加解密），
+      // settings 里读到的 apiKey 是密文；明文只存在于用户输入的瞬间与后台 SW 解密后的内存里。
       virustotal: { enabled: false, apiKey: '' },
       urlhaus: { enabled: false },
       netapi: { enabled: false },
-      // Google Safe Browsing：Key 以密文存储（crypto-helper 加密），settings 里读到的 apiKey 是密文
       googlesafebrowsing: { enabled: false, apiKey: '' }
     }
   },
@@ -98,6 +99,13 @@ let _gsFieldDirty = false;   // 用户是否修改过 Key 输入框（聚焦后�
 const GSB_MASK_CHAR = '•';
 const GSB_MASK = new Array(39 + 1).join(GSB_MASK_CHAR);  // 已保存 Key 的掩码（39 点 = Google API Key 典型长度）；未保存时输入框为空
 
+// VirusTotal Key 加密存储相关 UI 状态（与 GSB 共用 crypto-helper，但状态彼此独立）
+let _vtKeySet = false;       // 设置页打开时是否已存在密文 Key
+let _vtSavedCipher = '';     // 已保存的密文，用户未改动输入框时原样保留
+let _vtEncryptFailed = false;// 本次保存加密是否失败（首次填写失败 → 不存明文，提示重试）
+let _vtFieldDirty = false;   // 用户是否改动过 Key 输入框
+const VT_MASK = new Array(64 + 1).join(GSB_MASK_CHAR);   // VT v3 API Key 典型长度 64 位
+
 function $(id) { return document.getElementById(id); }
 // 扩展环境才有 chrome.storage；浏览器直接预览时优雅退回默认值，不影响真实行为
 function hasStorage() { return (typeof chrome !== 'undefined') && chrome.storage && chrome.storage.sync; }
@@ -105,6 +113,37 @@ function hasStorageLocal() { return (typeof chrome !== 'undefined') && chrome.st
 function getSettings() {
   if (!hasStorage()) return Promise.resolve(Object.assign({}, DEFAULTS));
   return new Promise((resolve) => chrome.storage.sync.get(DEFAULTS, (s) => resolve(Object.assign({}, DEFAULTS, s || {}))));
+}
+
+// ===== 旧版明文 VirusTotal Key → AES-GCM 密文自动迁移 =====
+// v1.6.1 及更早版本把 VT Key 明文写进 storage.sync。升级后打开一次设置页即完成迁移，
+// 用户无需重新粘贴；迁移失败则保留明文（后台仍兼容），绝不把 Key 弄丢或写成半截密文。
+async function migrateVtPlainKey(settings) {
+  try {
+    const ti = settings && settings.threatIntel;
+    const vt = ti && ti.providers && ti.providers.virustotal;
+    const raw = (vt && typeof vt.apiKey === 'string') ? vt.apiKey.trim() : '';
+    if (!raw || typeof sfLooksEncrypted !== 'function' || sfLooksEncrypted(raw)) return;
+    if (typeof sfEncryptKey !== 'function' || !hasStorage()) return;
+    const enc = await sfEncryptKey(raw);
+    if (!enc) return;   // Web Crypto 不可用：保留明文，后台兼容路径仍可正常查询
+    // 深拷贝，避免改到 DEFAULTS.threatIntel 的共享引用（getSettings 是浅合并）
+    const nextTi = JSON.parse(JSON.stringify(ti));
+    nextTi.providers = nextTi.providers || {};
+    nextTi.providers.virustotal = Object.assign({}, nextTi.providers.virustotal || {}, { apiKey: enc });
+    const ok = await new Promise((resolve) => {
+      try {
+        chrome.storage.sync.set({ threatIntel: nextTi }, function () {
+          resolve(!(chrome.runtime && chrome.runtime.lastError));
+        });
+      } catch (e) { resolve(false); }
+    });
+    if (!ok) return;
+    settings.threatIntel = nextTi;   // 让 bindControls 直接拿到密文态
+    console.log('[SilverFoxBlocker][设置] 已将旧的明文 VirusTotal API Key 迁移为 AES-GCM 密文');
+  } catch (e) {
+    console.warn('[SilverFoxBlocker][设置] VT Key 迁移失败，保留原配置：', e);
+  }
 }
 
 /* 字号弹性弹簧：用 requestAnimationFrame 逐帧把 --sf-scale 逼近目标值，带明显过冲回弹（弹性十足）。
@@ -876,11 +915,44 @@ function bindControls(settings) {
     const tiVtEnabled = $('tiVtEnabled');
     const tiVtKey = $('tiVtKey');
     const tiVtKeyWrap = $('tiVtKeyWrap');
+    const tiVtKeyHint = $('tiVtKeyHint');
     tiEnabled.checked = !!ti.enabled;
     if (tiProviders) tiProviders.style.display = tiEnabled.checked ? '' : 'none';
     if (tiVtEnabled) tiVtEnabled.checked = !!vt.enabled;
-    if (tiVtKey) tiVtKey.value = vt.apiKey || '';
+    // VT Key 与 GSB 同为 AES-GCM 密文存储：明文永不落盘、永不回显，已配置时只显示圆点掩码。
+    _vtKeySet = false; _vtSavedCipher = ''; _vtFieldDirty = false;
+    if (tiVtKey) {
+      tiVtKey.value = '';
+      tiVtKey.type = 'password';
+      tiVtKey.onfocus = null;
+      // 无条件绑定：首次填写（原本没有 Key）也必须能把新 Key 送进 collectSettings 加密，
+      // 不能只在「已存在密文」时绑定，否则第一次粘贴的 Key 会被静默丢弃。
+      tiVtKey.oninput = function () { _vtFieldDirty = true; };
+      tiVtKey.placeholder = '粘贴你的 VirusTotal API Key（保存时自动加密）';
+    }
     if (tiVtKeyWrap) tiVtKeyWrap.style.display = (tiVtEnabled && tiVtEnabled.checked) ? '' : 'none';
+    if (tiVtKeyHint) { tiVtKeyHint.textContent = ''; tiVtKeyHint.style.color = ''; }
+    if (vt.apiKey && sfLooksEncrypted(vt.apiKey)) {
+      _vtKeySet = true; _vtSavedCipher = vt.apiKey; _vtFieldDirty = false;
+      if (tiVtKey) {
+        tiVtKey.value = VT_MASK;
+        tiVtKey.placeholder = '已加密保存（显示为圆点）。点击可输入新 Key 替换；留空保存则保留原 Key。';
+        tiVtKey.onfocus = function () {
+          if (tiVtKey.value === VT_MASK) { try { tiVtKey.select(); } catch (_) {} }
+        };
+      }
+      if (tiVtKeyHint) {
+        tiVtKeyHint.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。';
+        tiVtKeyHint.style.color = '#2e9e6b';
+      }
+    } else if (vt.apiKey) {
+      // 自动迁移失败等极端情况下残留的旧明文：绝不回显，提示重新输入，下次保存即加密落盘
+      if (tiVtKey) tiVtKey.value = '';
+      if (tiVtKeyHint) {
+        tiVtKeyHint.textContent = '检测到旧格式 Key（未加密），请重新输入以重新加密保存。';
+        tiVtKeyHint.style.color = '#c0392b';
+      }
+    }
     tiEnabled.addEventListener('change', function () {
       if (tiProviders) tiProviders.style.display = tiEnabled.checked ? '' : 'none';
     });
@@ -904,7 +976,9 @@ function bindControls(settings) {
     if (tiGsKey) {
       tiGsKey.value = '';
       tiGsKey.type = 'password';
-      tiGsKey.onfocus = null; tiGsKey.oninput = null;
+      tiGsKey.onfocus = null;
+      // 与 VT 一致改为无条件绑定：修复首次填写 GSB Key 时因 _gsFieldDirty 恒为 false 而静默丢失的问题
+      tiGsKey.oninput = function () { _gsFieldDirty = true; };
       tiGsKey.placeholder = '粘贴你的 Google Safe Browsing API Key（保存时自动加密）';
     }
     if (tiGsKeyWrap) tiGsKeyWrap.style.display = (tiGsEnabled && tiGsEnabled.checked) ? '' : 'none';
@@ -921,7 +995,6 @@ function bindControls(settings) {
         tiGsKey.onfocus = function () {
           if (tiGsKey.value === GSB_MASK) { try { tiGsKey.select(); } catch (_) {} }
         };
-        tiGsKey.oninput = function () { _gsFieldDirty = true; };  // 用户已改动 → 保存时重新加密
       }
       if (tiGsKeyHint) {
         tiGsKeyHint.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。';
@@ -1286,6 +1359,35 @@ async function collectSettings() {
     const tiGsKeyHintEl = $('tiGsKeyHint');
     if (tiGsKeyHintEl && gsKeyEnc) { tiGsKeyHintEl.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。'; tiGsKeyHintEl.style.color = '#2e9e6b'; }
   } catch (e) {}
+  // VirusTotal：与 GSB 完全同机制，Key 加密后才写进 settings，明文绝不落盘
+  const vtRaw = ($('tiVtKey') ? ($('tiVtKey').value || '') : '');
+  const vtInput = vtRaw.split(GSB_MASK_CHAR).join('').trim();   // 剥掉掩码圆点，避免「圆点+新Key」被整体加密
+  let vtKeyEnc = '';
+  _vtEncryptFailed = false;
+  if (!_vtFieldDirty) {
+    vtKeyEnc = _vtSavedCipher || '';
+  } else if (vtInput && vtInput !== _vtSavedCipher) {
+    const enc = await sfEncryptKey(vtInput);
+    if (enc) {
+      vtKeyEnc = enc;
+    } else if (_vtKeySet) {
+      vtKeyEnc = _vtSavedCipher || '';        // 加密异常但已有密文 → 保留旧值，不回退明文
+    } else {
+      vtKeyEnc = ''; _vtEncryptFailed = true; // 首次填写却加密失败 → 绝不写明文
+    }
+  } else {
+    vtKeyEnc = _vtSavedCipher || '';
+  }
+  try {
+    const tiVtKeyEl = $('tiVtKey');
+    if (tiVtKeyEl) { tiVtKeyEl.type = 'password'; tiVtKeyEl.value = vtKeyEnc ? VT_MASK : ''; }
+    _vtSavedCipher = vtKeyEnc; _vtFieldDirty = false;
+    const tiVtKeyHintEl = $('tiVtKeyHint');
+    if (tiVtKeyHintEl && vtKeyEnc) {
+      tiVtKeyHintEl.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。';
+      tiVtKeyHintEl.style.color = '#2e9e6b';
+    }
+  } catch (e) {}
   return {
     enabledGlobal: (window.__sfSettings ? !!window.__sfSettings.enabledGlobal : true),
     showWarning: $('showWarning').checked,
@@ -1311,7 +1413,7 @@ async function collectSettings() {
       providers: {
         virustotal: {
           enabled: ($('tiVtEnabled') ? $('tiVtEnabled').checked : false),
-          apiKey: ($('tiVtKey') ? ($('tiVtKey').value || '').trim() : '')
+          apiKey: vtKeyEnc   // 密文（AES-GCM）；明文仅在后台 service worker 内解密
         },
         urlhaus: {
           enabled: ($('tiUrlhausEnabled') ? $('tiUrlhausEnabled').checked : false)
@@ -1562,6 +1664,8 @@ async function init() {
     const va = document.getElementById('verAbout'); if (va) va.textContent = 'v' + ver;
   } catch (e) {}
   const settings = await getSettings();
+  // 升级兼容：把旧版明文保存的 VirusTotal Key 就地加密后写回，之后按密文流程渲染
+  await migrateVtPlainKey(settings);
   // 自定义背景图单独存 chrome.storage.local（dataURL 大，避免占 sync 配额），
   // 这里读回并合并进 settings.bgImage，使 applyAppearance / showBgThumb 走统一字段，退出重进不再丢失。
   if (hasStorageLocal()) {
@@ -1664,8 +1768,8 @@ async function init() {
   setupPixelEgg();
   setupUpdateToast();
 
-  // 关于页：反馈与建议 —— 点击「发送反馈」打开项目 GitHub Issues 新建页并预填内容。
-  // 零第三方表单、无邮箱暴露；失败绝不假装成功，短文本有最小长度校验。
+  // 关于页：反馈与建议 —— 两个通道：GitHub Issues 预填新建页，或经自建 Worker 代发邮件到作者邮箱。
+  // 邮件通道只在用户点击时发出（正文 + 选填联系方式）；失败绝不假装成功，短文本有最小长度校验。
   (function bindFeedback() {
     var btn = $('fbSend'), mailBtn = $('fbMail'), spin = $('fbSpin'), msg = $('fbMsg');
 
@@ -1814,16 +1918,24 @@ async function init() {
       // 保存成功后同步回写缓存，保证 window.__sfSettings 与已落盘的 sync 一致，
       // 避免后续 applyAppearance / collectSettings 回退分支读到陈旧值。
       if (window.__sfSettings) Object.assign(window.__sfSettings, patch);
-      // 诊断日志：确认 GSB 配置是否进入 patch（用户在 DevTools 控制台可据此判断 Key 是否真的存上了）
+      // 诊断日志：确认两个需 Key 的源都写入了密文（用户在 DevTools 控制台可据此判断 Key 是否真的存上了）
       const gsProv = (patch.threatIntel && patch.threatIntel.providers && patch.threatIntel.providers.googlesafebrowsing) || {};
+      const vtProv = (patch.threatIntel && patch.threatIntel.providers && patch.threatIntel.providers.virustotal) || {};
       console.log('[SilverFoxBlocker][设置] 保存威胁情报：'
-        + 'GSB 子开关=' + !!gsProv.enabled
+        + 'VT 子开关=' + !!vtProv.enabled
+        + '，VT 密文=' + (vtProv.apiKey ? '已加密(' + vtProv.apiKey.length + ')' : '空')
+        + '，GSB 子开关=' + !!gsProv.enabled
         + '，GSB 密文长度=' + ((gsProv.apiKey || '').length)
-        + (_gsEncryptFailed ? '，⚠ 本次 GSB Key 加密失败，未写入明文（已留空）' : ''));
+        + (_gsEncryptFailed ? '，⚠ 本次 GSB Key 加密失败，未写入明文（已留空）' : '')
+        + (_vtEncryptFailed ? '，⚠ 本次 VT Key 加密失败，未写入明文（已留空）' : ''));
       // 自定义主题可能含大体积背景图，单独存 chrome.storage.local，避免 sync 8KB 配额静默失败
       if (hasStorageLocal()) chrome.storage.local.set({ sfCustomThemes: (window.__sfSettings && Array.isArray(window.__sfSettings.customThemes)) ? window.__sfSettings.customThemes : [] });
-      if (_gsEncryptFailed) {
-        alert('Google Safe Browsing 的 API Key 本次加密失败，未保存。请重试；如反复失败请检查浏览器是否支持 Web Crypto（chrome-extension:// 页面默认可用）。');
+      if (_gsEncryptFailed || _vtEncryptFailed) {
+        const names = [
+          _vtEncryptFailed ? 'VirusTotal' : '',
+          _gsEncryptFailed ? 'Google Safe Browsing' : ''
+        ].filter(Boolean).join('、');
+        alert(names + ' 的 API Key 本次加密失败，未保存。请重试；如反复失败请检查浏览器是否支持 Web Crypto（chrome-extension:// 页面默认可用）。');
         return;
       }
       if (hasStorage()) {
@@ -1870,6 +1982,209 @@ document.addEventListener('click', function (e) {
 });
 
 /* ============================================================================
+ * GitHub 访问通道：直连 → 公共镜像
+ * ----------------------------------------------------------------------------
+ * 现象：大陆网络访问 github.com 经常 DNS 被污染、TLS 被重置，「前往 GitHub 查看更新」
+ *   点下去就是长时间白屏，用户既看不到更新说明，也不知道还能换什么办法。
+ * 做法：点按钮时先探测直连（HEAD + no-cors，1.5s 预算，不下载正文）；连不上就把刚
+ *   打开的那个标签页重定向到能完整渲染网页的公共镜像（kkgithub / bgithub）；
+ *   镜像也不通时退到最后一步——用文件反代读 releases/latest 的 JSON，只回答
+ *   「最新版是哪个、有没有新版」，不再指望能打开网页。
+ *
+ * 按钮落点：/releases/latest（而不是仓库首页）。GitHub 会 301 到 /releases/tag/vX.Y.Z，
+ *   用户点一次就落在更新说明上，少一次「进仓库 → 找 Release」的点击；镜像也带同一路径。
+ *
+ * 为什么「看网页」用全站镜像而不是 gh-proxy.com 这类「文件反代」：
+ *   反代只转发 raw / releases / archive 这些文件请求，访问仓库网页时返回的是代理
+ *   自己的首页（已实测），对「查看更新」没有任何意义。反代真正的用处是下面
+ *   「云端名单同步」里抓 raw JSON，以及这里兜底读 api.github.com 的发布信息。
+ * ========================================================================== */
+const SF_GH_REPO_PATH = 'bbjj12345/SilverFoxBlocker';
+const SF_GH_DIRECT_BASE = 'https://github.com/';
+// 「查看更新」落点：直接指向 Releases 最新版，省掉在仓库页里找 Release 的一步
+// （/releases/latest 会由 GitHub 301 到 /releases/tag/vX.Y.Z，镜像跟随同一跳转）
+const SF_GH_UPDATE_PATH = '/releases/latest';
+// 全站镜像：把 /用户名/仓库 直接拼在域名后面即可浏览（含 Releases / blob / issues）
+// ⚠️ 这两家全站镜像存活率很低（kkgithub 已多次长时间 502/停止解析，bgithub 的
+//    域名在部分网络被投毒到 Meta 的 IP），因此它们只是「尽力而为」的一层；
+//    真正兜底的是走文件反代读 releases/latest 的 JSON（见 readReleaseViaProxy）。
+const SF_GH_PAGE_MIRRORS = [
+  { id: 'kkgithub', name: 'kkgithub 镜像', base: 'https://kkgithub.com/' },
+  { id: 'bgithub', name: 'bgithub 镜像', base: 'https://bgithub.xyz/' }
+];
+const SF_GH_CHANNEL_KEY = 'sfGhChannel';   // storage.local: { id: 'direct'|'kkgithub'|..., at }
+
+// 轻量可达性探测：TCP+TLS+HTTP 有响应就算通。
+// no-cors 只能拿到 opaque 响应（分不清 200 与 404），但这里要回答的是「连得上吗」，
+// 而不是「页面存不存在」，够用了；好处是不需要读正文、不占带宽、不受 CORS 影响。
+function sfProbeUrl(url, ms) {
+  return new Promise(function (resolve) {
+    let done = false, ctrl = null;
+    const finish = function (ok) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { if (ctrl) ctrl.abort(); } catch (e) {}
+      resolve(ok);
+    };
+    const timer = setTimeout(function () { finish(false); }, ms || 1500);
+    try {
+      ctrl = new AbortController();
+      fetch(url, { method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: ctrl.signal })
+        .then(function () { finish(true); }, function () { finish(false); });
+    } catch (e) { finish(false); }
+  });
+}
+
+function loadGhChannel() {
+  return new Promise(function (resolve) {
+    // 400ms 兜底：扩展存储异常时不能让「改道」这一步无限等（否则标签页卡在报错页）
+    const timer = setTimeout(function () { resolve(''); }, 400);
+    const done = function (v) { clearTimeout(timer); resolve(v); };
+    try {
+      chrome.storage.local.get({ [SF_GH_CHANNEL_KEY]: null }, function (o) {
+        done((o && o[SF_GH_CHANNEL_KEY] && o[SF_GH_CHANNEL_KEY].id) || '');
+      });
+    } catch (e) { done(''); }
+  });
+}
+function saveGhChannel(id) {
+  try { chrome.storage.local.set({ [SF_GH_CHANNEL_KEY]: { id: id, at: Date.now() } }, function () {}); } catch (e) {}
+}
+
+function setGhNote(text) {
+  const el = $('ghChannelTip');
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || '';
+  if (text) el.title = '仅在打开 GitHub 网页时使用公共镜像，不涉及浏览记录或名单数据';
+}
+
+// 文件反代里支持 api.github.com 的极少（实测 ghproxy.net / geekertao 系返回 403），
+// 这里只留确认可用的；列表形式方便以后加新通道。
+const SF_GH_API_PROXIES = [
+  { name: 'gh-proxy.com 代理', prefix: 'https://gh-proxy.com/' }
+];
+const SF_GH_RELEASE_API = 'https://api.github.com/repos/' + SF_GH_REPO_PATH + '/releases/latest';
+
+// 直连 github.com 打不开时的「退一步」：不打开网页，只问一句「有没有新版」。
+// 走反代读 releases/latest 的 JSON（纯文件请求，反代能透传），4s 拿不到就放弃。
+// 返回 { tag, at, source } 或 null；不下载任何安装包。
+async function readReleaseViaProxy() {
+  for (let i = 0; i < SF_GH_API_PROXIES.length; i++) {
+    const p = SF_GH_API_PROXIES[i];
+    const ctrl = new AbortController();
+    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 4000);
+    try {
+      const res = await fetch(p.prefix + SF_GH_RELEASE_API, {
+        cache: 'no-store', signal: ctrl.signal, headers: { Accept: 'application/vnd.github+json' }
+      });
+      if (!res.ok) continue;
+      const j = await res.json();
+      if (j && j.tag_name) {
+        return { tag: String(j.tag_name).replace(/^v/i, ''), at: j.published_at || '', source: p.name };
+      }
+    } catch (e) {
+      // 单通道失败不影响其它通道，静默换下一个
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+// 打开仓库页/子页：直连优先，失败就把当前标签页改到镜像。
+// 先 window.open 再判定，是为了「点了立刻有反应」——若先探测，网络差时要等 1.5s+ 才开页，
+// 而且 await 之后 window.open 容易被当成非用户手势而拦掉。
+async function openGithubSmart(path) {
+  const sub = path || SF_GH_UPDATE_PATH;   // 不传路径时默认打开「最新 Release」
+  const direct = SF_GH_DIRECT_BASE + SF_GH_REPO_PATH + sub;
+  let win = null;
+  try { win = window.open(direct, '_blank'); } catch (e) {}
+  if (win) { try { win.opener = null; } catch (e) {} }
+  // window.open 被弹窗拦截时（返回 null），退到 chrome.tabs.create，保证「点了总有反应」
+  let tabId = -1;
+  if (!win) {
+    try {
+      chrome.tabs.create({ url: direct }, function (t) { if (t && t.id != null) tabId = t.id; });
+    } catch (e) {}
+  }
+  // 改道：优先改当前新标签页，其次改 chrome.tabs 建的那个，最后才新开一个
+  const goTo = function (u) {
+    if (win) { try { win.location.replace(u); return; } catch (e) {} }
+    if (tabId >= 0 && chrome.tabs && chrome.tabs.update) {
+      try { chrome.tabs.update(tabId, { url: u }); return; } catch (e) {}
+    }
+    try { window.open(u, '_blank'); } catch (e) {}
+  };
+
+  // 兜底路径用：把刚才抢开的那个空白/报错标签页收掉，免得用户面前留一个「无法访问」
+  const dropPending = function () {
+    if (win) { try { win.close(); return; } catch (e) {} }
+    if (tabId >= 0 && chrome.tabs && chrome.tabs.remove) {
+      try { chrome.tabs.remove(tabId); } catch (e) {}
+    }
+  };
+
+  if (await sfProbeUrl(direct, 1500)) {
+    saveGhChannel('direct');
+    setGhNote('');
+    return;
+  }
+  // 直连不通：优先用上次成功过的镜像，免得每次都在第一个镜像上再等一次超时
+  const last = await loadGhChannel();
+  const order = SF_GH_PAGE_MIRRORS.slice();
+  if (last && last !== 'direct') {
+    order.sort(function (a, b) { return (b.id === last ? 1 : 0) - (a.id === last ? 1 : 0); });
+  }
+  for (let i = 0; i < order.length; i++) {
+    const m = order[i];
+    const u = m.base + SF_GH_REPO_PATH + sub;
+    if (!(await sfProbeUrl(u, 1800))) continue;
+    goTo(u);
+    saveGhChannel(m.id);
+    setGhNote('直连 GitHub 超时，已改用 ' + m.name + '（内容与官网一致）。');
+    console.log('[GitHub 通道] 直连失败 → ' + m.name + '：' + u);
+    return;
+  }
+  // 最后兜底：网页确实打不开，但「有没有新版」仍然答得上来 —— 用文件反代读
+  //   releases/latest 的 JSON（同样是文件请求，不依赖 github.com 网页能否渲染）。
+  //   这样用户至少能看到最新版本号与发布日期，再决定去蓝奏云下载。
+  setGhNote('直连与镜像均不可达，正在经代理查询最新版本…');
+  dropPending();   // 网页最终打不开：别把用户扔在浏览器的「无法访问」页上
+  const rel = await readReleaseViaProxy();
+  let cur = '';
+  try { cur = (chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : ''; } catch (e) {}
+  if (rel) {
+    const date = rel.at ? '（' + rel.at.slice(0, 10) + '）' : '';
+    const tail = !cur ? '。'
+      : (rel.tag === cur ? '，与当前 v' + cur + ' 相同，无需更新。'
+        : '，当前 v' + cur + '，可点右侧「前往蓝奏云查看更新」下载。');
+    setGhNote('GitHub 与镜像均不可达；经' + rel.source + '读到最新版 v' + rel.tag + date + tail);
+    console.log('[GitHub 通道] 网页不可达，经 ' + rel.source + ' 读到最新版 v' + rel.tag);
+  } else {
+    setGhNote('直连与镜像均超时：可稍后重试，或改用「前往蓝奏云查看更新」。');
+    console.log('[GitHub 通道] 直连、镜像与反代均不可达：' + direct);
+  }
+}
+
+(function initGithubSmartLink() {
+  function bind() {
+    const a = $('manualCheckUpdate');
+    if (!a) return;
+    a.setAttribute('title', '直连 github.com 不通时会自动改用公共镜像；镜像也不通时，经代理查询最新版本号');
+    a.addEventListener('click', function (ev) {
+      // 中键 / Ctrl+点击 / Cmd+点击 交给浏览器原生行为（新标签页打开 href），不做探测
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      ev.preventDefault();
+      openGithubSmart('');
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();
+
+/* ============================================================================
  * 云端名单同步（关于页「从云端更新名单」按钮）
  * ----------------------------------------------------------------------------
  * 数据流：按钮 → worker GET /list?type=white|black（两份并行）→ 清洗去重 →
@@ -1893,7 +2208,7 @@ document.addEventListener('click', function (e) {
  *   本扩展已申请 unlimitedStorage，storage.local 实际无上限。
  * ============================================================================ */
 
-// worker 的名单接口（manifest 的 connect-src 已放行该域名）
+// worker 的名单接口（manifest 的 connect-src 为 'self' https:，允许该 HTTPS 请求）
 const SF_CLOUD_API = 'https://api.silverfoxblocker.dpdns.org/list';
 // ⚠️ 必须填成 Cloudflare Worker 里 env.LIST_API_KEY 的同一个值，否则接口返回 401。
 //    留空时两个按钮不会发请求，只提示「未配置 API Key」。
@@ -1902,6 +2217,46 @@ const SF_CLOUD_API_KEY = 'R6fNcSm^$Z5d6s';
 const SF_CLOUD_KEY_WHITE = 'sfCloudWhite';
 const SF_CLOUD_KEY_BLACK = 'sfCloudBlack';
 const SF_CLOUD_META_KEY = 'sfCloudListMeta';
+
+// ---------------------------------------------------------------------------
+// 云名单的第二、第三通道（直连 Worker 失败时使用）
+//   主通道 = 自建 Worker（实时读私有仓库，带 API Key 鉴权）；
+//   备用   = 公开仓库里的**加密快照**：GitHub raw 直连 + 若干公共反代。
+//   为什么需要：Worker 挂在自定义域名（api.silverfoxblocker.dpdns.org）上，一旦该域名
+//   被 DNS 污染或线路不通，状态行只会干等超时，用户无从自救。而私有仓库的内容
+//   任何公共反代都读不到（没有凭据 → 一律 404），所以只能事先把一份**加密**副本
+//   放公开仓库：反代透明转发密文，扩展在本机解密后再走同一套清洗/落盘流程。
+//   ⚠️ 需要把 Cloud/blacklist.json.enc 与 Cloud/whitelist.json.enc 上传到公开仓库
+//      （SF_CLOUD_MIRROR_REPO 的 Cloud/ 目录，由 tools/encrypt_cloud.js 生成）。
+//      没上传时这两个通道会很快 404，代码会自动跳过后续反代、只报「镜像未发布」，
+//      不影响原有直连逻辑。
+//
+// 加密快照的定位（说清楚边界，别当成真的保密）：
+//   · 挡住「随手点开链接看名单」和「改一个域名试试」——密文不可读，改一个字节
+//     AES-GCM 就校验失败，扩展拒绝写入本地名单；
+//   · 挡不住解包扩展读口令的人（口令必须内置，否则扩展自己解不开）；
+//   · 真正的保密仍然只有 Worker 那条路（GITHUB_TOKEN 只在服务端）。
+// ---------------------------------------------------------------------------
+const SF_CLOUD_MIRROR_REPO = 'bbjj12345/SilverFoxBlocker';
+const SF_CLOUD_MIRROR_BRANCH = 'main';
+const SF_CLOUD_MIRROR_DIR = 'Cloud';
+// 公开快照是否使用加密文件（.json.enc）。改成 false 则回退到旧的明文 .json 方案，
+//   但明文意味着任何人打开 raw 链接就能看到整份名单，仅在临时排查时使用。
+const SF_CLOUD_MIRROR_ENCRYPTED = true;
+// ⚠️ 必须与 tools/encrypt_cloud.js 的 DEFAULT_PASS 一致；改口令要两处同步 + 重新生成快照
+const SF_CLOUD_ENC_PASS = 'aYGJ_rskoMvjXBjKCqQDqTjKMjMRNyH-';
+const SF_CLOUD_ENC_TAG = 'sfenc1';
+// 公共 GitHub 反代：统一前缀写法 <proxy>/<原始 raw 地址>，只用于文件（JSON/zip），不用于网页
+const SF_GH_PROXIES = [
+  { name: 'gh-proxy.com', prefix: 'https://gh-proxy.com/' },
+  { name: 'ghfast.top', prefix: 'https://ghfast.top/' },
+  { name: 'ghproxy.net', prefix: 'https://ghproxy.net/' },
+  { name: 'ghfile.geekertao.top', prefix: 'https://ghfile.geekertao.top/' },
+  { name: 'gh.geekertao.top', prefix: 'https://gh.geekertao.top/' },
+  { name: 'ghproxy.cc', prefix: 'https://ghproxy.cc/' }
+];
+// 单通道超时：直连卡住时不能无限等（原来没有超时，断网时会一直「正在拉取…」）
+const SF_CLOUD_FETCH_TIMEOUT = 6000;
 
 // 兼容多种云端 JSON 形态：纯数组 / {domains:[]} / {list:[]} / {data:[]} / 换行分隔字符串
 function extractCloudArray(json) {
@@ -2009,7 +2364,7 @@ function setCloudStatus(text) {
 // ★ 2026-11-09：条数改为「实际生效条数」，并单独报出被丢弃的条目数。
 //   此前把被丢弃的也算进去（通配超 200 条、白名单写通配、中文域名），
 //   用户看到「已更新 205 条」却只有 200 条生效，属于最坏的静默失败。
-function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW) {
+function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source) {
   // 通配条目单独点出来：否则用户写完 `*web.cdn-deepseek.com` 只看到"黑名单 1 条"，
   // 无法判断那条到底是被当成普通域名（永不命中）还是被当成规则收录了。
   // 2026-11-09：路径条目（主机名/路径）同理——只对特定链接生效，必须让用户看得见。
@@ -2024,6 +2379,8 @@ function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW) 
     '，云端白名单' + w + '条' + tags(0, pathW);
   if (ignoredB) s += '；已忽略黑名单 ' + ignoredB + ' 条（格式不合法或超出通配上限）';
   if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（白名单不支持通配符或格式不合法）';
+  // 只有走了备用通道才标注来源：默认直连时不必让用户看到技术细节
+  if (source && source !== '云端接口') s += '（数据源：' + source + '）';
   return s;
 }
 // 名单里含路径的条目数（`主机名/路径` 形式；通配条目单独统计）
@@ -2102,7 +2459,10 @@ function refreshCloudListStatus() {
       mb.dropped || 0,
       false,
       (mb.paths != null ? mb.paths : countPathEntries(o[SF_CLOUD_KEY_BLACK])),
-      (mw.paths != null ? mw.paths : countPathEntries(o[SF_CLOUD_KEY_WHITE]))
+      (mw.paths != null ? mw.paths : countPathEntries(o[SF_CLOUD_KEY_WHITE])),
+      // 刷新后也要看得出上次是走备用通道拿到的（否则用户以为一直直连成功）
+      (mw.source && mw.source !== '云端接口') ? mw.source
+        : ((mb.source && mb.source !== '云端接口') ? mb.source : '')
     );
     // 未生效条目的明细（原文 + 原因）直接列在下面：此前只在 console 里，用户看不到
     const strayWhiteEntries = (o[SF_CLOUD_KEY_WHITE] || []).filter(function (d) {
@@ -2111,36 +2471,143 @@ function refreshCloudListStatus() {
     });
     renderCloudDropDetail(mw, mb, strayWhiteEntries);
     // 同步时间放在 title 里：正文只保留用户要的那句，鼠标悬停仍能看到上次同步时刻
-    if (t) el.title = '上次同步 ' + formatAbsTime(t);
+    if (t) {
+      const srcs = [];
+      if (mw && mw.source && mw.source !== '云端接口') srcs.push('白名单 ' + mw.source);
+      if (mb && mb.source && mb.source !== '云端接口') srcs.push('黑名单 ' + mb.source);
+      el.title = '上次同步 ' + formatAbsTime(t) + (srcs.length ? '（备用通道：' + srcs.join('；') + '）' : '');
+    }
   });
 }
 
+// 单次请求带超时：AbortController 到点即中止，避免「网络半死」时按钮永远转圈
+async function fetchWithTimeout(url, opts, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ms || SF_CLOUD_FETCH_TIMEOUT);
+  try {
+    return await fetch(url, Object.assign({ cache: 'no-store', signal: ctrl.signal }, opts || {}));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 按「直连 → GitHub raw → 各公共反代」生成候选通道。
+// 只有直连通道带 API Key：把密钥发给第三方反代等于公开密钥。
+function cloudUrlCandidates(type) {
+  const q = type === 'white' ? 'white' : 'black';
+  const file = (q === 'white' ? 'whitelist.json' : 'blacklist.json') +
+    (SF_CLOUD_MIRROR_ENCRYPTED ? '.enc' : '');
+  const raw = 'https://raw.githubusercontent.com/' + SF_CLOUD_MIRROR_REPO + '/' +
+    SF_CLOUD_MIRROR_BRANCH + '/' + SF_CLOUD_MIRROR_DIR + '/' + file;
+  const out = [{
+    name: '云端接口',
+    url: SF_CLOUD_API + '?type=' + q + '&_=' + Date.now(),
+    headers: { 'X-API-Key': SF_CLOUD_API_KEY },
+    mirror: false,
+    enc: false
+  }];
+  // 镜像通道拿到的都是密文：enc:true 让 fetchCloudList 多走一步本地解密
+  out.push({ name: 'GitHub 镜像', url: raw + '?_=' + Date.now(), headers: {}, mirror: true, enc: SF_CLOUD_MIRROR_ENCRYPTED });
+  SF_GH_PROXIES.forEach(function (p) {
+    out.push({ name: p.name + ' 代理', url: p.prefix + raw, headers: {}, mirror: true, enc: SF_CLOUD_MIRROR_ENCRYPTED });
+  });
+  return out;
+}
+
+// base64 → Uint8Array（不用 atob 的字符串遍历写法在超大输入上会慢，这里按块处理）
+function sfB64ToBytes(b64) {
+  const s = atob(String(b64 || '').replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
+// 解开 tools/encrypt_cloud.js 生成的密文信封（PBKDF2-SHA256 + AES-256-GCM）。
+// 口令错了 → OperationError；内容被改过 → GCM 校验失败（同样是 OperationError），
+//   两种情况都直接抛错，绝不把「解不开」当成「名单为空」写进本地。
+async function decryptCloudSnapshot(env) {
+  if (!env || env._enc !== SF_CLOUD_ENC_TAG) {
+    throw new Error('不是加密快照（缺少 ' + SF_CLOUD_ENC_TAG + ' 标记）');
+  }
+  if (!(window.crypto && window.crypto.subtle)) {
+    throw new Error('当前环境不支持 WebCrypto，无法解密快照');
+  }
+  const enc = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey(
+    'raw', enc.encode(SF_CLOUD_ENC_PASS), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: sfB64ToBytes(env.salt), iterations: env.iter || 120000, hash: 'SHA-256' },
+    baseKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  let plain;
+  try {
+    // WebCrypto 的 AES-GCM 约定：密文末尾 16 字节就是认证 tag（与 Node 端拼接方式一致）
+    plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: sfB64ToBytes(env.iv) }, key, sfB64ToBytes(env.data));
+  } catch (e) {
+    throw new Error('快照解密失败（口令不匹配或文件被改动），已拒绝写入本地名单');
+  }
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
 async function fetchCloudList(type) {
-  const url = SF_CLOUD_API + '?type=' + (type === 'white' ? 'white' : 'black') + '&_=' + Date.now();
-  const res = await fetch(url, { headers: { 'X-API-Key': SF_CLOUD_API_KEY }, cache: 'no-store' });
-  const text = await res.text();
-  if (!res.ok) {
-    let msg = '';
-    try { msg = (JSON.parse(text) || {}).error || ''; } catch (e) {}
-    if (res.status === 401) throw new Error('鉴权失败：API Key 与 worker 的 LIST_API_KEY 不一致');
-    throw new Error(msg || ('HTTP ' + res.status));
-  }
-  let json;
-  try { json = JSON.parse(text); } catch (e) { throw new Error('云端返回的不是合法 JSON'); }
+  const cands = cloudUrlCandidates(type);
+  const errs = [];
+  let mirrorMissing = false;   // 公开镜像整批不可用（404/403）后不再逐个反代试，省掉几次超时
   const isWhite = type === 'white';
-  const raw = extractCloudArray(json);
-  // 结构都认不出来（例如 Worker 返回了 {error:...}）→ 宁可报错也不要写空名单
-  if (!raw) throw new Error('云端返回的结构无法识别（找不到域名数组）');
-  // 白名单不支持通配：allowWild:false，含 * / ? 的条目会被丢弃并计入 dropped
-  const r = normalizeCloudListEx(json, { allowWild: !isWhite });
   const name = isWhite ? '白名单' : '黑名单';
-  // 有条目但全被丢弃 → 中止（否则等于把这份名单清空，用户却以为同步成功）
-  if (raw.length && !r.list.length) {
-    throw new Error('云端' + name + ' ' + r.dropped.length + ' 条全部无效，已中止同步（' +
-      dropReasonBrief(r.dropped) + '）');
+
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i];
+    if (c.mirror && mirrorMissing) continue;
+    try {
+      const res = await fetchWithTimeout(c.url, { headers: c.headers });
+      const text = await res.text();
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('鉴权失败：API Key 与 worker 的 LIST_API_KEY 不一致');
+        if (c.mirror && (res.status === 404 || res.status === 403 || res.status === 400)) {
+          // 镜像还没发布 / 反代拒绝：剩下的反代拿的也是同一个 404，直接跳过
+          mirrorMissing = true;
+          errs.push(c.name + '：镜像未发布（HTTP ' + res.status + '）');
+          continue;
+        }
+        throw new Error('HTTP ' + res.status);
+      }
+      let json;
+      try { json = JSON.parse(text); } catch (e) { throw new Error('返回的不是合法 JSON'); }
+      // 加密快照：JSON 外壳解开后才是真正的名单对象，后面所有步骤完全复用。
+      // 解密失败（口令不匹配 / 文件被篡改）对每个反代都是同一个结果，不必挨个重试。
+      if (c.enc) {
+        try {
+          json = await decryptCloudSnapshot(json);
+        } catch (de) {
+          const err = new Error(de && de.message ? de.message : '快照解密失败');
+          err.noRetry = true;
+          throw err;
+        }
+      }
+      const raws = extractCloudArray(json);
+      // 结构都认不出来（例如 Worker 返回了 {error:...}）→ 换通道，别写空名单
+      if (!raws) throw new Error('返回的结构无法识别（找不到域名数组）');
+      // 白名单不支持通配：allowWild:false，含 * / ? 的条目会被丢弃并计入 dropped
+      const r = normalizeCloudListEx(json, { allowWild: !isWhite });
+      // 有条目但全被丢弃 → 中止（否则等于把这份名单清空，用户却以为同步成功）
+      // 这是**数据问题**，换通道也救不了，标记 noRetry 直接抛出
+      if (raws.length && !r.list.length) {
+        const err = new Error('云端' + name + ' ' + r.dropped.length + ' 条全部无效，已中止同步（' +
+          dropReasonBrief(r.dropped) + '）');
+        err.noRetry = true;
+        throw err;
+      }
+      // 原本就是空数组 → 允许（例如白名单暂时清空），状态行会显示 0 条，不会被误解
+      r.source = c.name;
+      if (c.name !== '云端接口') console.log('[云端名单] ' + name + ' 经备用通道「' + c.name + '」获取成功');
+      return r;
+    } catch (e) {
+      if (e && e.noRetry) throw e;
+      const msg = (e && e.message) ? e.message : '网络错误';
+      errs.push(c.name + '：' + (/abort/i.test(msg) || msg === 'The user aborted a request.' ? '超时' : msg));
+    }
   }
-  // 原本就是空数组 → 允许（例如白名单暂时清空），状态行会显示 0 条，不会被误解
-  return r;
+  throw new Error('所有通道均失败（' + errs.slice(0, 4).join('；') + (errs.length > 4 ? ' 等' : '') + '）');
 }
 
 // 一次拉取黑 + 白两份云端名单并整体覆盖本地快照。
@@ -2196,12 +2663,14 @@ async function updateCloudLists(btn) {
     meta.white = {
       updated: now, count: white.list.length, pulled: white.list.length + white.dropped.length,
       added: dw.added, removed: dw.removed, wild: white.wild.length, dropped: white.dropped.length,
-      paths: white.paths || 0, drops: white.dropped.slice(0, 40)
+      paths: white.paths || 0, drops: white.dropped.slice(0, 40),
+      source: white.source || '云端接口'
     };
     meta.black = {
       updated: now, count: black.list.length, pulled: black.list.length + black.dropped.length,
       added: db.added, removed: db.removed, wild: black.wild.length, dropped: black.dropped.length,
-      paths: black.paths || 0, drops: black.dropped.slice(0, 40)
+      paths: black.paths || 0, drops: black.dropped.slice(0, 40),
+      source: black.source || '云端接口'
     };
     // 内容没变就只写 meta：此前无条件 set 会触发 onChanged → 后台重注入 + 四个缓存清空，
     //   一份干净的名单也跟着抖一下。
@@ -2213,10 +2682,13 @@ async function updateCloudLists(btn) {
     });
     if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message || '写入失败');
     refreshCloudListStatus();
+    const srcNote = (white.source && white.source !== '云端接口') || (black.source && black.source !== '云端接口')
+      ? (white.source || black.source) : '';
     setCloudStatus(cloudCountsText(
       white.list.length, black.list.length, black.wild.length,
       white.dropped.length, black.dropped.length, sameW && sameB,
-      black.paths || 0, white.paths || 0     // 形参顺序：pathB, pathW
+      black.paths || 0, white.paths || 0,    // 形参顺序：pathB, pathW
+      srcNote
     ));
     console.log('[云端名单] 黑', black.list.length, '条（通配', black.wild.length,
       '/ 忽略', black.dropped.length, '；新增', db.added, '/ 移除', db.removed,

@@ -35,6 +35,7 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.6.1**），用�
 在「关于 → 云端名单更新」点击一次 **从云端更新名单**，才会发生一次联网拉取；**扩展不会自动定时同步**，建议每天手动更新一次。
 
 - **数据来源**：作者维护的 `whitelist.json` / `blacklist.json`（托管在作者的私有 GitHub 仓库），经自建 Cloudflare Worker 的 `GET /list?type=white|black` 实时读取并转发。请求只带一个随扩展分发的只读 `X-API-Key`（用于 Worker 对扩展鉴权，不是你的身份标识），**不上传任何本地数据**。
+- **备用通道**：Worker 域名被污染或线路不通时，改用公开仓库里的**加密快照**（`Cloud/*.json.enc`）——经 GitHub raw 或公共反代取回密文，在扩展本机解密后再走同一套清洗/落盘流程。密文用 AES-256-GCM 保护，口令内置在扩展里，因此它挡住的是「随手点开链接看名单」和「改一个域名试试」，挡不住解包阅读源码的人；真正的保密仍然靠 Worker（GitHub 令牌只在服务端）。解密失败（口令不符 / 文件被改）会直接报错中止，绝不会把名单当空写入。
 - **落盘方式**：两份名单并行拉取、清洗校验后**整体覆盖**写入 `chrome.storage.local`（`sfCloudWhite` / `sfCloudBlack` / `sfCloudListMeta`）；后台收到 `storage.onChanged` 立即重新注入，内容脚本在下一次页面加载时读取。是「镜像覆盖」不是「合并追加」，所以云端删掉的误报条目会真正失效；任一份拉取失败则**两份都不写入**，不会出现半新半旧。空响应或全部条目非法时同样中止，不会把本地名单清空。
 - **生效规则**：黑名单支持 `*` / `?` 同级别通配（上限 200 条），白名单不支持通配（避免开出过宽的放行通道）；两份名单都支持路径条目（单次上限 500 条）。被丢弃的条目及原因会在「关于 → 未生效条目」里列出，不会静默失效。
 - **与内置名单的关系**：云端名单、`rules/iocs.js` 内置名单、你手写的名单始终是三份独立数据，互不覆盖；判定时由评分引擎做集合查找（内置 ∪ 云端）。
@@ -135,6 +136,8 @@ SilverFoxBlocker/
 ├── worker/index.js            # Cloudflare Worker：GET /list 转发云端名单 + POST 反馈/名单上报
 ├── wrangler.toml              # Worker 部署配置（KV 绑定、日志开关），不随扩展运行
 ├── tools/rescue-scripts/      # 急救工具直链的本地更新脚本（开发用，不参与打包运行）
+├── tools/encrypt_cloud.js     # 把私有仓库的明文名单打包成公开仓库用的加密快照（方案 C）
+├── Cloud/*.json.enc           # 云端名单的加密快照（备用通道取它；内容不可直接阅读）
 ├── icons/                     # 扩展图标 16 / 48 / 128
 ├── fonts/                     # 界面字体（SmileySans，笑脸模式）
 ├── _locales/zh_CN/            # 扩展名称与描述
@@ -192,10 +195,13 @@ SilverFoxBlocker/
 | # | 目标 | 触发条件 | 发送内容 |
 |---|---|---|---|
 | 9 | `api.silverfoxblocker.dpdns.org/list` | 点「从云端更新名单」（无自动定时） | GET，仅 `type=white\|black`、时间戳与只读 `X-API-Key`；**不上传本地数据** |
+| 9b | `raw.githubusercontent.com` 及公共反代 `gh-proxy.com` / `ghfast.top` / `ghproxy.net` / `ghfile.geekertao.top` / `gh.geekertao.top` / `ghproxy.cc` | **仅当第 9 项直连失败（超时 / DNS 不通）时**自动重试，成功一次即停 | 只 GET 公开仓库 `Cloud/whitelist.json.enc` / `blacklist.json.enc`（**密文**）；这些是第三方代理，因此**不带 `X-API-Key`、不带任何本地数据**。反代只能转发、无法解密 |
 | 10 | `api.silverfoxblocker.dpdns.org` | 点「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」 | POST：反馈正文（≤2000 字）+ 选填联系方式，或仅域名清单；见 [PRIVACY.md](./PRIVACY.md) |
 | 11 | `weishi.360.cn` / `baoku.360.cn` / `dl.360safe.com` / `*.huorong.cn` | 点击下载 360 急救箱 / 火绒专杀（先探测版本再下载） | 无 |
 | 12 | `devbuilds.s.kaspersky-labs.com` / `adwcleaner.malwarebytes.com` | 点击下载 KVRT / AdwCleaner | 无 |
 | 13 | 外链跳转：`wwavz.lanzout.com`（版本更新，提取码 2hxh）、`free.lanzoux.com`（SoftcnKiller）、123 云盘、光牙盘、GitHub / GitHub Issues、爱发电 | 用户点击链接，普通新标签页打开 | 扩展不注入参数、不读取页面内容；后续行为受目标站点自身政策约束 |
+| 13b | GitHub 全站镜像 `kkgithub.com` / `bgithub.xyz` | 点「前往 GitHub 查看更新」（落点 `…/releases/latest`）且直连 `github.com` 超时（先探测直连，1.5s 不通才改道） | 无。镜像只用来打开同一个更新页（内容与官网一致），不传键值、不传页面数据 |
+| 13c | `gh-proxy.com` 反代 `api.github.com` | 直连与镜像**都**不通时，退一步只查「有没有新版」 | 无。GET `releases/latest` 公开信息（版本号 / 日期），4s 超时；不下载安装包、不携带任何本地数据 |
 
 ### 后端链路（由 Worker 发起，不是扩展）
 

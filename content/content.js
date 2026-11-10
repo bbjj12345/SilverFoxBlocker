@@ -2122,7 +2122,8 @@
       const pro = (ti.providers) || {};
       const vt = pro.virustotal || {};
       const gsb = pro.googlesafebrowsing || {};
-      // 注意：Google Safe Browsing 的 Key 以密文存储于 storage，settings 里读到的 apiKey 是密文，不可当明文判定
+      // 注意：VirusTotal / Google Safe Browsing 的 Key 均以密文存储于 storage，
+      //       settings 里读到的 apiKey 是密文，不可当明文判定；明文只存在于后台 SW 内。
       const vtOn = !!vt.enabled;
       const gsbOn = !!gsb.enabled;
       console.log('[SilverFoxBlocker][情报] run() 已启动，域名=' + _host +
