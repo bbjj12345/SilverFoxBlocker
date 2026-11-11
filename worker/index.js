@@ -16,13 +16,56 @@ var TOTAL_BUDGET_MS = 9000;     // 一次 /list 的总预算；必须小于扩�
                                 // 否则 Worker 还在跑、扩展已经判超时，用户看到的是「失败」而服务端其实成功了
 var UA = "Cloudflare-Worker-SilverFox";
 
-var corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
-  // 扩展侧要能读到「这份数据来自哪个源」，自定义响应头必须显式暴露
-  "Access-Control-Expose-Headers": "X-Data-Source, X-Data-Path"
-};
+// ============================================================================
+// CORS：从通配符 `*` 收紧到「已上架扩展的固定 ID」（2026-11-11）
+//
+// 为什么不是靠 API Key 当唯一门禁：X-API-Key 随扩展包一起分发，任何人解包就能看到，
+//   它从来不是秘密。真正能挡住「随便写个网页去读名单」的是 Origin 白名单——
+//   浏览器会强制带上 `Origin: chrome-extension://<id>`，网页无法把自己伪造成扩展源。
+//
+// 边界（必须写清楚，别当成万能的）：
+//   · Origin 只能约束浏览器侧的跨源读取；防不住直接 curl / 脚本（它们可以不带 Origin）。
+//     所以「无 Origin」的请求仍然返回数据，但**不下发任何 CORS 头**——命令行与健康检查
+//     照常可用，而任何浏览器上下文都读不到响应体。
+//   · Edge 商店版 ID 与「加载已解压」的本地 ID 不同：本地实例的 ID 由解压路径决定，
+//     已连同商店版一起写进下面的数组；若你换了解压路径导致本地 ID 变化，把新 ID 追加
+//     到环境变量 ALLOWED_ORIGINS（逗号分隔）即可，不必改代码、不必重新部署。
+//   · Access-Control-Allow-Origin 只允许单个值（不支持逗号列表），因此必须按请求
+//     回显具体 Origin，并配合 Vary: Origin，避免 CDN / 浏览器缓存串源。
+// ============================================================================
+var EXTENSION_IDS = [
+  "hckibmmlfmcgpelphibapghnlbcjkmih",   // Edge 商店版（已上架）
+  "mfnbgkpnnfjpglcclfmakolmopcdkoed"    // 本地「加载已解压」实例（本机调试用；ID 由解压路径决定，换路径会变）
+];
+
+function allowedOrigins(env) {
+  var extra = String((env && env.ALLOWED_ORIGINS) || "").split(",");
+  var out = EXTENSION_IDS.map(function (id) { return "chrome-extension://" + id; });
+  for (var i = 0; i < extra.length; i++) {
+    var v = extra[i].trim();
+    if (v) out.push(v);
+  }
+  return out;
+}
+
+// 返回 { ok, headers }：ok=false 表示来源不在白名单 → 调用方直接 403
+function corsFor(request, env) {
+  var origin = request.headers.get("Origin") || "";
+  if (!origin) return { ok: true, headers: {} };   // 非浏览器请求：给数据、不给跨源许可
+  if (allowedOrigins(env).indexOf(origin) === -1) return { ok: false, headers: {} };
+  return {
+    ok: true,
+    headers: {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
+      // 扩展侧要能读到「这份数据来自哪个源」，自定义响应头必须显式暴露
+      "Access-Control-Expose-Headers": "X-Data-Source, X-Data-Path",
+      "Access-Control-Max-Age": "86400",
+      "Vary": "Origin"
+    }
+  };
+}
 
 function leftMs(deadline) {
   return deadline - Date.now();
@@ -131,8 +174,21 @@ async function readFromGitee(env, file, deadline) {
 
 var index_default = {
   async fetch(request, env, ctx) {
+    // 来源校验前置：不在白名单的 Origin 一律 403（含 OPTIONS 预检），
+    // 且响应里不带 ACAO，浏览器侧读不到任何内容。
+    const cors = corsFor(request, env);
+    if (!cors.ok) {
+      console.warn("[cors] 拒绝未授权来源：" + (request.headers.get("Origin") || "(none)"));
+      return new Response(JSON.stringify({
+        error: "Origin not allowed",
+        detail: "该来源未被授权访问本接口。仅限已上架的 SilverFoxBlocker 扩展调用。"
+      }), {
+        status: 403,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+      });
+    }
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { status: 204, headers: cors.headers });
     }
 
     const url = new URL(request.url);
@@ -147,7 +203,7 @@ var index_default = {
       if (apiKey !== env.LIST_API_KEY) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
           status: 401,
-          headers: { "Content-Type": "application/json", ...corsHeaders }
+          headers: { "Content-Type": "application/json", ...cors.headers }
         });
       }
 
@@ -176,7 +232,7 @@ var index_default = {
             elapsedMs: Date.now() - t0, tries: gh.tries, giteeAttempted: false
           }, null, 2), {
             status: 200,
-            headers: { "Content-Type": "application/json", "X-Data-Source": gh.source, ...corsHeaders }
+            headers: { "Content-Type": "application/json", "X-Data-Source": gh.source, ...cors.headers }
           });
         }
         return new Response(gh.text, {
@@ -184,7 +240,7 @@ var index_default = {
             "Content-Type": "application/json",
             "X-Data-Source": gh.source,
             "X-Data-Path": gh.path,
-            ...corsHeaders
+            ...cors.headers
           }
         });
       }
@@ -205,7 +261,7 @@ var index_default = {
           github: gh.tries, gitee: gt.tries
         }, null, 2), {
           status: 200,
-          headers: { "Content-Type": "application/json", ...corsHeaders }
+          headers: { "Content-Type": "application/json", ...cors.headers }
         });
       }
 
@@ -219,7 +275,7 @@ var index_default = {
           }
         }), {
           status: 502,
-          headers: { "Content-Type": "application/json", ...corsHeaders }
+          headers: { "Content-Type": "application/json", ...cors.headers }
         });
       }
 
@@ -228,7 +284,7 @@ var index_default = {
           "Content-Type": "application/json",
           "X-Data-Source": gt.source,
           "X-Data-Path": gt.path,
-          ...corsHeaders
+          ...cors.headers
         }
       });
     }
@@ -239,7 +295,7 @@ var index_default = {
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,
-        headers: { "Content-Type": "application/json", ...corsHeaders }
+        headers: { "Content-Type": "application/json", ...cors.headers }
       });
     }
 
@@ -254,7 +310,7 @@ var index_default = {
       if (currentCount >= 60) {
         return new Response(JSON.stringify({ error: "您今天的提交次数已达上限，请明天再试。" }), {
           status: 429,
-          headers: { "Content-Type": "application/json", ...corsHeaders }
+          headers: { "Content-Type": "application/json", ...cors.headers }
         });
       }
 
@@ -265,7 +321,7 @@ var index_default = {
       if (!feedbackText || typeof feedbackText !== "string" || feedbackText.length > 2000) {
         return new Response(JSON.stringify({ error: "无效的反馈内容或长度超过限制。" }), {
           status: 400,
-          headers: { "Content-Type": "application/json", ...corsHeaders }
+          headers: { "Content-Type": "application/json", ...cors.headers }
         });
       }
 
@@ -298,14 +354,14 @@ var index_default = {
       await env.RATE_LIMIT_KV.put(kvKey, (currentCount + 1).toString(), { expirationTtl: 86400 });
 
       return new Response(JSON.stringify({ success: true, message: "感谢您的反馈！" }), {
-        headers: { "Content-Type": "application/json", ...corsHeaders }
+        headers: { "Content-Type": "application/json", ...cors.headers }
       });
 
     } catch (error) {
       console.error(error);
       return new Response(JSON.stringify({ error: "服务器内部错误，请稍后再试。" }), {
         status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeaders }
+        headers: { "Content-Type": "application/json", ...cors.headers }
       });
     }
   }

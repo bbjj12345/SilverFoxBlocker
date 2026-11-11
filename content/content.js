@@ -308,6 +308,88 @@
     toastTimer = setTimeout(() => { if (toastEl) toastEl.style.display = 'none'; }, 2600);
   }
 
+  // ===== 「分析中默认不信任」状态 + 轻提示横幅 =====
+  // 设计取舍（2026-11-11，v2）：
+  //   · 仍不做全屏蒙版 —— 会挡住首屏阅读，收益只是「告知」；
+  //   · 横幅改为「分析期间常驻」：进入分析即排定显示（延迟 450ms 起，避免白名单/缓存命中的快页面闪一下），
+  //     判定一结束（reportVerdict，含 safe/warn/danger 与各白名单/异常早退）立即收起；
+  //   · 用户提前点击下载入口 → 立刻显示（不等 450ms），并拦下这一次点击；
+  //   · 最短展示 1.2s（避免判定太快时一闪而过），最长 12s 强制解除（内容脚本异常兜底）。
+  //   · 这套「点击拦截 + 常驻横幅」只依赖 analyzing 状态，**不读 autoBlockDownloads**：
+  //     「自动拦截下载」开关管的是「判危后是否继续禁用页面下载」，不该影响「判定前的默认拒绝」。
+  //   ⚠️ 与后台「分析闸门」分工：后台拦的是已经进入 chrome.downloads 的下载（会静默重下），
+  //      这里拦的是「点击阶段」——避免用户点了没反应、也避免第三方下载器在判定前抢走链接。
+  let analyzing = true;               // document_start 起即视为「分析中」：默认不信任
+  let analyzingHintEl = null;
+  let analyzingHintAt = 0;
+  let analyzingHintTimer = null;      // 收起（最短展示）计时
+  let analyzingGuardTimer = null;     // 硬兜底计时
+  let analyzingShowTimer = null;      // 常驻横幅的延迟显示计时
+  const ANALYZING_HINT_MIN_MS = 1200;
+  const ANALYZING_HINT_DELAY_MS = 450;  // 快速判定（白名单/本地命中）不闪横幅
+  const ANALYZING_MAX_MS = 12000;       // 硬兜底上限：后台闸门 11s 先失效开放，这里再兜一次
+
+  // 分析期间常驻：排定一次「若无结论就显示横幅」。重复调用无副作用。
+  function scheduleAnalyzingHint() {
+    if (!analyzing || analyzingHintEl) return;
+    if (analyzingShowTimer) return;
+    analyzingShowTimer = setTimeout(function () {
+      analyzingShowTimer = null;
+      if (analyzing) showAnalyzingHint();
+    }, ANALYZING_HINT_DELAY_MS);
+  }
+
+  function showAnalyzingHint() {
+    if (!analyzing) return;
+    // 判重走 NATIVE.byId，避免页面改写 document.getElementById 后重复插入
+    if (NATIVE.byId('sf-analyzing')) return;
+    try {
+      const bar = NATIVE.mk('div') || document.createElement('div');
+      if (!bar) return;
+      bar.id = 'sf-analyzing';
+      bar.className = 'sf-analyzing' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+      const t1 = NATIVE.mk('div') || document.createElement('div');
+      t1.className = 'sf-az-t';
+      t1.textContent = '为了您的安全，在分析结束前，我们默认不信任该页面。';
+      const t2 = NATIVE.mk('div') || document.createElement('div');
+      t2.className = 'sf-az-d';
+      t2.textContent = '分析期间本页的下载与下载跳转一律先被阻止（不依赖「自动拦截下载」开关）。分析通常 1–3 秒完成（最长约 10 秒）；判定安全后横幅自动消失、下载入口恢复，重新点击即可；判定有风险则继续拦截并弹窗说明原因。';
+      const put = NATIVE.appendChild;
+      if (put) { put.call(bar, t1); put.call(bar, t2); }
+      else { bar.appendChild(t1); bar.appendChild(t2); }
+      (document.body || document.documentElement).appendChild(bar);
+      analyzingHintEl = bar;
+      analyzingHintAt = Date.now();
+    } catch (e) {}
+  }
+
+  function hideAnalyzingHint() {
+    const el = analyzingHintEl;
+    if (!el) return;
+    analyzingHintEl = null;
+    const wait = Math.max(0, ANALYZING_HINT_MIN_MS - (Date.now() - analyzingHintAt));
+    if (analyzingHintTimer) clearTimeout(analyzingHintTimer);
+    analyzingHintTimer = setTimeout(function () {
+      try { NATIVE.rm(el); } catch (e) { try { el.remove(); } catch (e2) {} }
+    }, wait);
+  }
+
+  function setAnalyzing(v) {
+    analyzing = !!v;
+    if (!analyzing) {
+      if (analyzingGuardTimer) { clearTimeout(analyzingGuardTimer); analyzingGuardTimer = null; }
+      if (analyzingShowTimer) { clearTimeout(analyzingShowTimer); analyzingShowTimer = null; }
+      hideAnalyzingHint();
+    }
+  }
+
+  // 兜底：run() 抛错 / 页面卡死 / 内容脚本被禁用时，也必须解除「默认不信任」
+  try { analyzingGuardTimer = setTimeout(function () { setAnalyzing(false); }, ANALYZING_MAX_MS); } catch (e) {}
+
+  // ★ 分析期间常驻横幅：document_start 即排定，判定出来才收起（reportVerdict → setAnalyzing(false)）。
+  //   非 http(s)/本机的页面会在 run() 早退里显式 setAnalyzing(false)，不会留下横幅。
+  try { scheduleAnalyzingHint(); } catch (e) {}
+
   // ★ 强制扩展 UI 文本为白色（行内 !important，不被任何页面级 CSS 压过）。
   //   仅当 content.css 的 !important 仍被极端页面覆盖（如祖先 filter invert、内联样式）时兜底。
   function forceWhiteText(root, keepTitleGradient) {
@@ -878,7 +960,7 @@
   //   当成"页面上的下载入口"→ 灰化 + 拦截点击（neutralize 还会设 pointer-events:none）
   //   ⇒ 表现为「拦截弹窗的按钮点了没反应，甚至又弹出一个下载拦截窗」。
   // 改为自行沿 parentElement 上溯并直接比对 class，完全不依赖 closest/querySelector。
-  const _SF_UI_CLASSES = ['sf-overlay', 'sf-banner', 'sf-hint', 'sf-toast', 'sf-fallback'];
+  const _SF_UI_CLASSES = ['sf-overlay', 'sf-banner', 'sf-hint', 'sf-toast', 'sf-fallback', 'sf-analyzing'];
   function isSfUiElement(el) {
     let cur = el, guard = 0;
     while (cur && cur.nodeType === 1 && guard++ < 64) {
@@ -1116,8 +1198,19 @@
           // 高置信信号(navBlock) 或 明确下载 URL 或 已被禁用(带 data-sf-blocked) 或 命中下载入口 → 拦截，
           // 堵死运行时中继取链 / 直接甩文件 / fetch→blob→a.click() 等手法
           if (navHref && (navBlock || isDownloadUrl(navHref) || (a.dataset && a.dataset.sfBlocked) || isDownloadEntry(a))) {
-            if (!NATIVE.byId('sf-overlay')) showDownloadBlocked(location.hostname, { url: navHref });
-            return;
+            if (dangerActive) {
+              // 已判危：沿用原「下载已被拦截」大弹窗
+              if (!NATIVE.byId('sf-overlay')) showDownloadBlocked(location.hostname, { url: navHref });
+              return;
+            }
+            if (analyzing) {
+              // 分析中：先拦下这次程序化下载，只给非阻塞提示
+              showAnalyzingHint();
+              return;
+            }
+            // ★ 2026-11-11 修复既有误报：原实现只按 URL 特征拦、不看判定结果，
+            //   会把「已判安全页面」的 fetch→a.click() 下载也弹成「该站点被判定为银狐木马风险网站」。
+            //   现在 safe/warn 且非 danger 时放行，交给浏览器与后台闸门正常处理。
           }
           return _click.call(a);
         };
@@ -1206,7 +1299,9 @@
   }
 
   function globalClickGuard(e) {
-    if (unblocked || !dangerActive || isNextAllowed()) return;
+    if (unblocked || isNextAllowed()) return;
+    // 已判 safe/warn（非 danger）且分析已结束 → 完全不干预，正常下载
+    if (!dangerActive && !analyzing) return;
     const target = e.target;
     if (!target || target.nodeType !== 1) return;
     // 扩展自身 UI 点击放行（双保险，避免误吞弹窗按钮）
@@ -1225,7 +1320,13 @@
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    showDownloadBlocked(location.hostname, { target: entry, url: getEntryDownloadUrl(entry) });
+    if (dangerActive) {
+      // 已判危：沿用原「下载已被拦截」大弹窗（含「仍要下载」出口）
+      showDownloadBlocked(location.hostname, { target: entry, url: getEntryDownloadUrl(entry) });
+    } else {
+      // 分析中：尚无结论，不能断言站点有风险 —— 只做非阻塞提示，不弹「已被拦截」
+      showAnalyzingHint();
+    }
     return false;
   }
 
@@ -1742,6 +1843,9 @@
       if (chrome.runtime && chrome.runtime.sendMessage)
         chrome.runtime.sendMessage({ type: 'sf-verdict', hostname: location.hostname, level: level || 'safe' });
     } catch (e) {}
+    // ★ 2026-11-11：判定已出（含各白名单/停用/异常早退）→ 结束「分析中默认不信任」。
+    //   所有出口都汇到本函数，故只改这一处即可保证「结果正常自动解除」不漏分支。
+    setAnalyzing(false);
   }
 
   // ===== 上报 =====
@@ -2102,9 +2206,9 @@
     // 本地文件(file://)、浏览器内部页(chrome://、edge://…)、本地开发服务器(localhost/127.0.0.1)
     // 一律跳过——它们没有 ICP 备案且可能是中文页面，会被误判成风险站。
     const proto = (location.protocol || '').toLowerCase();
-    if (proto !== 'http:' && proto !== 'https:') return;
+    if (proto !== 'http:' && proto !== 'https:') { setAnalyzing(false); return; }
     const _host = (location.hostname || '').toLowerCase();
-    if (_host === 'localhost' || _host === '127.0.0.1' || _host === '[::1]') return;
+    if (_host === 'localhost' || _host === '127.0.0.1' || _host === '[::1]') { setAnalyzing(false); return; }
 
     const settings = await getSettings();
     currentFontMode = settings.fontMode || 'system';
@@ -2568,8 +2672,19 @@
           // 高置信信号(navBlock) 或 明确下载 URL 或 已被禁用(带 data-sf-blocked) 或 命中下载入口 → 拦截，
           // 堵死运行时中继取链 / 直接甩文件 / fetch→blob→a.click() 等手法
           if (navHref && (navBlock || isDownloadUrl(navHref) || (a.dataset && a.dataset.sfBlocked) || isDownloadEntry(a))) {
-            if (!NATIVE.byId('sf-overlay')) showDownloadBlocked(location.hostname, { url: navHref });
-            return;
+            if (dangerActive) {
+              // 已判危：沿用原「下载已被拦截」大弹窗
+              if (!NATIVE.byId('sf-overlay')) showDownloadBlocked(location.hostname, { url: navHref });
+              return;
+            }
+            if (analyzing) {
+              // 分析中：先拦下这次程序化下载，只给非阻塞提示
+              showAnalyzingHint();
+              return;
+            }
+            // ★ 2026-11-11 修复既有误报：原实现只按 URL 特征拦、不看判定结果，
+            //   会把「已判安全页面」的 fetch→a.click() 下载也弹成「该站点被判定为银狐木马风险网站」。
+            //   现在 safe/warn 且非 danger 时放行，交给浏览器与后台闸门正常处理。
           }
           return _click.call(a);
         };

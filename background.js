@@ -115,7 +115,12 @@ const analysisState = {};
 const heldDownloads = {};       // tabId -> [{id,url,filename}]
 const reissuedUrls = new Set(); // 判安后已静默重下的 URL，避免 onCreated 二次闸控
 const analysisTimers = {};      // tabId -> 超时兜底句柄
-const ANALYSIS_TIMEOUT_MS = 4000; // 内容脚本异常/畸形页时失效开放，按安全放行
+// ★ 2026-11-11 超时重定（原 4000 太短）：
+//   内容侧分析要跑 ICP / RDAP / 情报 enrichment，实测常 3–9 秒；后台闸门原先 4 秒就「失效开放」，
+//   而内容侧的兜底是 6 秒 —— 也就是说第 4 秒下载已经被静默重下、第 6 秒才判出危险，文件早已落盘。
+//   现在：内容侧名义分析预算 10s（横幅文案同步）、硬兜底 12s；后台 11s，
+//   始终比内容侧多 1s，保证「判定先到、失效开放后到」，两侧不会互相抢跑。
+const ANALYSIS_TIMEOUT_MS = 11000;
 
 // 性能优化：模块级复用正则，避免重复编译
 const WWW_RE = /^www\./;
@@ -2854,17 +2859,21 @@ if (chrome.downloads && chrome.downloads.onCreated) {
       // 先等云端名单就绪再取设置判定（见文件顶部 cloudReady 的说明）
       Promise.all([getSettings(), cloudReady()]).then(function (r) {
       const settings = r[0];
+      // ★ 分析闸门（2026-11-11：与「自动拦截下载」开关解耦）
+      //   判定未出结论前一律先挂起该标签的全部下载 —— 这是「默认拒绝」，不是「命中危险后的拦截」。
+      //   原实现把这段放在 settings.autoBlockDownloads 之后，用户一关那个开关，
+      //   木马就能在检测的 1–10 秒窗口里直接落地。现在只要求「扩展启用」。
+      if (settings.enabledGlobal && item.tabId && item.tabId >= 0 &&
+          analysisState[item.tabId] === 'analyzing') {
+        holdDownload(item.tabId, item);
+        return;
+      }
       if (!settings.enabledGlobal || !settings.autoBlockDownloads) return;
       // ★ 免费加成：Chrome 自带 Safe Browsing 已将该下载标记为恶意
       //   （content=文件已知恶意 / url=网址已知恶意 / host=来源主机已知分发恶意二进制）
       //   此判定常在 onCreated 时仍为 safe，云查完成后经 onChanged 返回，见下方 onChanged 兜底。
       if (isMaliciousDanger(item.danger)) {
         cancelDownload(item.id, host, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
-        return;
-      }
-      // ★ 分析闸门：来源标签页仍在检测中 → 默认拒绝，先堵死全部下载并挂起，待判定后处理
-      if (item.tabId && item.tabId >= 0 && analysisState[item.tabId] === 'analyzing') {
-        holdDownload(item.tabId, item);
         return;
       }
       // ★ 名单判定顺序（2026-11-09 定版）：**任意黑名单 > 任意白名单**；

@@ -13,6 +13,11 @@ id = "98ac1246bc7746368baf6a071f9fed9f"
 [vars]
 GITEE_OWNER = "bbjj12345"
 GITEE_REPO = "silver-fox-blocker-cloud"
+# CORS 白名单：Worker 代码里已内置「Edge 商店版 ID」+「本地加载已解压实例 ID」两个值，
+# 正常情况下这一行保持注释即可。只有换了解压路径（本地实例 ID 随之变化）或新增测试机时，
+# 才取消注释并填新的 Origin —— 形如 chrome-extension://<32位ID>，多个用英文逗号分隔。
+# ⚠️ 只能写在当前这个 [vars] 段里：TOML 不允许出现第二个 [vars] 表，重复会直接部署失败。
+# ALLOWED_ORIGINS = "chrome-extension://xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 [observability.logs]
 enabled = true
