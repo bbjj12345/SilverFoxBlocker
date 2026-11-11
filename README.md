@@ -2,7 +2,9 @@
 
 Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.7.2**），用于检测并拦截「银狐木马（Silver Fox / 游蛇）」相关的钓鱼站、仿冒官网与恶意下载入口。
 
-**检测、评分、名单比对与拦截全部在本地完成**，不依赖在线服务即可工作。默认开启的 RDAP / ICP 辅助核验会发送**域名**；云端黑 / 白名单、威胁情报 API、社区黑名单都是**需要你主动开启或点击**的增强项。v1.6.1 包含作者维护的云端黑 / 白名单、名单上报（把你的自定义名单发给作者）、KVRT / SoftcnKiller / AdwCleaner 三款清除工具，以及蓝奏云版本更新源。
+**检测、评分、名单比对与拦截全部在本地完成**，不依赖在线服务即可工作。默认开启的 RDAP / ICP 辅助核验会发送**域名**；云端黑 / 白名单、威胁情报 API、社区黑名单都是**需要你主动开启或点击**的增强项。v1.7.2 包含 29 维加权检测引擎、六类名单（云端 / 内置 / 自定义 × 黑白）、下载与自动下载拦截、云端名单手动同步（Worker 侧 GitHub 优先、Gitee 回落）、可选四家威胁情报与三份社区黑名单、五款急救工具下载引导，以及 GitHub / Gitee / 蓝奏云三个更新入口。
+
+**无需账号、无遥测、无广告**：不收集浏览历史，不注入参数，不加载任何远程代码。
 
 > 💡 **算法致敬**：检测引擎基于 [@Lolitide](https://github.com/Lolitide) 的开源作品
 > [VirusDetector](https://github.com/Lolitide/VirusDetector)（MIT License）的规则算法，
@@ -16,6 +18,24 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.7.2**），用�
 ---
 
 ## ✨ 功能
+
+### 总览：这个扩展做了什么（v1.7.2）
+
+| 模块 | 你能看到的功能 | 默认状态 | 是否联网 |
+|---|---|---|---|
+| **本地检测引擎** | 29 个可独立开关的加权检测维度：域名仿冒（333 条品牌关键词做编辑距离比对）、缺/盗用 ICP 备案、域名年龄、代码工程化程度、AI 生成痕迹、链接跨域、双扩展名、密码压缩包、NOAH 投递组件、运行时取链、伪造更新、钓鱼话术等；给出风险分与逐项理由 | 开启 | 否（纯本地） |
+| **拦截与处置** | 按风险分分三级（安全 / 可疑 / 危险）：页面顶部横幅、警告浮层、**禁用页面全部下载与跳转链接**、系统通知；任意元素（`a`/`button`/`div`）上的下载入口拦截，含 `window.open`、`a.click`、`blob:`、`location` 跳转、`meta refresh`、`Content-Disposition: attachment` 自动下载 | 开启 | 否 |
+| **分析闸门（判定前默认拒绝）** | 页面加载完成但判定尚未出来时，本页下载与下载跳转**先被阻止**（页面顶部常驻一条提示横幅），已进入浏览器的下载先挂起；判定安全则自动解除并静默重下，判定危险则保持拦截。**不依赖「自动拦截下载」开关**。SPA（`pushState` 换路由）也会重新起闸并重判，旧路由的迟到结论按代数丢弃 | 开启 | 否 |
+| **六类名单比对** | 云端 / 内置 / 自定义，各有黑、白两份；**任意黑名单 > 任意白名单**；支持域名级、`*` `?` 同级别通配、以及「域名/路径」条目 | 内置名单开启 | 否（查表在本地） |
+| **云端黑 / 白名单** | 「关于 → 从云端更新名单」手动同步作者维护的名单；Worker 优先读 GitHub、失败回落 Gitee，扩展侧再按 GitHub raw → 6 个公共反代 → Gitee raw 逐级兜底 | 无数据，需手动点击 | 是（仅点击时） |
+| **威胁情报（可选）** | VirusTotal、URLhaus、NetAPI、Google Safe Browsing 四项，命中后横幅显示依据；VT 可展开逐引擎检出 | 关闭 | 是（开启后） |
+| **社区黑名单（可选）** | OpenPhish、PhishDestroy（约 14 万条）、HaGeZi TIF（约 181 万条，布隆过滤器）每日自动更新，本地比对 | 关闭 | 是（开启后） |
+| **银狐急救** | 360 急救箱 / 火绒专杀 / KVRT / AdwCleaner / SoftcnKiller 的官方下载与查杀顺序引导；hosts 修复、关闭内存完整性等分步说明 | 可用 | 是（点击时） |
+| **统计与界面** | 拦截/告警计数、近期记录、逐站评分；深 / 浅主题 + 5 套配色（classic / gold / neon / mist / space，另有隐藏彩蛋）+ 自定义主题导入、自定义背景、字号缩放；规则与名单可导出为 JSON 或导入他人分享的配置 | 开启 | 否 |
+| **反馈与上报** | GitHub Issue 预填、邮件反馈（经自建 Worker）、把自定义名单发给作者 | 需手动点击 | 是（点击时） |
+| **版本更新** | 「检查更新」四级接力（直连 GitHub → api.github.com → 公共反代 → Gitee）；GitHub / Gitee / 蓝奏云三个下载入口 | 需点击 | 是（点击时） |
+
+> 一句话：**默认状态下它只在本机做判断**，联网项要么默认关闭，要么必须你点一下才发生。
 
 ### 一、本地检测与拦截（默认全部开启）
 
@@ -37,8 +57,10 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.7.2**），用�
 - **数据来源**：作者维护的 `whitelist.json` / `blacklist.json`（托管在作者的私有 GitHub 仓库，作者侧另有 Gitee 私有镜像仓库作为 GitHub 不可达时的服务端备源），经自建 Cloudflare Worker 的 `GET /list?type=white|black` 实时读取并转发。请求只带一个随扩展分发的只读 `X-API-Key`（用于 Worker 对扩展鉴权，不是你的身份标识），**不上传任何本地数据**。响应头 `X-Data-Source` 会注明这次数据取自 `GitHub` 还是 `Gitee`，设置页状态行显示为「数据源：云端接口·Gitee」。
 - **备用通道**：Worker 域名被污染或线路不通时，改用公开仓库里的**加密快照**（`Cloud/*.json.enc`）——按「GitHub raw → 六个公共反代 → Gitee raw（最后一跳）」的顺序取回密文，前一跳成功即停，在扩展本机解密后再走同一套清洗/落盘流程。密文用 AES-256-GCM 保护，口令内置在扩展里，因此它挡住的是「随手点开链接看名单」和「改一个域名试试」，挡不住解包阅读源码的人；真正的保密仍然靠 Worker（GitHub 令牌只在服务端）。解密失败（口令不符 / 文件被改）会直接报错中止，绝不会把名单当空写入。快照的生成与发布方式见 [Cloud/README.md](./Cloud/README.md)。
 - **落盘方式**：两份名单并行拉取、清洗校验后**整体覆盖**写入 `chrome.storage.local`（`sfCloudWhite` / `sfCloudBlack` / `sfCloudListMeta`）；后台收到 `storage.onChanged` 立即重新注入，内容脚本在下一次页面加载时读取。是「镜像覆盖」不是「合并追加」，所以云端删掉的误报条目会真正失效；任一份拉取失败则**两份都不写入**，不会出现半新半旧。空响应或全部条目非法时同样中止，不会把本地名单清空。
-- **生效规则**：黑名单支持 `*` / `?` 同级别通配（上限 200 条），白名单不支持通配（避免开出过宽的放行通道）；两份名单都支持路径条目（单次上限 500 条）。被丢弃的条目及原因会在「关于 → 未生效条目」里列出，不会静默失效。
+- **生效规则**：黑、白名单**都支持** `*` / `?` 同级别通配（各上限 200 条；`*` 不跨标签、`*.foo.com` 归一为后缀、TLD 位禁通配）；两份名单都支持路径条目（单次上限 500 条）。被丢弃的条目及原因会在「关于 → 未生效条目」里列出，不会静默失效。
 - **与内置名单的关系**：云端名单、`rules/iocs.js` 内置名单、你手写的名单始终是三份独立数据，互不覆盖；判定时由评分引擎做集合查找（内置 ∪ 云端）。
+- **自定义名单同样支持通配**：「规则与名单」里的自定义信任白名单 / 自定义恶意黑名单都是「一行一个主机名」，现在也接受 `*` / `?`（如 `cdn*.example.com`、`*bot.qpefh.com`），语义与内置、云端完全一致（同一套编译器与护栏）；只匹配主机名，要按链接级生效请用云端名单的 `主机名/路径` 写法。
+- **内置名单也支持通配**（随扩展发版）：`rules/iocs.js` 的官方域名表与恶意域名表都接受 `*` / `?` 写法，例如 `*bot.qpefh.com`（同标签内任意前缀）、`abi0?.8msg8.com`（单字符）。`*` 不跨 `.`，TLD 位禁止通配（`*.com` 会被丢弃）、`*.foo.com` 归一为后缀条目；通配只参与主机名命中判定，不参与「从官方域派生品牌词」，因此不会把 `*media` 变成一个仿冒品牌词。
 
 ### 三、名单上报（把你的自定义名单发给作者）
 
@@ -155,21 +177,47 @@ SilverFoxBlocker/
 
 ## 🔑 权限说明
 
-`manifest.json` 中每一项权限都有实际用途：
+`manifest.json` 只申请 **6 项 API 权限 + 1 项主机权限**，每一条都对应一个你能直接看到的动作，没有「先申请着、以后可能用」的权限。
 
-| 权限 | 用途 |
-|---|---|
-| `storage` | 保存设置（开关、权重、白名单、黑名单、情报源配置）、防护统计、云端名单快照、社区名单与元数据、下载黑名单、连坐集合 |
-| `unlimitedStorage` | 云端名单镜像、HaGeZi 位图约 4.8 MB、两份域名名单与自定义主题都落在 `storage.local`，合计会超过浏览器默认配额 |
-| `downloads` | 监听并取消高危下载；按用户点击下载 360 / 火绒 / KVRT / AdwCleaner 工具 |
-| `webNavigation` | 监听顶级框架导航：页面开始加载即进入「检测中」闸门，并追踪「危险页 → 新域名」的跳转链 |
-| `notifications` | 检测到高风险网站/下载时弹系统原生告警（不依赖声音，无需用户手势解锁） |
-| `alarms` | 三份社区名单的每日自动更新，以及「立即更新」的一次性任务（MV3 中 SW 会被回收，定时任务必须走 alarms） |
-| `host_permissions: <all_urls>` | ① 内容脚本需要在所有 http(s) 页面注入以做实时检测；② 允许后台向 RDAP / ICP / 情报源 / 名单 CDN / 工具官方域名发起请求 |
-| `web_accessible_resources` | 页面内浮层需要加载自带字体；`sponsors.json` 供「关于」页读取 |
-| `content_security_policy` | `script-src 'self'`、`object-src 'self'`：禁止远程脚本与插件；`connect-src 'self' https:`：**允许连接任意 HTTPS 主机，并未做域名级白名单**——实际请求目标由代码里的固定清单决定，默认关闭的项在未开启前一次都不会请求 |
+| 权限 | 具体用在哪 | 申请理由 | 不授予的后果 | 外发数据 |
+|---|---|---|---|---|
+| `storage` | `storage.sync` 存设置 / 权重 / 自定义名单 / 两个 API Key（AES-GCM 密文）；`storage.local` 存统计、云端名单快照、社区名单、下载黑名单；`storage.session` 存本会话的危险标签页 | MV3 的 Service Worker 空闲 30 秒即被回收，设置与状态只能放 storage；不存就无法「记住你调过的每一个开关」 | 每次重启恢复默认，名单与统计全丢 | 否（除非你开了浏览器账号同步，那是浏览器厂商的行为） |
+| `unlimitedStorage` | 云端名单镜像、社区名单（PhishDestroy 约 14 万条、HaGeZi 位图约 4.8 MB）、自定义背景 | 这些体积超过扩展默认配额；超限时 `storage.local.set` 会**静默失败**，表现成「提示同步成功、名单却没变」 | 开启社区名单后可能写盘失败 | 否 |
+| `downloads` | ① 命中黑名单 / 载荷特征时 `chrome.downloads.cancel` 真正阻断下载；② 「银狐急救」里你点工具时发起下载并指定文件名 | 只靠页面提示拦不住已经开始的下载；急救工具也需要一个可信的下载入口 | 只能弹提示，高危文件照样落地 | 否（只从官方域名下载，且必须你点击） |
+| `webNavigation` | 顶层框架 `onCommitted`：页面开始加载即进入「检测中」，并把「危险页 → 新域名」串成跳转链 | 银狐常见「落地页再跳一次才下载」，只有导航时序能追上；DOM 就绪后才判会漏掉瞬间自动下载 | 快速自动下载漏拦、跳转链断裂 | 否（只读导航事件时序） |
+| `notifications` | 高风险站点 / 下载被拦时发系统原生通知 | 页面被立刻关掉、或命中发生在后台标签页时，页面内横幅你看不到 | 只在页面里提示 | 否（内容本机生成） |
+| `alarms` | 三份社区名单的每日更新 + 「立即更新」一次性任务 | MV3 不允许常驻定时器，`setInterval` 在 SW 回收后失效；**云端名单不使用 alarms，完全手动** | 社区名单无法自动更新 | 否 |
+| `host_permissions: <all_urls>` | ① 内容脚本在 `document_start` 注入所有 http(s) 页面做实时检测与下载拦截；② 后台请求 RDAP / ICP / 情报源 / 名单 CDN / 工具官网；③ 扩展页面直接读名单镜像（Gitee raw 不带 CORS 头也能读） | 投放站每天换域名，无法预先枚举主机；要把「任意站点」都纳入检测，只能申请全站主机权限 | 只能对固定站点生效，等于没有防护 | 请求目标由代码里的固定清单决定（见下一节），该权限本身不产生任何请求 |
+| `web_accessible_resources` | 页面内浮层加载打包字体 `fonts/SmileySans-Oblique.woff2`；「关于」页读 `sponsors.json` | 浮层渲染在第三方页面里，字体文件必须允许该页面请求 | 浮层回退系统字体，功能不受影响 | 否（只是把打包内静态文件暴露给页面，不含用户数据） |
+| `content_security_policy` | `script-src 'self'`、`object-src 'self'`；`connect-src 'self' https:` | 前者保证「不执行远程代码」由浏览器强制；后者是连接 HTTPS 接口所必需，**没有做域名白名单**，实际目标仍由代码固定清单决定 | —— | 否 |
 
-**不申请的权限**：`tabs`（`tabs.create` / `tabs.sendMessage` 无需该权限，读取标签页 URL 由 host 权限覆盖）、`cookies`、`history`、`bookmarks`、`webRequest`（改用 `webNavigation` + 内容脚本，避免全量拦截网络请求）、`nativeMessaging`、`scripting`。
+**未申请的敏感权限**：`tabs`（`tabs.create` / `tabs.sendMessage` 不需要它，读标签 URL 由主机权限覆盖）、`cookies`、`history`、`bookmarks`、`webRequest` / `declarativeNetRequest`（不做全量网络拦截，改用 `webNavigation` + 内容脚本）、`scripting`（内容脚本走 manifest 静态声明）、`nativeMessaging`、`identity`、`management`、`clipboardRead`、`geolocation`。
+
+> 审核备注：全部权限均可用「关于」页与工具栏弹窗里的功能逐条复现；把任一权限移除，上表「不授予的后果」一栏描述的功能就会消失。完整的逐项理由（含可直接粘贴到商店表单的版本）见 [PRIVACY.md § 八](./PRIVACY.md)。
+
+---
+
+## 📦 发布到 Edge 加载项商店
+
+1. **打包**：只压缩**运行时**文件（`manifest.json` 必须在压缩包根目录，不能再套一层文件夹）。下列目录是开发/后端产物，**不要**打进包：`tools/`（Node 打包脚本、网页加密工具）、`Cloud/`（密文快照与打包记录）、`worker/` + `wrangler.toml`（Cloudflare Worker 后端，跑在服务端、与扩展无关）、`.bak_*` 备份目录。
+   ```bash
+   # macOS / Linux / Git Bash
+   zip -r SilverFoxBlocker-1.7.2.zip \
+     manifest.json background.js crypto-helper.js sponsors.json \
+     content rules ui icons fonts _locales \
+     LICENSE README.md PRIVACY.md
+   ```
+   打包后核对：压缩包根目录第一层应只有上面这些条目；这些文件合计约 **2.3 MB**（字体占一半以上），压成 zip 约 1.5 MB。
+   > Windows 若没有 `zip` 命令，可用资源管理器全选上述条目 → 右键「压缩为 ZIP 文件」，或在 PowerShell 里用 `Compress-Archive -Path <这些条目> -DestinationPath SilverFoxBlocker-1.7.2.zip`。
+2. **商店表单**：
+   - 隐私政策 URL：`https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md`（Gitee 镜像：`https://gitee.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md`）。
+   - 「权限理由」逐项粘贴 [PRIVACY.md § 8.5](./PRIVACY.md) 的表格内容。
+   - 「是否收集用户数据」：全部选「否」，仅「用户主动提交的反馈文本」按实际情况勾选（可留空不填联系方式）。
+3. **版本号**：商店要求每次上传的 `version` 严格递增，当前 `1.7.2`，下次改动记得同步 `README.md` 顶部与「关于」页显示（版本号由 `manifest.json` 读取，无需改代码）。
+4. **审核可能追问的三点**（答案都已写在 `PRIVACY.md` 与本文件中）：
+   - 为什么需要 `<all_urls>` —— 任意站点实时检测，见上表；
+   - `connect-src https:` 为何不写死域名 —— 情报源/镜像可切换，实际目标由代码固定清单决定；
+   - 为什么带 `web_accessible_resources` —— 页面内浮层字体与「关于」页鸣谢名单。
 
 ---
 

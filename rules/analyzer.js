@@ -48,8 +48,65 @@
     return { label: t.label, detail: t.detail, weight: typeof weight === 'number' ? weight : 0 };
   }
 
-  // ============ 官方域名快速索引（精确 + 子域匹配）============
-  const OFFICIAL_SET = new Set((IOCS.OFFICIAL_DOMAINS || []).map(d => d.toLowerCase()));
+  // ============ 内置名单通配符分层（2026-11-11）============
+  // 背景：内置名单（iocs.js 的 OFFICIAL_DOMAINS / KNOWN_BAD_DOMAINS）此前只支持「精确 + 子域后缀」，
+  //   于是「同一团伙反复换随机子域投递」这类模式只能一条条手工收录（88vyvwbt.qpefh.com、
+  //   abi04.8msg8.com …），永远追不上新增。现在改为同一条目可写通配。
+  //
+  // 语义（与云端通配完全一致，直接复用 _compileBadWild / _globToRegExp，避免两套规则漂移）：
+  //   · `*` 匹配**同一个域名标签内**的任意字符（[^.]*），`?` 匹配单个非点字符；
+  //     ⇒ `*.8msg8.com` 或 `?b?04.8msg8.com`；`*` 不跨标签，跨标签要显式多写一个 `*`。
+  //   · 前导 `*.` 归一为后缀条目（后缀匹配本身已覆盖全部子域）。
+  //   · TLD 位禁通配：`*.com` / `foo.*` / 裸 `*` 一律拒绝，防止一条规则拦掉半个互联网。
+  //   · 精确条目仍旧进 Set 走 O(标签数) 后缀查表，性能路径不变；通配条目单独成表，
+  //     只有「精确查表未命中」时才会线性跑一遍正则（内置通配数量以人为个位数，代价可忽略）。
+  //
+  // ⚠️ 转义约定（务必遵守，否则会「意外截断」）：
+  //   本函数**只按 `.` 分词由正则编译处理**，绝不按 `?` `#` `/` 做截断、绝不做 URL 解析、
+  //   绝不做 encodeURIComponent / decodeURI 之类的编解码。原因：`?` 在这里是**通配符**，
+  //   一旦被当成 query 起点（`s.split('?')[0]` 之类），`ab?de.bad-site.top` 会被截成 `ab`，
+  //   再因「不足两个标签」被静默丢弃——云端名单 2026-11-10 就踩过这个坑（见 _splitHostPath 注释）。
+  //   `*` 同理：`String.prototype.split('*')`、`.replace(/[*?]/g, '')` 这类「清洗」都会毁掉模式本身。
+  //   另：条目只接受小写化与首尾空白裁剪，**不做**任何其它规范化（尾点、连续点等由编译期护栏挡掉）。
+  const BUILTIN_WILD_MAX = 400;    // 每条内置名单的通配上限：防止误把大表塞成通配后拖慢所有页面
+  function _splitBuiltinList(list, wmax) {
+    // exact — 精确/后缀条目（进 Set，走 _suffixHit）
+    // wild  — [{ src, re }]（仅精确未命中时线性扫描）
+    // skipped — 被护栏拒绝的条目（内置名单是发版数据，保留下来供测试脚本核对，不暴露到 UI）
+    const exact = new Set();
+    const wild = [];
+    const skipped = [];
+    const src = Array.isArray(list) ? list : [];
+    for (let i = 0; i < src.length; i++) {
+      const raw = String(src[i] == null ? '' : src[i]).trim().toLowerCase();
+      if (!raw) continue;
+      if (raw.indexOf('*') === -1 && raw.indexOf('?') === -1) { exact.add(raw); continue; }
+      const c = _compileBadWild(raw);
+      if (c.kind === 'suffix') { exact.add(c.value); continue; }   // `*.foo.com` → foo.com
+      if (c.kind !== 'wild') { skipped.push(raw); continue; }
+      if (wild.length >= (wmax || BUILTIN_WILD_MAX)) { skipped.push(raw); continue; }
+      wild.push({ src: c.value, re: c.re });
+    }
+    return { exact: exact, wild: wild, skipped: skipped };
+  }
+  // 通配命中（只对单个主机名，不带 www. 前缀的归一化由调用方保证）
+  function _wildListHit(wild, h) {
+    if (!wild || !wild.length) return false;
+    for (let i = 0; i < wild.length; i++) { if (wild[i].re.test(h)) return true; }
+    return false;
+  }
+
+  // ============ 官方域名快速索引（精确 + 子域匹配 + 内置通配）============
+  // 旧写法（仅精确/后缀，无通配）：
+  //   const OFFICIAL_SET = new Set((IOCS.OFFICIAL_DOMAINS || []).map(d => d.toLowerCase()));
+  const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS, BUILTIN_WILD_MAX);
+  const OFFICIAL_SET = _OFFICIAL_BUILTIN.exact;
+  const OFFICIAL_WILD = _OFFICIAL_BUILTIN.wild;
+  // 只给「派生品牌词 / 通用词 / 品牌后缀」这几个静态索引用的精确条目快照。
+  //   为什么单列：这些派生逻辑要取「紧邻 TLD 的标签」当品牌词，通配条目（`*media.foo.com`）
+  //   的该标签是 `*media`，纯噪声，还会让 getRegistrableDomain 返回无法解析的串。
+  //   （即：通配只参与「主机名命中」判定，不参与品牌词派生。）
+  const OFFICIAL_EXACT_LIST = Array.from(OFFICIAL_SET);
 
   // ============ 用户指定信任域名 ============
   // 2026-11-08 合并：旧版另有一份 EXCEPTION_DOMAINS 名单，与 OFFICIAL_DOMAINS 的判定语义
@@ -62,6 +119,8 @@
     host = (host || '').toLowerCase().replace(WWW_RE, '');
     if (!host) return false;
     if (OFFICIAL_SET.has(host)) return true;
+    // 2026-11-11：内置白名单的通配条目（`.foo.com` 之外的写法，如 `*media.example.com`）
+    if (_wildListHit(OFFICIAL_WILD, host)) return true;
     let i = host.indexOf('.');
     while (i !== -1) {
       if (OFFICIAL_SET.has(host.slice(i + 1))) return true;
@@ -115,7 +174,13 @@
   }
 
   // ============ 已知恶意域名硬编码黑名单（银狐木马投递站，命中即强制 danger）============
-  const BAD_SET = new Set((IOCS.KNOWN_BAD_DOMAINS || []).map(d => d.toLowerCase()));
+  // 旧写法（仅精确/后缀，无通配）：
+  //   const BAD_SET = new Set((IOCS.KNOWN_BAD_DOMAINS || []).map(d => d.toLowerCase()));
+  // 2026-11-11：改走 _splitBuiltinList —— 含 * ? 的条目编译成正则（如 `*bot.*.qpefh.com`），
+  //   精确条目行为完全不变。语义与云端黑名单通配一致，见上方「内置名单通配符分层」注释。
+  const _BAD_BUILTIN = _splitBuiltinList(IOCS.KNOWN_BAD_DOMAINS, BUILTIN_WILD_MAX);
+  const BAD_SET = _BAD_BUILTIN.exact;
+  const BAD_WILD = _BAD_BUILTIN.wild;
   const _badCache = new Map();
   // ★ 2026-11-08：云端黑名单注入槽（由 registerCloudBad 填充，见下方「运行时动态注入槽位」）。
   //   声明提前到这里，是因为 isKnownBad 的缓存计算函数要直接引用它；
@@ -227,7 +292,9 @@
     // 缓存 key 与判定输入统一小写：_memoHost 原本直接用入参做 key，
     //   大小写不同的同一主机名会各存一份，且通配无法命中（正则现已带 i，这里再统一下更稳）。
     return _memoHost(_badCache, (hostname || '').toLowerCase(), (h) =>
-      _suffixHit(EXTRA_BAD_SET, h) || _wildBadHit(h.replace(WWW_RE, '')) || _suffixHit(BAD_SET, h));
+      _suffixHit(EXTRA_BAD_SET, h) || _wildBadHit(h.replace(WWW_RE, '')) || _suffixHit(BAD_SET, h) ||
+      // 2026-11-11：内置黑名单通配条目（云端通配在前，两者语义一致，来源不同）
+      _wildListHit(BAD_WILD, h.replace(WWW_RE, '')));
   }
   // 本次命中是否来自云端名单（仅用于给出更准确的「依据」文案，不影响判定强度）
   function isCloudBad(hostname) {
@@ -238,14 +305,76 @@
   //   注意优先级由调用方决定：目前统一为「任意黑名单 > 任意白名单」，
   //   叠色时按 云端 > 内置 > 自定义 归因（见 content.js 的判定顺序）。
   function isBuiltinBad(hostname) {
-    return _suffixHit(BAD_SET, (hostname || '').toLowerCase());
+    const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    // 2026-11-11：内置通配条目（如 `?b?04.8msg8.com`）同样属于「内置」来源，
+    //   归因必须与判定一致，否则下载侧的「内置黑名单」理由会与页面级结论对不上。
+    return _suffixHit(BAD_SET, h) || _wildListHit(BAD_WILD, h);
   }
   // 云端白名单命中（仅云端那份，不含内置 OFFICIAL_SET）。
   // 单独抽出来是因为判定流程要「先看云端名单，命中即据此处理」——
   // 内置白名单还有上千条，对它们没必要走快速通道，结果本来就一样。
   function isCloudOfficial(hostname) {
     const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
-    return _suffixHit(EXTRA_OFFICIAL_SET, h);
+    // 2026-11-11：云端白名单的通配条目（如 `cdn*.example.com`）同样算「云端白名单」来源
+    return _suffixHit(EXTRA_OFFICIAL_SET, h) || _wildListHit(EXTRA_OFFICIAL_WILD, h);
+  }
+
+  // ============ 用户自定义名单（settings.allowlist / customBadDomains）的通配匹配 ============
+  // 2026-11-11：自定义名单此前只做「精确 + 子域」比较（content.js 的 isAllowlisted / isHostBlacklisted、
+  //   background.js 的 hostMatch 各写了一份），用户写 `*` `?` 只会得到一条永远不命中的死条目。
+  //   现在统一收敛到本函数，语义与内置/云端完全一致（同一套 _compileBadWild 护栏）：
+  //     · `*` 只吃同一标签内的字符，`?` 吃单个非点字符，`*.foo.com` 归一为后缀条目；
+  //     · TLD 位禁通配（`*.com` 之类不生效）；非法模式直接跳过，不抛错、不拖垮整份名单；
+  //     · 纯域名条目仍走「精确 + 子域」字符串比较，不编译正则（性能路径不变）。
+  //   ⚠️ 只处理主机名，不处理路径：自定义名单本来就是「一行一个主机名」。
+  //     要按链接级放行请用云端名单的 `主机名/路径` 写法，避免两套语义混在一起。
+  //   ⚠️ 不做任何「清洗」（不 split('?')、不 replace(/[*?]/g,'')）：`?` 在这里是通配符，
+  //     任何按 query 起点截断的写法都会把 `ab?de.bad-site.top` 毁成 `ab`。
+  const _customPatCache = new Map();          // 模式 → { suffix } | { re } | null（null = 非法，跳过）
+  function _customHostHit(h, d) {
+    return h === d || (h.length > d.length && h.slice(-(d.length + 1)) === '.' + d);
+  }
+  function _customPattern(d) {
+    let p = _customPatCache.get(d);
+    if (p !== undefined) return p;
+    let out = null;
+    if (d.indexOf('*') !== -1 || d.indexOf('?') !== -1) {
+      // ⚠️ 不要在这里手动处理前导 `*.`：`*.com` 必须走 _compileBadWild 的护栏才会被拒，
+      //   否则 `*.com` 会被当成后缀条目 `com`，等于整站放行/拉黑半个互联网。
+      const c = _compileBadWild(d);
+      if (c.kind === 'suffix') out = { suffix: c.value };
+      else if (c.kind === 'wild') out = { re: c.re };
+    }
+    if (_customPatCache.size > 512) _customPatCache.clear();
+    _customPatCache.set(d, out);
+    return out;
+  }
+  function matchHostList(hostname, list) {
+    const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    if (!h) return false;
+    const arr = Array.isArray(list) ? list : [];
+    for (let i = 0; i < arr.length; i++) {
+      let d = String(arr[i] == null ? '' : arr[i]).trim().toLowerCase();
+      if (!d) continue;
+      // 容忍用户粘贴完整链接：只取主机部分（旧版 normBlackDomain 做过同样处理，白名单则直接不命中）
+      const proto = d.indexOf('://');
+      if (proto !== -1) d = d.slice(proto + 3);
+      const slash = d.indexOf('/');
+      if (slash !== -1) d = d.slice(0, slash);        // 路径不参与自定义名单匹配
+      const at = d.lastIndexOf('@');
+      if (at !== -1) d = d.slice(at + 1);
+      d = d.replace(WWW_RE, '').replace(/:\d+$/, '');
+      if (!d) continue;
+      if (d.indexOf('*') === -1 && d.indexOf('?') === -1) {
+        if (_customHostHit(h, d)) return true;
+        continue;
+      }
+      const p = _customPattern(d);
+      if (!p) continue;                               // 护栏拒掉的模式：静默跳过（与云端一致）
+      if (p.suffix) { if (_customHostHit(h, p.suffix)) return true; continue; }
+      if (p.re.test(h)) return true;
+    }
+    return false;
   }
 
   // 设置页专用的「预检」：按真正生效的规则清洗一份名单，返回
@@ -254,7 +383,10 @@
   //   paths    — 其中带路径的条目数（状态行用它说明「有 N 条只对特定链接生效」）
   //   dropped  — [{ entry, reason }]，被丢弃的条目及原因
   // 这样状态行就能报「实际生效几条、忽略几条」，而不是把被丢的也算进去（此前的静默失效）。
-  // opts.allowWild === false 用于云端白名单：白名单不支持通配，含 * ? 的条目直接计入 dropped。
+  // opts.allowWild === false 时，含 * ? 的条目直接计入 dropped（当前所有云端名单都允许通配，
+  //   保留该开关是为了以后需要「严格模式」时不必改判定逻辑）。
+  // 2026-11-11：白名单也允许通配，设置页预检与运行期注入必须用同一个 allowWild，
+  //   否则会出现「预检说无效、实际已生效」或反过来的静默不一致。
   // 2026-11-09：主机名/路径两种写法都接受（见 _normCloudEntryEx），路径条目同样要能报出丢弃原因。
   function sanitizeCloudDomains(arr, opts) {
     const allowWild = !(opts && opts.allowWild === false);
@@ -270,7 +402,7 @@
         dropped.push({ entry: String(src[i] == null ? '' : src[i]), reason: ex.reason || 'invalid' });
         continue;
       }
-      // 主机名带通配：白名单已在 _normCloudEntryEx 里被拒，这里只剩黑名单，需再验一次能否编译
+      // 主机名带通配（黑白名单现在都可能有）：需再验一次能否编译
       if (ex.wild) {
         const c = _compileBadWild(ex.host);
         if (!c.kind) { dropped.push({ entry: ex.value, reason: c.reason || 'wild-invalid' }); continue; }
@@ -316,6 +448,13 @@
   // ⚠️ 注入后必须清空相关缓存：isOfficialDomain / isKnownBad 都走 _memoHost，
   //   缓存里存的是「注入前」的判定结果，不清就会出现「明明同步了云端名单却仍被判危」。
   const EXTRA_OFFICIAL_SET = new Set();
+  // ★ 2026-11-11：云端白名单的通配槽（与 EXTRA_BAD_WILD 同构，由 registerCloudOfficial 填充）。
+  //   为什么现在放开：白名单原先「不支持通配」是为了防止开出过宽的放行通道，但这条护栏由
+  //   编译期规则（* 不跨标签、TLD 位禁通配、`*.com` 一律拒绝）已经把风险面收住了；
+  //   而实际需求是「整批 CDN 子域 / 随机子域分发页一次放行」，一条条枚举根本追不上。
+  //   上限沿用 WILD_MAX，与黑名单一致。
+  const EXTRA_OFFICIAL_WILD = [];   // [{ src, re }]
+  let _wildOfficialSkipped = [];    // 被护栏拒绝的白名单通配条目（诊断用，与黑名单同构）
   // 云端名单统一清洗：小写、去 www.、剔除含空格/斜杠/协议等明显不是域名的项
   // 带 reason 的版本：设置页要把「为什么这条没生效」讲清楚，只返回 '' 就只能报"无效"。
   function _normCloudDomainEx(d) {
@@ -434,13 +573,15 @@
   }
 
   // 云端白名单路径命中：返回命中的条目原文（用于文案），未命中返回 ''
+  // 2026-11-11：主机名可带通配（r.re 存在时走正则，否则走 O(1) 后缀比较），与黑名单路径条目同构。
   function matchCloudWhiteUrl(url) {
     if (!EXTRA_OFFICIAL_PATH.length) return '';
     const u = _urlHostPath(url);
     if (!u) return '';
     for (let i = 0; i < EXTRA_OFFICIAL_PATH.length; i++) {
       const r = EXTRA_OFFICIAL_PATH[i];
-      if (_hostHit(u.host, r.host) && _pathPrefixHit(u.path, r.path)) return r.src;
+      const hostOk = r.re ? r.re.test(u.host) : _hostHit(u.host, r.host);
+      if (hostOk && _pathPrefixHit(u.path, r.path)) return r.src;
     }
     return '';
   }
@@ -465,22 +606,53 @@
   //   不传 opts 时保持旧的累加行为，兼容其它调用方。
   function registerCloudOfficial(arr, opts) {
     const replace = !!(opts && opts.replace);
-    const before = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_PATH.length;
+    const skipped = [];
+    // 2026-11-11：计数把通配条目也算进来，否则「只新增通配条目」时 after === before，
+    //   下面的缓存失效条件会漏掉，导致刚注入的通配白名单在缓存里被判为「非官方」。
+    const before = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_WILD.length + EXTRA_OFFICIAL_PATH.length;
     if (replace) {
       EXTRA_OFFICIAL_SET.clear();
+      EXTRA_OFFICIAL_WILD.length = 0;
       EXTRA_OFFICIAL_PATH.length = 0;
     }
     if (Array.isArray(arr)) {
       for (const d of arr) {
-        // 白名单不支持通配：主机名含 * ? 的条目在这里被拒，与 sanitize 的预检结论一致
-        const ex = _normCloudEntryEx(d, { allowWild: false });
-        if (!ex.value) continue;
-        // 带路径 → 进路径表（线性扫，条目少）；纯主机名 → 仍旧进 Set 走后缀查表
-        if (ex.path) EXTRA_OFFICIAL_PATH.push({ src: ex.value, host: ex.host, path: ex.path });
-        else EXTRA_OFFICIAL_SET.add(ex.host);
+        // 2026-11-11：白名单现在也支持通配（与黑名单同一套编译器 / 护栏）
+        const ex = _normCloudEntryEx(d, { allowWild: true });
+        if (!ex.value) {
+          if (typeof d === 'string' && /[*?]/.test(d)) skipped.push(d.trim());
+          continue;
+        }
+        if (ex.path) {
+          if (EXTRA_OFFICIAL_PATH.length >= PATH_MAX) { skipped.push(ex.value); continue; }
+          // 路径条目：主机名可带通配 → 预编译正则；不带通配就只存字符串，比对更快
+          if (!ex.wild) {
+            EXTRA_OFFICIAL_PATH.push({ src: ex.value, host: ex.host, path: ex.path, re: null });
+            continue;
+          }
+          const c = _compileBadWild(ex.host);
+          if (!c.kind) { skipped.push(ex.value); continue; }
+          EXTRA_OFFICIAL_PATH.push({
+            src: c.value + ex.path,
+            host: c.kind === 'suffix' ? c.value : '',
+            path: ex.path,
+            re: c.kind === 'suffix' ? null : c.re
+          });
+          continue;
+        }
+        // 纯主机名：带通配 → 编译进正则表；否则仍旧进 Set 走后缀查表
+        if (ex.wild) {
+          const c = _compileBadWild(ex.host);
+          if (c.kind === 'suffix') { EXTRA_OFFICIAL_SET.add(c.value); continue; }  // `*.foo.com` → foo.com
+          if (c.kind !== 'wild' || EXTRA_OFFICIAL_WILD.length >= WILD_MAX) { skipped.push(ex.value); continue; }
+          EXTRA_OFFICIAL_WILD.push({ src: c.value, re: c.re });
+          continue;
+        }
+        EXTRA_OFFICIAL_SET.add(ex.host);
       }
     }
-    const after = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_PATH.length;
+    _wildOfficialSkipped = skipped;
+    const after = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_WILD.length + EXTRA_OFFICIAL_PATH.length;
     const added = replace ? after : after - before;
     // 覆盖模式下即使集合最终为空（云端清空名单）也必须失效缓存，
     // 否则先前按「官方」缓存的域名会一直判为安全。
@@ -550,12 +722,25 @@
       skipped: _wildBadSkipped.slice()
     };
   }
+  // 白名单版诊断（2026-11-11 白名单支持通配后补齐，结构与黑名单一致）
+  function getCloudWhiteWild() {
+    return {
+      active: EXTRA_OFFICIAL_WILD.map((x) => x.src),
+      suffix: Array.from(EXTRA_OFFICIAL_SET),
+      paths: EXTRA_OFFICIAL_PATH.map((x) => x.src),
+      skipped: _wildOfficialSkipped.slice()
+    };
+  }
 
   const _officialCache = new Map();
   function isOfficialDomain(hostname) {
     return _memoHost(_officialCache, hostname, (h) =>
       // 政府/公立机构可信后缀 → 直接判安全；其余走官方白名单后缀查表
-      _suffixHit(GOV_SET, h) || _suffixHit(OFFICIAL_SET, h) || _suffixHit(EXTRA_OFFICIAL_SET, h)
+      _suffixHit(GOV_SET, h) || _suffixHit(OFFICIAL_SET, h) || _suffixHit(EXTRA_OFFICIAL_SET, h) ||
+      // 2026-11-11：内置白名单通配条目（与 isExceptionHost 同源，避免两处结论不一致）
+      _wildListHit(OFFICIAL_WILD, h.replace(WWW_RE, '')) ||
+      // 2026-11-11：云端白名单通配条目（原先白名单不支持通配，这里只查 Set）
+      _wildListHit(EXTRA_OFFICIAL_WILD, h.replace(WWW_RE, ''))
     );
   }
 
@@ -750,7 +935,8 @@
   // 品牌 → 官方域名表里已登记过的「中国境内后缀」集合
   // （例：OFFICIAL_DOMAINS 含 lenovo.com.cn ⇒ lenovo 在 com.cn 上的站点属于已核实官网）。
   const _brandCnSuffixes = new Map();
-  for (const _od of (IOCS.OFFICIAL_DOMAINS || [])) {
+  // 旧：for (const _od of (IOCS.OFFICIAL_DOMAINS || [])) {   ← 同上，只认精确条目
+  for (const _od of OFFICIAL_EXACT_LIST) {
     const _oreg = getRegistrableDomain(_od);
     const _olb = _oreg.split('.');
     if (_olb.length < 2) continue;
@@ -919,7 +1105,8 @@
     'mobile', 'ns', 'smtp', 'pop', 'ftp', 'admin', 'test', 'stage', 'm', 's', 's3', 'vpn', 'w'
   ]);
   const _officialBrandTokens = [];
-  for (const d of (IOCS.OFFICIAL_DOMAINS || [])) {
+  // 旧：for (const d of (IOCS.OFFICIAL_DOMAINS || [])) {   ← 会把通配条目的 `*media` 当品牌词
+  for (const d of OFFICIAL_EXACT_LIST) {
     const _labels = String(d).toLowerCase().split('.');
     if (_labels.length < 2) continue;
     const _brand = _labels[_labels.length - 2]; // 紧邻 TLD 的标签：google.com→google、mail.google.com→google
@@ -955,7 +1142,8 @@
   // 说明：因通用词被移出品牌词表，若无此规则，live.com.evil.top / code.org.evil.top
   //       这类"整段照抄"会从"能判仿冒"退化为"漏报"，属于治理引入的回归，必须补上。
   const _GENERIC_OFFICIAL_DOMAINS = [];
-  for (const d of (IOCS.OFFICIAL_DOMAINS || [])) {
+  // 旧：for (const d of (IOCS.OFFICIAL_DOMAINS || [])) {   ← 会把通配条目的 `*media` 当品牌词
+  for (const d of OFFICIAL_EXACT_LIST) {
     const _labels = String(d).toLowerCase().split('.');
     if (_labels.length < 2) continue;
     const _sld = _labels[_labels.length - 2];
@@ -1064,7 +1252,8 @@
     // 官方域名豁免：含品牌词但确属官方（如 www.moonshot.cn / qq.com / kimi.moonshot.cn / aliyun.com）
     // 不算仿冒。否则 detectSpoof 仅做品牌词段匹配会把这些真官网误判为仿冒。
     // 官方豁免使用原始 normalized（不施加形近规范化），防止 go0gle 类被误判为官方域名。
-    if (_suffixHit(OFFICIAL_SET, normalized)) return null;
+    // 2026-11-11：内置白名单的通配条目同样属于「官方域」，一并豁免仿冒判定
+    if (_suffixHit(OFFICIAL_SET, normalized) || _wildListHit(OFFICIAL_WILD, normalized)) return null;
     // UGC 平台跳过：Wiki 农场 / Pages / 静态托管 / 博客的子域由用户自由创建，
     // 子域名里带品牌词是常态（如 wechat-tips.github.io、wps-guide.vercel.app），
     // 判「域名仿冒」会造成海量合法页面误报。
@@ -1848,7 +2037,11 @@
         return true;
       } catch (e) { return false; }
     })) { hit = true; detail = '检测到跨域 iframe 嵌套'; }
-    return mk(hit, 25, '重定向/注入', detail);
+    // ★ 2026-11-11 权重下调 25 → 12：本条把「外跳注入」和「跨域 iframe 嵌套」混在同一个出口，
+    //   而后者在正规大站极其常见（同意管理 / 视频 / 客服 / 评论组件），Evernote 正常下载页就是被它
+    //   加了 25 分并凑成「3 项中风险」。仍保留为一个独立评分项，但只按辅助信号计分；
+    //   真正的 meta refresh / 脚本外跳通常同时命中 linkAnalysis / downloadRedirector / domainAge 等，不会因此漏判。
+    return mk(hit, 12, '重定向/注入', detail);
   }
 
   // ============ NOAH 投递组件检测 ============
@@ -2567,15 +2760,15 @@
     if (level !== 'danger') {
       let escalated = false, detail = '';
       if (strongHits.length >= cfg.strongToDanger) {
-        escalated = true; detail = '命中银狐强特征（' + strongHits.join('/') + '），判定为木马投递站';
+        escalated = true; detail = '命中银狐强特征（' + strongHits.join('/') + '），判定为具有较高风险';
       } else if (strongHits.length >= 1 && otherCount >= cfg.strongPlusOther) {
-        escalated = true; detail = '强特征（' + strongHits.join('/') + '）叠加其他可疑信号，判定为木马投递站';
+        escalated = true; detail = '强特征（' + strongHits.join('/') + '）叠加其他可疑信号，判定为具有较高风险';
       } else if (mediumHits.length >= cfg.mediumToDanger) {
-        escalated = true; detail = '多项中风险特征叠加（' + mediumHits.join('/') + '），判定为木马投递站';
+        escalated = true; detail = '多项中风险特征叠加（' + mediumHits.join('/') + '），判定为具有较高风险';
       } else if (weakHits.length >= cfg.weakToDanger) {
-        escalated = true; detail = '多项弱可疑特征叠加（' + weakHits.join('/') + '），判定为高风险站';
+        escalated = true; detail = '多项弱可疑特征叠加（' + weakHits.join('/') + '），判定为具有较高风险';
       } else if (features.icpMissing && weakHits.length >= cfg.icpPlusWeak) {
-        escalated = true; detail = '国内无备案且多项弱可疑特征叠加，判定为高风险站';
+        escalated = true; detail = '国内无备案且多项弱可疑特征叠加，判定为具有较高风险';
       } else if (cfg.useDownloadSocial &&
                  (features.execDownload || features.cloudDiskDist || features.brandedExe || features.passwordArchive) &&
                  // ⚠️ 2026-08-30：原先这里用 features.socialEngineering（只要命中任意社工词），
@@ -2583,10 +2776,10 @@
                  // 改为只认「强诱导话术」（qq群/客服微信/安全账户/破解/激活工具等）。
                  (data._socialStrong || features.fakeOfficial || features.lureTheme || features.fakeUpdate)) {
         // 「下载分发 + 社工/假冒/诱饵话术」：手搓银狐（做得像正版）的典型组合，分数卡 warn 却漏拦 → 升级。
-        escalated = true; detail = '存在下载分发入口且页面含社工/假冒/诱饵话术，判定为银狐投递站';
+        escalated = true; detail = '存在下载分发入口且页面含社工/假冒/诱饵话术，判定为具有较高风险';
       } else if (cfg.useFakeSocial && features.fakeOfficial && data._socialStrong) {
         // 「假冒官方话术 + 社工话术」：钓鱼站强组合，两条弱信号也升级。
-        escalated = true; detail = '同时使用假冒官方话术与社工话术，判定为钓鱼站';
+        escalated = true; detail = '同时使用假冒官方话术与社工话术，判定为具有较高风险';
       }
       if (escalated) {
         level = 'danger';
@@ -2619,7 +2812,7 @@
     { id: 'vmDetection', label: '沙箱探测/恶意代码', weight: 35, desc: '脚本探测虚拟机/沙箱，或含已知落地载荷特征' },
     { id: 'socialEngineering', label: '钓鱼诱导话术', weight: 24, desc: '出现「公检法/涉案/安全账户/内部通知」等诈骗剧本话术（软件站业态词与 QQ 群等社群词已降级为弱信号）' },
     { id: 'fakeOfficial', label: '假冒官方话术', weight: 16, desc: '非官方域名却使用"官方下载/安全下载"等话术' },
-    { id: 'redirectIframe', label: '重定向/注入', weight: 25, desc: '存在外部 iframe 嵌套或 meta refresh 自动跳转' },
+    { id: 'redirectIframe', label: '重定向/注入', weight: 12, desc: '存在外部 iframe 嵌套或 meta refresh 自动跳转（权重已下调：第三方跨域 iframe 在正规站极常见，仅作辅助信号）' },
     { id: 'noahKit', label: 'NOAH 投递组件', weight: 50, desc: '内联脚本含 NOAH 运行时取链投递组件（多中继动态拉取 download_link，规避静态 URL 检测）' },
     { id: 'downloadRedirector', label: '极简自跳转下载页', weight: 45, desc: '空白页用 JS/meta 自跳转下载参数地址、服务端直接吐二进制附件，属银狐「瞬间下载」中转页' },
     { id: 'runtimeDownload', label: '运行时取链投递', weight: 50, desc: '内联脚本运行时从外部中继/配置动态拉取下载链接并创建隐藏锚点触发下载，与组件名/落地域名无关，通用识别此类投递手法' },
@@ -2655,6 +2848,9 @@
     isCloudOfficialUrl,
     isCloudBadUrl,
     getCloudBadWild,
+    // 2026-11-11：白名单通配诊断（与黑名单结构一致）+ 用户自定义名单的通配匹配入口
+    getCloudWhiteWild,
+    matchHostList,
     isTrustedPlatform,
     detectSpoof,
     extractIcp,

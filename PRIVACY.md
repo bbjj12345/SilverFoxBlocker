@@ -9,7 +9,7 @@
 
 本扩展的**检测、评分、名单比对与拦截全部在你的设备上完成**；不建立账号、不收集浏览历史、不向分析平台上报数据。默认开启的 RDAP / ICP 辅助核验只发送**域名**。除此之外，只有你**主动开启**的威胁情报源 / 社区名单、**主动点击**的云端名单同步、工具下载、反馈与名单上报，才会产生对应的外部请求。
 
-**请特别注意用户主动提交的数据（其中「名单上报」是 v1.6.1 新增）**：点击「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」时，你填写的文字会发送到作者自建的后端并通过邮件送达作者，邮件中会包含来源 IP；不点击不会自动发送。完整的请求目标与内容见下文。
+**请特别注意用户主动提交的数据（「名单上报」自 v1.6.1 起提供，v1.7.2 未改动其数据范围）**：点击「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」时，你填写的文字会发送到作者自建的后端并通过邮件送达作者，邮件中会包含来源 IP；不点击不会自动发送。完整的请求目标与内容见下文。
 
 ---
 
@@ -59,7 +59,7 @@
 
 ### 3.3 云端黑 / 白名单同步（默认不发请求，需你手动点击）
 
-这是 v1.6.1 新增的、由作者维护的名单，作者会不定时更新，**但浏览器扩展端不会自动定时同步**：只有在「关于」页点击「从云端更新名单」时，扩展才会并行发起两次 GET：
+这是由作者维护的名单（v1.6.1 起提供，v1.7.2 增加 Gitee 兜底通道），作者会不定时更新，**但浏览器扩展端不会自动定时同步**：只有在「关于」页点击「从云端更新名单」时，扩展才会并行发起两次 GET：
 
 ```
 https://api.silverfoxblocker.dpdns.org/list?type=white&_=<时间戳>
@@ -88,7 +88,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 - Worker 通过 Brevo（`api.brevo.com`）把正文、联系方式与**来源 IP**（`CF-Connecting-IP`）写进邮件，发往 `feedback@silverfoxblocker.dpdns.org`，再经邮件路由转交作者。邮件会被邮件服务商与作者邮箱留存；
 - Worker 用 Cloudflare KV 保存 `rate_limit_{IP}_{日期}` 的提交次数用于限流（每 IP 每天 60 次，24 小时过期），**不把反馈正文存入数据库**。不填联系方式时内容仍是匿名的，但网络层的 IP 依然会出现在邮件与限流键中。
 
-### 4.2 名单上报（v1.6.1 新增）
+### 4.2 名单上报（v1.6.1 起提供）
 
 在「规则与名单 → 自定义信任域名白名单 / 自定义恶意域名黑名单」页各有一个「发送白/黑名单到作者邮箱」按钮。点击后会：
 
@@ -151,7 +151,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## 六、远程代码与服务端链路
 
-本扩展**不加载任何远程脚本**。所有检测逻辑、规则与评分引擎都随安装包发布；网络请求只用于取回**数据**（域名清单、情报查询结果、RDAP / ICP 响应），不会 `eval` 或注入远程代码。云端名单在写入前会经过格式清洗（白名单不支持通配、黑名单通配上限 200 条、路径条目上限 500 条），被丢弃的条目与原因在设置页可见。
+本扩展**不加载任何远程脚本**。所有检测逻辑、规则与评分引擎都随安装包发布；网络请求只用于取回**数据**（域名清单、情报查询结果、RDAP / ICP 响应），不会 `eval` 或注入远程代码。云端名单在写入前会经过格式清洗（黑白名单都允许通配、通配上限 200 条、路径条目上限 500 条），被丢弃的条目与原因在设置页可见。
 
 `manifest.json` 的 CSP 为 `script-src 'self'; object-src 'self'; connect-src 'self' https:; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'`。**需要如实说明**：`connect-src` 允许连接任意 HTTPS 主机，并**没有**做域名级白名单；实际请求目标由代码内的固定清单决定，且默认关闭的项在未开启前不会请求。
 
@@ -187,18 +187,61 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## 八、权限与用途
 
-| 权限 | 用途 |
-|---|---|
-| `storage` | 保存设置、统计、名单与名单元数据、云端名单快照 |
-| `unlimitedStorage` | 云端名单 + 社区名单体积超过浏览器默认配额 |
-| `downloads` | 取消高危下载；下载 360 / 火绒 / KVRT / AdwCleaner 工具 |
-| `webNavigation` | 顶级导航时序（加载即检测）+ 跳转链追踪 |
-| `notifications` | 高风险时的系统原生告警 |
-| `alarms` | 社区名单每日自动更新 / 手动更新任务（云端名单不使用 alarms） |
-| `<all_urls>` | 在所有 http(s) 页面运行内容脚本；并授权上述网络请求 |
-| `web_accessible_resources` | 浮层字体与赞助者名单 |
+本扩展只申请 **6 项 API 权限 + 1 项主机权限**。原则很简单：**每一项权限都对应一个你能直接看到的功能，移除任何一项，对应的功能就会消失**；没有「先申请着、以后可能用」的权限。
 
-未申请：`tabs`（`tabs.create` / `tabs.sendMessage` 无需该权限）、`cookies`、`history`、`bookmarks`、`webRequest`、`nativeMessaging`、`scripting`。
+### 8.1 API 权限
+
+| 权限 | 用来做什么 | 为什么必须 | 不授予会怎样 |
+|---|---|---|---|
+| `storage` | `storage.sync`：设置、权重、自定义黑白名单、两个情报源 API Key（**AES-GCM 密文**）；`storage.local`：防护统计、云端名单快照、社区名单、下载黑名单；`storage.session`：本会话内危险标签页与已放行域名 | MV3 的 Service Worker 空闲 30 秒即被回收，所有状态必须落到 storage；否则「记住你的每一次开关」无从实现 | 重启即恢复默认，名单与统计全部丢失 |
+| `unlimitedStorage` | 云端名单镜像、社区名单（PhishDestroy 约 14 万条、HaGeZi TIF 布隆位图约 4.8 MB）、自定义背景 | 这些数据超过扩展默认配额；超限时 `storage.local.set` 会**静默失败**，用户会看到「同步成功但名单没变」 | 开启社区名单后可能写盘失败 |
+| `downloads` | ① 命中黑名单 / 载荷特征时 `chrome.downloads.cancel` 真正阻断下载；② 「银狐急救」中你点击工具时发起下载并指定文件名 | 仅靠页面提示拦不住已经开始的高危下载；急救工具也需要可信下载入口 | 只能提示、不能阻断；急救工具需自行去官网找 |
+| `webNavigation` | 只在顶层框架 `onCommitted` 记录时序：页面开始加载即进入「检测中」，并把「危险页 → 新域名」串成跳转链 | 银狐常见「落地页再跳一次才自动下载」，只有导航事件能追上；等到 DOM 就绪已经晚了 | 瞬间自动下载漏拦、跳转链断裂 |
+| `notifications` | 高风险网站 / 下载被拦时发系统原生通知 | 页面被立刻关闭、或命中发生在后台标签页时，页面内横幅看不到 | 只在页面内提示 |
+| `alarms` | 三份社区黑名单的每日自动更新，以及「立即更新」的一次性任务。**云端名单不使用 alarms，完全由你手动点击** | MV3 不允许常驻定时器，`setInterval` 在 SW 回收后失效 | 社区名单无法自动更新，只能手动刷新 |
+
+### 8.2 主机权限、可访问资源与 CSP
+
+| 项目 | 用途 | 为什么必须 | 说明 |
+|---|---|---|---|
+| `host_permissions: <all_urls>` | ① 内容脚本在 `document_start` 注入所有 http / https 页面做实时检测与下载拦截；② 后台请求 RDAP / ICP / 情报源 / 名单 CDN / 工具官网；③ 扩展页面直接读取名单镜像（Gitee 的 raw 响应不带 CORS 头，靠主机权限才可读） | 银狐投放站每天更换域名，无法预先枚举；检测必须在**任意**站点现场完成，否则防护无意义 | 该权限本身**不产生任何请求**；所有外部请求的目标都在代码的固定清单里（见第七节），不会因为权限宽就四处连接 |
+| `web_accessible_resources` | 页面内拦截浮层加载打包字体 `fonts/SmileySans-Oblique.woff2`；「关于」页读取 `sponsors.json` 鸣谢名单 | 浮层渲染在第三方页面里，字体必须允许该页面请求 | 只暴露打包内的静态文件，其中**不含任何用户数据** |
+| `content_security_policy`（`extension_pages`） | `script-src 'self'`、`object-src 'self'`：禁止远程脚本与插件对象；`connect-src 'self' https:`：允许连接 HTTPS 接口 | 前者让「不执行远程代码」成为浏览器强制约束，而不只是口头承诺；后者是跨域读取公开接口所必需 | `connect-src` **未做域名白名单**，实际目标由代码固定清单决定；默认关闭的项在开启前一次都不会请求 |
+
+### 8.3 未申请的敏感权限
+
+`tabs`（`tabs.create` / `tabs.sendMessage` 不需要该权限，读取标签页 URL 由主机权限覆盖）、`cookies`、`history`、`bookmarks`、`webRequest` / `declarativeNetRequest`（不做全量网络拦截，改用 `webNavigation` + 内容脚本）、`scripting`（内容脚本由 manifest 静态声明）、`nativeMessaging`、`identity`、`management`、`clipboardRead`、`geolocation`、`downloads.open`、`proxy`。
+
+### 8.4 数据分类声明（商店「是否收集用户数据」表单逐项）
+
+| 数据类别 | 是否收集 | 说明 |
+|---|---|---|
+| 个人身份信息（姓名、邮箱、地址、电话） | **否** | 不建账号；只有你主动点「发送反馈到作者邮箱」时才可**自愿**填写一个联系方式，它随邮件发给作者，不进入任何数据库，也无从关联到你 |
+| 健康 / 财务 / 支付信息 | **否** | 不涉及 |
+| 身份验证信息（密码、凭据、Cookie） | **否** | 不读取、不存储、不上传；未申请 `cookies` 权限 |
+| 个人通信（邮件、短信、聊天内容） | **否** | 不读取页面内的私信、邮件正文 |
+| 位置信息 | **否** | 不申请地理定位；不使用 IP 反查位置 |
+| 网页浏览历史 | **否** | 不记录、不上传访问历史。**例外需你开启**：RDAP / ICP 只发送当前页面的**域名**；VirusTotal / URLhaus / NetAPI / Google Safe Browsing 只发送当前页面的域名或 URL，且默认关闭 |
+| 用户活动（点击、滚动、鼠标轨迹） | **否** | 不埋点、不统计交互 |
+| 网站内容（页面正文、表单输入） | **否** | 内容脚本读取 DOM 仅用于本机评分，读完即弃，不出现在任何请求体里 |
+| 设备标识符 | **否** | 不生成、不读取设备指纹 |
+
+**其余承诺**：不售卖、不出租、不共享用户数据；不用于广告、信贷、保险或信用评估；不接入任何第三方分析 / 崩溃上报 SDK。
+
+### 8.5 商店审核用权限理由（可直接粘贴）
+
+| Permission | Justification | 中文 |
+|---|---|---|
+| `storage` | Persists user settings, custom allow/block lists, statistics, and the cloud-list snapshot. MV3 service workers are terminated when idle, so state cannot live in memory. No personal data is stored off-device. | 保存设置、自定义名单、统计与云端名单快照（MV3 后台会被回收，状态必须落盘） |
+| `unlimitedStorage` | Blocklist data (≈140k domains plus a ~4.8 MB Bloom-filter bitmap) exceeds the default storage quota; without it, writes fail silently. | 社区黑名单体积超过默认配额，超限会静默写入失败 |
+| `downloads` | Cancels high-risk downloads (`.exe`/`.msi` payloads) after local detection, and downloads cleanup tools from official vendor domains only when the user clicks. | 取消高危下载；仅在用户点击时从官方域名下载查杀工具 |
+| `webNavigation` | Reads top-level navigation timing to detect a page as soon as it starts loading and to follow redirect chains; used only for local decisions. | 读取顶级导航时序，页面开始加载即检测并追踪跳转链，仅用于本地判定 |
+| `notifications` | Shows a native warning when a risky page or download is blocked, in case the tab is closed or in the background. | 风险页 / 下载被拦时发系统通知，防止标签页已关闭或处于后台 |
+| `alarms` | Schedules the daily refresh of optional community blocklists; MV3 service workers cannot keep timers. | 为可选的社区名单安排每日更新（MV3 无法常驻定时器） |
+| `host_permissions: <all_urls>` | The content script must analyze any http(s) page the user opens, because phishing domains rotate daily and cannot be enumerated in advance. The permission also lets the extension read public blocklist endpoints that do not send CORS headers. No requests are made because of the permission alone. | 内容脚本需在任意页面实时检测（投放域名每天更换、无法预先枚举），并读取不带 CORS 头的公开名单；权限本身不产生任何请求 |
+| `web_accessible_resources` | Exposes a bundled font (used by the in-page warning overlay) and a static credits JSON to pages; no user data. | 仅暴露打包内的字体与静态鸣谢文件，不含用户数据 |
+| `content_security_policy` | Enforces `script-src 'self'` / `object-src 'self'` (no remote code) and allows HTTPS connections required by the documented endpoints. | 强制不加载远程代码，并允许访问文档中列出的 HTTPS 接口 |
+
 
 ---
 
@@ -227,18 +270,22 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## English Summary
 
-**SilverFoxBlocker v1.6.1** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
+**SilverFoxBlocker v1.7.2** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
 
 **Automatic requests (on by default, disableable):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`); limited reads of resources already referenced by the page you are visiting for download discovery. Any list hit short-circuits these lookups.
 
 **Optional requests (off by default):** VirusTotal receives base64url domain/URL IDs; Google Safe Browsing receives the **full page URL** (v4 Lookup). Both use your own API key, stored **only as AES-GCM ciphertext** (`v1.salt.iv.ciphertext`); plaintext exists only briefly inside the background service worker, never in storage or page scripts. URLhaus receives domain + page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF) are downloaded as one-way GETs from jsDelivr/GitHub mirrors. VT keys saved as plaintext by older versions are automatically re-encrypted once you open the options page; until then the background still accepts them.
 
-**Author-maintained cloud allow/block lists (v1.6.1):** no automatic sync. Only when you click "从云端更新名单" are two GETs sent to our Cloudflare Worker (`api.silverfoxblocker.dpdns.org/list?type=white|black`) with a bundled read-only `X-API-Key`. Nothing about you or your device is uploaded. The Worker reads `whitelist.json` / `blacklist.json` from a private GitHub repository (falling back to a private Gitee mirror if GitHub is unreachable, server-side only) and returns plain domain strings, which are validated and stored locally in `chrome.storage.local` (`sfCloudWhite`, `sfCloudBlack`, `sfCloudListMeta`).
+**Author-maintained cloud allow/block lists (v1.7.2, manual sync only):** no automatic sync. Only when you click "从云端更新名单" are two GETs sent to our Cloudflare Worker (`api.silverfoxblocker.dpdns.org/list?type=white|black`) with a bundled read-only `X-API-Key`. Nothing about you or your device is uploaded. The Worker reads `whitelist.json` / `blacklist.json` from a private GitHub repository (falling back to a private Gitee mirror if GitHub is unreachable, server-side only) and returns plain domain strings, which are validated and stored locally in `chrome.storage.local` (`sfCloudWhite`, `sfCloudBlack`, `sfCloudListMeta`).
 
 **User-initiated uploads:** posting feedback, or clicking "发送白/黑名单到作者邮箱", sends only the text you typed (feedback body + optional contact, or just your domain list; 2000-character cap) to the same Worker, which emails it to the author via Brevo. Those emails include the source **IP**; a Cloudflare KV key (`rate_limit_{IP}_{date}`, 60/day, 24h TTL) is used for rate limiting. Feedback text is not stored in a database, but it is retained by the mail provider and the author's mailbox. Browsing history, page URLs, settings, API keys and statistics are never included. Do not click these buttons if you do not want to share that content.
 
-**Other user-initiated requests:** the version-row "检查更新" button (v1.6.2) reads only the public latest tag — first from `github.com/…/releases/latest` (via the post-redirect URL), then `api.github.com`, then the `gh-proxy.com` mirror — and compares it locally; nothing is uploaded and no installer is downloaded. Also rescue-tool downloads from 360 / Huorong / Kaspersky (KVRT) / Malwarebytes (AdwCleaner) official hosts, plus ordinary external links (Lanzou update mirror with a clipboard-copied extraction code, SoftcnKiller share page, 123pan, GitHub, GitHub Issues, Afdian) opened in new tabs without injected parameters.
+**Other user-initiated requests:** the version-row "检查更新" button reads only the public latest tag — first from `github.com/…/releases/latest` (via the post-redirect URL), then `api.github.com`, then the `gh-proxy.com` mirror — and compares it locally; nothing is uploaded and no installer is downloaded. Also rescue-tool downloads from 360 / Huorong / Kaspersky (KVRT) / Malwarebytes (AdwCleaner) official hosts, plus ordinary external links (Lanzou update mirror with a clipboard-copied extraction code, SoftcnKiller share page, 123pan, GitHub, GitHub Issues, Afdian) opened in new tabs without injected parameters.
 
 **Local storage:** settings and custom lists in `chrome.storage.sync` (browser-account sync only, never via our servers), including the two API keys as AES-GCM ciphertext; statistics, downloaded lists, cloud-list snapshot and metadata in `chrome.storage.local`; HaGeZi's Bloom-filter bitmap (~4.8 MB) in IndexedDB. No remote code is loaded; the MV3 CSP is `script-src 'self'; object-src 'self'; connect-src 'self' https:` — note that `connect-src` **allows any HTTPS host** rather than a domain allowlist, so actual destinations are governed by the fixed list in code.
 
-The extension requests only `storage`, `unlimitedStorage`, `downloads`, `webNavigation`, `notifications`, `alarms`, and `<all_urls>` — each with a concrete function described above. No ads, analytics, crash reporting, or telemetry. For questions, use the in-extension feedback form or open an issue on GitHub.
+**Permissions.** The extension requests only `storage`, `unlimitedStorage`, `downloads`, `webNavigation`, `notifications`, `alarms`, and `<all_urls>` — nothing else (no `cookies`, `history`, `tabs`, `bookmarks`, `webRequest`/`declarativeNetRequest`, `scripting`, `nativeMessaging`). Each permission maps to a user-visible feature: persisting settings and lists; storing blocklists that exceed the default quota; cancelling malicious downloads; reading top-level navigation timing; showing a native warning; scheduling daily community-list refreshes; and injecting the detection content script into any http(s) page (required because phishing domains are rotated daily). A ready-to-paste justification for every permission is in section 8.5 above.
+
+**Data categories.** The extension does **not** collect personal identity, health, financial, authentication, communications, location, browsing history, user activity, website content or device identifiers; it does not sell, rent or share data, and does not use it for advertising, credit or insurance. The only user-supplied content is text you explicitly submit via the feedback / list-report buttons, which is emailed to the author and not stored in a database. No ads, analytics, crash reporting or telemetry.
+
+For questions, use the in-extension feedback form or open an issue on GitHub.

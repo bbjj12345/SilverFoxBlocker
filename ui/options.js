@@ -40,6 +40,7 @@ const DEFAULTS = {
   autoBlockDownloads: true,
   notify: true,
   icpApiVerify: true,   // ICP 备案权威核验（只发域名给公开备案接口，且仅在核验有价值时发起）
+  // 敏感度：设置页已无对应控件（2026-11-11），固定 'medium'；引擎仍读它做阈值/组合升级分档
   sensitivity: 'medium',
   fontMode: 'system',   // 'system' | 'smiley'
   theme: 'dark',        // 'dark' | 'light'（旧字段，兼容升级；新逻辑以 themePalette + themeLight 为准）
@@ -1095,7 +1096,14 @@ function bindControls(settings) {
   } catch (e) {}
   if (hgUpdateBtn) hgUpdateBtn.addEventListener('click', function () { updateHaGeZi(hgStatus); });
 
-  // 灵敏度分段（带滑动药丸动画）—— 防护总览页已移除，仅当控件存在时绑定
+  // ===== 灵敏度（low/medium/high）控件已不存在 —— 2026-11-11 注释保留，便于日后恢复 =====
+  //   实情：options.html 里已经没有 id="sensitivity" 的控件（防护总览页重构时被删除），
+  //   所以 $('sensitivity') 恒为 null，下面整段绑定是死代码：既不执行，也不会把点击写回设置。
+  //   引擎侧不受影响：settings.sensitivity 缺省即 'medium'（阈值 35/70、组合升级 3 项中风险），
+  //   与本段被注释前后完全一致 —— 注释它只是去掉「永远不成立的分支」，不改变任何判定。
+  //   恢复方式：设置页加回 <div id="sensitivity"><button data-v="low|medium|high">…</button></div>，
+  //            再取消下面的注释即可。
+  /*
   const seg = $('sensitivity');
   if (seg) {
     function updateSegGlider() {
@@ -1120,6 +1128,7 @@ function bindControls(settings) {
     let segResizeTimer;
     window.addEventListener('resize', () => { clearTimeout(segResizeTimer); segResizeTimer = setTimeout(updateSegGlider, 100); });
   }
+  */
 
   $('allowlist').value = (settings.allowlist || []).join('\n');
   $('customKeywords').value = (settings.customKeywords || []).join('\n');
@@ -1324,8 +1333,11 @@ async function collectSettings() {
     v = Math.max(0, Math.min(200, v));
     if (defW[id] == null || v !== defW[id]) weights[id] = v;
   });
-  const sensSeg = $('sensitivity');
-  const sensBtn = sensSeg ? sensSeg.querySelector('button.active') : null;
+  // ===== 灵敏度：控件已移除（见上文注释），保存时固定写 'medium' =====
+  //   原来这两行是 sensSeg/sensBtn 取值，因为 #sensitivity 不存在，sensBtn 恒为 null，
+  //   下面的三元表达式实际也一直落到 'medium' —— 改成字面量后行为完全等价，少一次无意义的 DOM 查询。
+  // const sensSeg = $('sensitivity');
+  // const sensBtn = sensSeg ? sensSeg.querySelector('button.active') : null;
   const activeFont = (document.querySelector('.font-opt.active') || { dataset: {} }).dataset;
   // Google Safe Browsing：Key 加密后存储；用户未改动则保留原密文，绝不存明文/可识别密文
   // 先剥掉掩码圆点：防止用户把光标点在掩码末尾直接续写，导致「•••+新Key」被整体加密
@@ -1394,7 +1406,9 @@ async function collectSettings() {
     autoBlockDownloads: $('autoBlockDownloads').checked,
     notify: $('notify').checked,
     icpApiVerify: ($('icpApiVerify') ? $('icpApiVerify').checked : true),
-    sensitivity: sensBtn ? sensBtn.dataset.v : 'medium',
+    // 灵敏度：设置页已无对应控件，固定 medium（引擎阈值 35/70、组合升级 3 项中风险）。
+    // 若日后恢复控件，把下行改回 `sensBtn ? sensBtn.dataset.v : 'medium'` 即可。
+    sensitivity: 'medium',
     fontMode: (activeFont && activeFont.font) || 'system',
     theme: ($('themeLight') && $('themeLight').checked) ? 'light' : 'dark',
     themePalette: ((document.querySelector('.theme-opt.active') || { dataset: {} }).dataset.palette) || 'classic',
@@ -2565,7 +2579,8 @@ const CLOUD_DROP_REASON = {
   'bad-length': '长度不合法',
   'empty-label': '存在空标签',
   'bad-syntax': '无法编译为正则',
-  'wild-not-allowed': '白名单不支持通配符',
+  // 2026-11-11：白名单也允许通配，本原因码仅在显式开启「严格模式」(allowWild:false) 时才会出现
+  'wild-not-allowed': '该名单当前不允许通配符',
   'wild-over-limit': '超出 200 条通配上限',
   'path-over-limit': '超出 500 条路径条目上限'
 };
@@ -2656,7 +2671,7 @@ function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, 
     '，云端黑名单' + b + '条' + tags(bw, pathB) +
     '，云端白名单' + w + '条' + tags(0, pathW);
   if (ignoredB) s += '；已忽略黑名单 ' + ignoredB + ' 条（格式不合法或超出通配上限）';
-  if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（白名单不支持通配符或格式不合法）';
+  if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（格式不合法或超出通配上限）';
   // 只有走了备用通道才标注来源：默认直连时不必让用户看到技术细节
   if (source && source !== '云端接口') s += '（数据源：' + source + '）';
   return s;
@@ -2678,7 +2693,7 @@ function countWildEntries(arr) {
 
 // 「未生效条目」明细：把 dropped 的原文与原因摊开给用户看。
 // 只列前若干条，其余折成「等 N 条」——这里的目的不是搬运日志，而是让用户能立刻发现
-// 「我写的那条为什么没生效」（白名单写通配、通配超上限、中文通配标签是最常见的三种）。
+// 「我写的那条为什么没生效」（通配超上限、通配写法非法、中文通配标签是最常见的三种）。
 function renderCloudDropDetail(mw, mb, strayWhiteEntries) {
   const row = $('cloudDropRow');
   const el = $('cloudDropDetail');
@@ -2727,13 +2742,14 @@ function refreshCloudListStatus() {
     const mb = m.black || {};
     const mw = m.white || {};
     // 通配数 / 忽略数优先取同步时记下的元数据；老快照没有这两个字段时回退到现场统计。
-    // 白名单额外现场扫一遍：升级前同步下来的快照里可能还躺着通配条目，
-    //   它们本来就不会生效，必须在状态行说清楚，而不是等下次同步才消失。
-    const strayWhiteWild = countWildEntries(o[SF_CLOUD_KEY_WHITE]);
+    // 2026-11-11：白名单已支持通配，「旧快照里的白名单通配条目不会生效」这条告警不再成立
+    //   （它们现在照常生效），因此不再把白名单里的通配条目算作「已忽略」。
+    // 旧：const strayWhiteWild = countWildEntries(o[SF_CLOUD_KEY_WHITE]);
     el.textContent = cloudCountsText(
       w, b,
       (mb.wild != null ? mb.wild : countWildEntries(o[SF_CLOUD_KEY_BLACK])),
-      Math.max(mw.dropped || 0, strayWhiteWild),
+      // 旧：Math.max(mw.dropped || 0, strayWhiteWild),   ← 白名单通配不再算忽略
+      mw.dropped || 0,
       mb.dropped || 0,
       false,
       (mb.paths != null ? mb.paths : countPathEntries(o[SF_CLOUD_KEY_BLACK])),
@@ -2743,10 +2759,13 @@ function refreshCloudListStatus() {
         : ((mb.source && mb.source !== '云端接口') ? mb.source : '')
     );
     // 未生效条目的明细（原文 + 原因）直接列在下面：此前只在 console 里，用户看不到
-    const strayWhiteEntries = (o[SF_CLOUD_KEY_WHITE] || []).filter(function (d) {
-      const v = String(d == null ? '' : d);
-      return v.indexOf('*') !== -1 || v.indexOf('?') !== -1;
-    });
+    // 旧：白名单里含 * / ? 的条目一律列为「不会生效」的杂项；2026-11-11 起白名单也支持通配，
+    //   这类条目照常生效，不再列举（保留变量名是为了不动 renderCloudDropDetail 的签名）。
+    // const strayWhiteEntries = (o[SF_CLOUD_KEY_WHITE] || []).filter(function (d) {
+    //   const v = String(d == null ? '' : d);
+    //   return v.indexOf('*') !== -1 || v.indexOf('?') !== -1;
+    // });
+    const strayWhiteEntries = [];
     renderCloudDropDetail(mw, mb, strayWhiteEntries);
     // 同步时间放在 title 里：正文只保留用户要的那句，鼠标悬停仍能看到上次同步时刻
     if (t) {
@@ -2883,8 +2902,9 @@ async function fetchCloudList(type) {
       const raws = extractCloudArray(json);
       // 结构都认不出来（例如 Worker 返回了 {error:...}）→ 换通道，别写空名单
       if (!raws) throw new Error('返回的结构无法识别（找不到域名数组）');
-      // 白名单不支持通配：allowWild:false，含 * / ? 的条目会被丢弃并计入 dropped
-      const r = normalizeCloudListEx(json, { allowWild: !isWhite });
+      // 2026-11-11：黑白名单都允许通配（白名单原先 allowWild:false，含 * / ? 的条目被丢弃）
+      // 旧：const r = normalizeCloudListEx(json, { allowWild: !isWhite });
+      const r = normalizeCloudListEx(json, { allowWild: true });
       // 有条目但全被丢弃 → 中止（否则等于把这份名单清空，用户却以为同步成功）
       // 这是**数据问题**，换通道也救不了，标记 noRetry 直接抛出
       if (raws.length && !r.list.length) {

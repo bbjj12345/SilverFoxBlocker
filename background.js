@@ -126,7 +126,9 @@ const ANALYSIS_TIMEOUT_MS = 11000;
 const WWW_RE = /^www\./;
 
 const DEFAULTS = {
-  enabledGlobal: true, showWarning: true, autoBlockDownloads: true, notify: true, sensitivity: 'medium',
+  enabledGlobal: true, showWarning: true, autoBlockDownloads: true, notify: true,
+  // 敏感度：设置页已无对应控件（2026-11-11），恒为 'medium'；引擎侧依赖此值给阈值与组合升级分档
+  sensitivity: 'medium',
   aiPersona: 'balanced',   // AI 助手性格档：'balanced' 均衡 | 'efficient' 高效 | 'gentle' 温柔 | 'pro' 严谨 | 'humorous' 幽默
   remindMode: 'normal',    // 扩展整体报毒识别/提醒偏好：'normal' 正常（危险告警 + 适度主动提示）| 'quiet' 安静（仅危险告警，不弹软提示/主动建议）
   // ICP 备案权威核验总开关：关闭后完全不向第三方备案接口发起任何请求，
@@ -1499,7 +1501,13 @@ function parseHost(url) {
   try { return new URL(url).hostname.toLowerCase(); } catch (e) { return ''; }
 }
 
+// 2026-11-11：自定义黑/白名单（settings.allowlist / customBadDomains）统一改由
+//   analyzer 的 matchHostList 匹配，现在支持 `*` / `?` 通配（`*` 不跨标签、`*.foo.com` 归一为后缀、
+//   TLD 位禁通配），语义与内置/云端名单完全一致。旧实现保留为回退分支（analyzer 缺失时）。
 function hostMatch(host, list) {
+  try {
+    if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(host, list);
+  } catch (e) {}
   host = (host || '').toLowerCase();
   return (list || []).some(function (d) {
     d = String(d).trim().toLowerCase();
@@ -1528,9 +1536,18 @@ const _KNOWN_BAD_HOSTS = (function () {
   return list.map(function (d) { return String(d).trim().toLowerCase(); });
 })();
 // 内置名单：样本 IOC，永不豁免（页面级同样是「命中即判危」，不参与白名单以外的豁免）
+// ★ 2026-11-11：内置名单已支持通配（如 `?b?04.8msg8.com` / `*bot.qpefh.com`），
+//   通配的正则编译与护栏只存在于 analyzer.js（_splitBuiltinList / _compileBadWild）。
+//   这里必须委托给 SF.isBuiltinBad，否则会出现「页面级判危、下载却放行」的半拦截——
+//   因为 _KNOWN_BAD_HOSTS 只做后缀比较，通配条目在它眼里永远不命中。
+//   下面的本地回退仅用于 analyzer 尚未加载完成的极早期调用，语义仍是「精确 + 子域」。
 function isBuiltinBadHost(h) {
   h = (h || '').toLowerCase();
-  return _KNOWN_BAD_HOSTS.some(function (d) { return d && (h === d || h.endsWith('.' + d)); });
+  try { if (SF.isBuiltinBad && SF.isBuiltinBad(h)) return true; } catch (e) {}
+  return _KNOWN_BAD_HOSTS.some(function (d) {
+    if (!d || d.indexOf('*') !== -1 || d.indexOf('?') !== -1) return false;   // 通配条目交给 analyzer 判定
+    return h === d || h.endsWith('.' + d);
+  });
 }
 // 云端名单：云端黑名单命中与内置 IOC 同等处理（2026-11-09 起统一为「任意黑名单 > 任意白名单」，
 //   不再被白名单豁免——见下载拦截里的顺序）。
@@ -3054,6 +3071,54 @@ if (chrome.webNavigation && chrome.webNavigation.onCommitted) {
         saveState(state);
       }
       lastTopUrl[tabId] = url;
+    });
+  });
+}
+
+// ===== SPA 路由变化（pushState / replaceState）也要重新起闸（2026-11-11 新增）=====
+//   为什么必须单独监听：上面的 onCommitted 只在「真实导航」（整页加载、前进后退）时触发。
+//   SPA 用 history.pushState 换路由时既不重载文档、也不再触发 onCommitted，内容脚本也不会
+//   重新注入 —— 结果是第二个路由起 analysisState 永远停在上一个页面的结论：
+//     · 上一页 safe → 新路由完全没有「判定前默认拒绝」窗口，下载直接落到名单判定；
+//     · 上一页 danger → 新路由被上一页的判危状态按住，连「仍要下载」的释放对象都是旧 host。
+//   内容脚本侧另有 popstate/hashchange + URL 轮询做重判（见 content.js 的 installSpaRouteWatch），
+//   这里只负责后台闸门与 URL 记账，两边互为双保险。
+//   注：不在这里复刻「A(危险)→B(新域名) 跳转链污染」逻辑 —— SPA 路由通常同域内切换，
+//       跨域 pushState 会被浏览器拒绝，链污染只在整页跳转时才有意义。
+if (chrome.webNavigation && chrome.webNavigation.onHistoryStateUpdated) {
+  chrome.webNavigation.onHistoryStateUpdated.addListener(function (details) {
+    if (details.frameId !== 0) return;                 // 只处理顶级框架
+    const _sUrl = details.url || '';
+    let _sProto = '';
+    try { _sProto = new URL(_sUrl).protocol; } catch (e) {}
+    if (_sProto !== 'http:' && _sProto !== 'https:') return;
+    const tabId = details.tabId;
+    if (tabId == null || tabId < 0) return;
+    let host = '';
+    try { host = new URL(_sUrl).hostname.toLowerCase(); } catch (e) {}
+    // ★ 同 URL / 仅锚点变化 → 不是换路由，直接跳过。
+    //   必须跳过：很多框架每次 setState 都会 replaceState 一次，若每次都重新 armAnalysis，
+    //   就会出现「页面早已判安全、闸门却又被关 11s」的假拦截（下载被取消再静默重下）。
+    const _prevNavUrl = lastTopUrl[tabId] || '';
+    const _noHash = function (s) { const i = String(s).indexOf('#'); return i === -1 ? String(s) : String(s).slice(0, i); };
+    if (_prevNavUrl && _noHash(_prevNavUrl) === _noHash(_sUrl)) return;
+    // 与 onCommitted 同语义：进入「检测中」，该标签的下载先默认拒绝
+    armAnalysis(tabId);
+    // URL 记账必须同步更新：下载来源归属（downloadSourceHost/Url）、自动下载竞速、
+    // 以及 URL 级云端名单（cloudBlackPath/cloudWhitePath）全都读这几个变量。
+    navCommitTime[tabId] = Date.now();
+    prevTopUrl[tabId] = lastTopUrl[tabId] || '';
+    lastTopUrl[tabId] = _sUrl;
+    // 同一标签换了 host（少见：SPA 内二次跳转到别的域）→ 上一页的判危/放行状态作废，
+    // 否则「仍要下载」的临时放行窗口会把新域也一并放开。
+    loadState().then(function (state) {
+      const tab = state.dangerTabs[tabId];
+      if (!tab) return;
+      const tabHost = String(tab.hostname || '').toLowerCase();
+      if (tabHost && host && tabHost !== host) {
+        delete state.dangerTabs[tabId];
+        saveState(state);
+      }
     });
   });
 }

@@ -117,12 +117,26 @@
 .sf-hint,
 .sf-hint button,
 .sf-fallback,
-.sf-fallback button {
+.sf-fallback button,
+/* 2026-11-11：情报 / 本地名单横幅（含「知道了」与「详情」按钮）同样要扛住页面全局重置 */
+.sf-intel-stack,
+.sf-intel-banner,
+.sf-intel-banner button {
   pointer-events: auto !important;
 }
+/* 容器本身不能吃点击（会挡住页面），只让横幅与按钮可点 */
+.sf-intel-stack { pointer-events: none !important; }
 /* 同理：页面可能用 `* { visibility: hidden }` / `display:none` 隐藏扩展 UI */
-.sf-overlay, .sf-card, .sf-btn, .sf-banner, .sf-hint, .sf-fallback {
+.sf-overlay, .sf-card, .sf-btn, .sf-banner, .sf-hint, .sf-fallback,
+.sf-intel-stack, .sf-intel-banner, .sf-intel-banner button {
   visibility: visible !important;
+}
+/* 「知道了 / 详情」是最关键的操作入口：显式声明 display，避免
+   `button { display: none !important }` 这类页面规则把关闭按钮抹掉。 */
+.sf-intel-banner .sf-ib-close,
+.sf-intel-banner .sf-ib-detail-btn {
+  display: inline-block !important; visibility: visible !important; opacity: 1 !important;
+  pointer-events: auto !important; text-indent: 0 !important; text-transform: none !important;
 }
 
 /* 保底出口横条：主卡片渲染失败时，屏幕上仍有一条一定能点的「离开此网站」。

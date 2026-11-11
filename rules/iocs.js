@@ -11,12 +11,27 @@
   //  · 大类 = 业务领域（安全软件类 / 浏览器类 / 金融类 …）
   //  · 小项 = 该领域下的品牌系或机构子类（360系 / 腾讯系 / 银行 / 证券 …）
   //  · 域名一律小写、空格分隔；同一域名只允许出现在一个小项里（首次出现生效，重复会被丢弃并告警）
+  //  · 条目可含 `*` / `?` 通配（写法与护栏见下方「通配符写法」）
   // 下方 OFFICIAL_DOMAINS / KNOWN_BAD_DOMAINS 全部由目录派生，判定逻辑（analyzer.js）无需改动。
   // 维护方式：只改本目录，不要再单独往扁平数组里塞域名——扁平数组是派生产物。
   //
   // 判定语义（与派生前完全一致）：
   //   WHITELIST_CATALOG → OFFICIAL_DOMAINS → 精确 + 子域后缀命中即「早期退出」判安全，永不拦截
   //   BLACKLIST_CATALOG → KNOWN_BAD_DOMAINS → 命中即判 danger，永不豁免
+  //
+  // ============ 通配符写法（2026-11-11 新增）============
+  // 两个目录的域名串里都可以直接写通配，由 analyzer.js 的 _splitBuiltinList 编译成主机名正则：
+  //   `*`  匹配**同一个域名标签内**的任意字符（不跨 `.`）
+  //   `?`  匹配单个非点字符
+  //   例：'*bot.qpefh.com'      → 命中 7f3abot.qpefh.com / xbot.qpefh.com
+  //       'abi0?.8msg8.com'    → 命中 abi04.8msg8.com / abi0x.8msg8.com
+  //       '*.cdn-bad.top'      → 归一为后缀条目 cdn-bad.top（覆盖全部子域），与直接写域名等价
+  //   护栏：TLD 位禁通配（`*.com` / `foo.*` / 裸 `*` 会被丢弃），条目必须 ≥2 个标签、长度 4–253，
+  //        每条名单的通配上限 400 条；被拒条目只进诊断，不报错、不影响其余条目。
+  // ⚠️ 写通配时不要做任何「清洗」：`?` 是通配符不是 query 起点，`*` 也不能被 split/replace 掉。
+  //   目录串按空白分词、整串小写化后原样传给编译器，中间不做 URL 解析或解码，故不会被截断。
+  // ⚠️ 通配只参与「主机名命中」判定，**不参与**品牌词派生（从官方域自动抽取品牌词时只认精确条目），
+  //   所以往白名单里加 `*media.foo.com` 不会让 `*media` 变成一个仿冒品牌词。
 
   // ---------- 白名单目录 ----------
   const WHITELIST_CATALOG = [
@@ -348,7 +363,8 @@
   const KNOWN_BAD_DOMAINS = _catalogFlatten(BLACKLIST_CATALOG, [], Object.create(null));
 
   // 域名 → { cat, item }（精确或父域命中）；未收录返回 null。
-  // 用途：设置页按大类分组展示、排查误报时快速定位该域名属于哪个品牌/机构。
+  // ⚠️ 通配条目在本索引里只是一个字面 key，实际命中的子域查不到分类（返回 null）。
+  //   这是有意的：分类只用于设置页展示与误报排查，通配条目本身没有「唯一品牌归属」。
   function categoryOfDomain(host) {
     let h = String(host || '').toLowerCase().replace(/^www\./, '');
     if (!h) return null;

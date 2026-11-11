@@ -37,6 +37,8 @@
     showWarning: true,
     autoBlockDownloads: true,
     notify: true,
+    // 敏感度：设置页已无对应控件（2026-11-11），此值恒为 'medium'；保留 key 是因为
+    // 评分引擎仍读它（阈值 35/70、组合升级 3 项中风险），删掉会退化成同一默认值但失去显式语义。
     sensitivity: 'medium',
     enabled: {
       domainImpersonation: true, icpMissing: true, lowQuality: true,
@@ -78,6 +80,23 @@
   let dangerAcknowledged = false; // 用户已点「仍然继续」确认进入 → 本页不再重复弹 danger 浮层（拦截仍生效）
   let revoked = false;            // 云端官网库命中 → 已撤销 danger 判定（本页不再拦截，且不被 establishedDanger 重新拉起）
   let didRun = false;             // 防 run() 因 DOMContentLoaded + setTimeout 兜底被重复触发（导致二次分析/双记录）
+
+  // ★ 2026-11-11 SPA 支持：run() 的「代数」。pushState 换路由时 ++runGen，
+  //   上一轮 run()（可能还在等 waitPageSettled / ICP / 域名年龄）的迟到结论会因代数不匹配被整段丢弃。
+  //   必须做这层，否则旧路由的结论会写到新路由上 —— reportVerdict 取的是「调用时」的 location.hostname，
+  //   错标之后后台 dangerTabs、统计、下载归属会全部跟着错。
+  let runGen = 0;
+  let spaHooked = false;          // SPA 路由监听是否已安装（只装一次）
+  let lastRouteUrl = (typeof location !== 'undefined' && location ? location.href : '');
+  let routeSettleCancel = null;   // 「等 DOM 稳定」的取消句柄（见 scheduleRouteReanalyze）
+  // ★ 2026-11-11 SPA 一致性：换路由时排除「上一路由残留的 iframe」——
+  //   实测同一 URL（Evernote /download）：站内点进 61 分，直接冷启动访问 36 分，
+  //   差值 25 正好是 detRedirectIframe 的「跨域 iframe 嵌套」。实现见 _snapshotFramesBeforeRoute。
+  // ★ 上一轮判定的真实耗时：用来决定 SPA 重判时「要不要立即弹横幅」——
+  //   上一轮慢（要等 RDAP 域名年龄等联网补强）说明本站判定大概率也慢，必须立即告知；
+  //   上一轮 <1s（命中缓存）则本站通常是快判，保持 450ms 延迟，避免跟随手点击闪屏。
+  let lastAnalysisMs = 0;
+  let lastRunT0 = 0;
 
   // ★ 判定总预算（2026-11-09）：从 run() 进入起算，「等页面就绪 + 联网补强 + 判定」必须在此时间内出结论。
   //   需求是「页面加载完成后 5s 内完成判定」；run() 由 DOMContentLoaded 触发（页面已可用，通常紧接 load），
@@ -234,7 +253,15 @@
     });
   }
 
+  // 2026-11-11：自定义白名单改由 analyzer 的 matchHostList 统一匹配 —— 现在支持 `*` / `?` 通配
+  //   （语义与内置/云端白名单一致：`*` 不跨标签、`*.foo.com` 归一为后缀、TLD 位禁通配）。
+  //   原先这里只做「精确 + 子域」比较，用户写通配等于写了一条永不命中的死条目。
+  //   下面的 else 分支就是改前的原实现（精确 + 子域），仅在 analyzer 尚未就绪时使用。
   function isAllowlisted(hostname, allowlist) {
+    try {
+      if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(hostname, allowlist);
+    } catch (e) {}
+    // 旧实现（原样保留作回退，无通配）：
     hostname = (hostname || '').toLowerCase();
     return (allowlist || []).some((d) => {
       d = (d || '').trim().toLowerCase();
@@ -327,6 +354,10 @@
   let analyzingShowTimer = null;      // 常驻横幅的延迟显示计时
   const ANALYZING_HINT_MIN_MS = 1200;
   const ANALYZING_HINT_DELAY_MS = 450;  // 快速判定（白名单/本地命中）不闪横幅
+  // ★ SPA 换路由「立即显示」时的最短展示：此时横幅是「告知已重新判定」，
+  //   不需要像首屏那样展示满 1.2s，600ms 足够被看见又不会拖慢阅读。
+  const ANALYZING_HINT_SPA_MIN_MS = 600;
+  let analyzingHintMinMs = ANALYZING_HINT_MIN_MS;   // 本轮的「最短展示」取值
   const ANALYZING_MAX_MS = 12000;       // 硬兜底上限：后台闸门 11s 先失效开放，这里再兜一次
 
   // 分析期间常驻：排定一次「若无结论就显示横幅」。重复调用无副作用。
@@ -367,7 +398,7 @@
     const el = analyzingHintEl;
     if (!el) return;
     analyzingHintEl = null;
-    const wait = Math.max(0, ANALYZING_HINT_MIN_MS - (Date.now() - analyzingHintAt));
+    const wait = Math.max(0, analyzingHintMinMs - (Date.now() - analyzingHintAt));
     if (analyzingHintTimer) clearTimeout(analyzingHintTimer);
     analyzingHintTimer = setTimeout(function () {
       try { NATIVE.rm(el); } catch (e) { try { el.remove(); } catch (e2) {} }
@@ -380,6 +411,28 @@
       if (analyzingGuardTimer) { clearTimeout(analyzingGuardTimer); analyzingGuardTimer = null; }
       if (analyzingShowTimer) { clearTimeout(analyzingShowTimer); analyzingShowTimer = null; }
       hideAnalyzingHint();
+    }
+  }
+
+  // ★ 2026-11-11：重新进入「分析中」（SPA 换路由时用）。
+  //   与初始启动的区别：需要清掉上一轮的硬兜底计时与横幅排定，否则旧的 12s 计时到点会把
+  //   新一轮的 analyzing 误置为 false（新路由刚加载就被判「已分析完」）。
+  function beginAnalyzing() {
+    analyzing = true;
+    if (analyzingGuardTimer) { clearTimeout(analyzingGuardTimer); analyzingGuardTimer = null; }
+    if (analyzingShowTimer) { clearTimeout(analyzingShowTimer); analyzingShowTimer = null; }
+    try { analyzingGuardTimer = setTimeout(function () { setAnalyzing(false); }, ANALYZING_MAX_MS); } catch (e) {}
+    // ★ 2026-11-11 SPA 一致性：横幅「出现与否」不能再取决于判定快慢（缓存命中就 100ms 出结论，
+    //   450ms 延迟还没到就被 setAnalyzing(false) 取消了 → 表现为「站内跳转没有横幅」）。
+    //   规则改为按「该站上一轮的判定耗时」预判：
+    //     · 上一轮 ≥1s（要等域名年龄/ICP 等联网补强）→ 本轮立即显示，最短 600ms；
+    //     · 上一轮 <1s（缓存已热）→ 仍是快站，保持 450ms 延迟，避免每次点导航都闪一下（如视频站）。
+    if (lastAnalysisMs >= 1000) {
+      analyzingHintMinMs = ANALYZING_HINT_SPA_MIN_MS;
+      showAnalyzingHint();
+    } else {
+      analyzingHintMinMs = ANALYZING_HINT_MIN_MS;
+      scheduleAnalyzingHint();
     }
   }
 
@@ -653,7 +706,12 @@
           if (ABS_URL_RE.test(a) && a.indexOf(location.hostname) === -1) extRes++;
         });
     } catch (e) {}
-    try { iframeCount = document.querySelectorAll('iframe').length; } catch (e) {}
+    // iframeCount 同样排除上一路由残留（否则「含 N 个 iframe 但 DOM 简单」会被残留框架顶起来）
+    try {
+      let _n = 0;
+      document.querySelectorAll('iframe').forEach((f) => { if (!_isStaleFrame(f)) _n++; });
+      iframeCount = _n;
+    } catch (e) {}
     let framework = null;
     try {
       if (window.React || window.__REACT_DEVTOOLS_GLOBAL_HOOK) framework = 'react';
@@ -687,6 +745,49 @@
     };
   }
 
+  // ===== 「上一路由残留的嵌入框架」识别（2026-11-11 SPA 一致性）=====
+  //   SPA 换路由不换文档 → 首页注入的第三方 iframe（同意管理 / 视频 / 客服）可能仍留在 DOM 里。
+  //   它对新路由毫无证据价值，却会被 detRedirectIframe 当成「跨域 iframe 嵌套」记 25 分并参与组合升级，
+  //   结果同一个 URL 因「从哪条路径进来」得到不同分数。
+  //   做法分两步，避免「把新路由刚挂载的框架误判成残留」：
+  //     ① 上一轮判定结束时（_rememberRouteFrames）记下当时的框架元素与 src；
+  //     ② 换路由的瞬间（_snapshotFramesBeforeRoute）只把「记过 且 src 没变」的框架标为残留。
+  //   新路由自己挂载的新元素、或 src 被改写的旧元素，都不在标记之列 → 照常计入证据。
+  let _prevRouteFrameSrc = new WeakMap();   // 上一轮判定时见过的框架 → src
+  const _staleFrames = new WeakMap();       // 已确认属于上一路由的框架 → src
+  function _frameSrcOf(f) {
+    try { return f.getAttribute('src') || f.getAttribute('data-src') || ''; } catch (e) { return ''; }
+  }
+  // 判定结束时记住当前框架集合，作为「下一路由的上一路由基线」
+  function _rememberRouteFrames() {
+    const m = new WeakMap();
+    try {
+      document.querySelectorAll('iframe,frame,object,embed').forEach(function (f) {
+        if (f && f.nodeType === 1) m.set(f, _frameSrcOf(f));
+      });
+    } catch (e) {}
+    _prevRouteFrameSrc = m;
+  }
+  // 换路由瞬间：把「上一轮见过、且此刻 src 未变、且仍挂在文档里」的框架标为残留
+  function _snapshotFramesBeforeRoute() {
+    try {
+      document.querySelectorAll('iframe,frame,object,embed').forEach(function (f) {
+        if (!f || f.nodeType !== 1 || _staleFrames.has(f)) return;
+        if (!_prevRouteFrameSrc.has(f)) return;                  // 本路由新挂载的框架 → 不算残留
+        const src = _frameSrcOf(f);
+        if (_prevRouteFrameSrc.get(f) !== src) return;           // src 换过 → 属于新路由
+        _staleFrames.set(f, src);
+      });
+    } catch (e) {}
+  }
+  function _isStaleFrame(f) {
+    try {
+      if (!f || !_staleFrames.has(f)) return false;
+      // src 又被改写过 → 该框架已成为本路由的内容，重新计入
+      return _staleFrames.get(f) === _frameSrcOf(f);
+    } catch (e) { return false; }
+  }
+
   // 同步主采集：基础 DOM + 页面文本内嵌下载直链扫描（不含 .txt 异步解析）。
   // 必须同步、快速返回，以便 run() 在页面被 meta refresh 秒跳走之前完成判定。
   function collectCore() {
@@ -708,6 +809,7 @@
     const iframeSrcs = [];
     try {
       document.querySelectorAll('iframe,frame,object,embed').forEach((f) => {
+        if (_isStaleFrame(f)) return;   // 上一路由残留的框架不算本页证据（见 _snapshotFramesBeforeRoute）
         const s = f.getAttribute('src') || f.getAttribute('data-src') || '';
         if (s) iframeSrcs.push(s);
       });
@@ -844,7 +946,10 @@
   // 仅当确实补到「新」下载入口时才重判一次；后台按 tabId 去重，不会重复计数 / 重复记录。
   // 注意：此处不再做 ICP 核验 / 域名年龄 / 黑名单 —— 那些已在 collectCriticalEnrichments 完成，
   // 否则再次设置 data.icpAuth 等会触发「结果变更」假阳性，造成无谓的重判与跳变。
-  async function enrichDeepAsync(settings, chained, data) {
+  // ★ 2026-11-11：新增 gen（沿用调用方 run() 的代数），用于在换路由后丢弃迟到的重判。
+  async function enrichDeepAsync(settings, chained, data, gen) {
+    // 换路由后没必要再下挖旧页面的 .txt / 脚本（既浪费流量也会把旧页链接塞进新路由的判定）
+    if (gen != null && gen !== runGen) return;
     if (!settings || !settings.enabledGlobal) return;
     let changed = false;
 
@@ -899,7 +1004,7 @@
     } catch (e) { /* 解析器异常不影响主判定 */ }
 
     // 仅当真正补到新下载入口时才重判一次（且 analyzeAndAct 内部 danger 已去重上报）。
-    if (changed) analyzeAndAct(settings, chained, data);
+    if (changed) analyzeAndAct(settings, chained, data, gen);
   }
 
   // ⚠️ 2026-08-31 加固：原实现只读 document.body.innerText，取不到三类常见写法 ——
@@ -1344,7 +1449,12 @@
     return String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   }
   // 当前站点是否已命中自定义恶意域名黑名单（含父域匹配）
+  // 2026-11-11：改由 analyzer 的 matchHostList 统一匹配，自定义黑名单现在也支持 `*` / `?` 通配；
+  //   旧实现保留为回退分支（normBlackDomain + 精确/子域比较）。
   function isHostBlacklisted(host, list) {
+    try {
+      if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(host, list);
+    } catch (e) {}
     const h = String(host || '').toLowerCase().replace(/^www\./, '');
     if (!h) return false;
     return (Array.isArray(list) ? list : []).some(function (d) {
@@ -1839,6 +1949,14 @@
 
   // 上报「分析闸门」判定（每次分析必发，含 safe/warn/danger，供后台默认拒绝闸门解除）
   function reportVerdict(level) {
+    // ★ 2026-11-11：记录「本轮从 run() 进入到达出结论」的真实耗时，供下一次 SPA 换路由时
+    //   判断该站是「慢站（要等联网补强）」还是「快站（命中缓存）」—— 横幅是否立即显示由它决定。
+    //   只认本轮第一次出结论：enrichDeepAsync 的迟到重判不会再改写这个值（lastRunT0 已清零）。
+    if (lastRunT0) {
+      const _dt = Date.now() - lastRunT0;
+      if (_dt > 0 && _dt < 30000) lastAnalysisMs = _dt;
+      lastRunT0 = 0;
+    }
     try {
       if (chrome.runtime && chrome.runtime.sendMessage)
         chrome.runtime.sendMessage({ type: 'sf-verdict', hostname: location.hostname, level: level || 'safe' });
@@ -1846,6 +1964,8 @@
     // ★ 2026-11-11：判定已出（含各白名单/停用/异常早退）→ 结束「分析中默认不信任」。
     //   所有出口都汇到本函数，故只改这一处即可保证「结果正常自动解除」不漏分支。
     setAnalyzing(false);
+    // ★ 2026-11-11 SPA：把本轮见过的框架记为「上一路由基线」，供下一次换路由时排除残留。
+    try { _rememberRouteFrames(); } catch (e) {}
   }
 
   // ===== 上报 =====
@@ -1971,7 +2091,11 @@
     }
   }
 
-  function analyzeAndAct(settings, chained, data) {
+  // ★ 2026-11-11：新增 gen（run() 的代数）。SPA 换路由后上一轮的迟到调用会被这里直接丢弃，
+  //   避免把旧路由的结论执行到新路由上（硬拦截开关、dangerActive、横幅、上报统计都会跟着错）。
+  //   传 undefined 时（历史调用点）不做代数校验，保持原行为。
+  function analyzeAndAct(settings, chained, data, gen) {
+    if (gen != null && gen !== runGen) return;
     if (!settings.enabledGlobal) { lastResult = { analyzed: true, disabled: true, skip: 'disabled' }; reportVerdict('safe'); return; }
     // ★ 判定顺序（2026-11-09 定版）：**任意黑名单 > 任意白名单**；
     //   同色内部按「云端 > 扩展内置 > 自定义」归因。
@@ -2192,6 +2316,11 @@
     //   情报查询与本地黑名单查询各发两次，横幅就被 append 两遍（同文案上下两条）。
     if (didRun) return;
     didRun = true;
+    // 供 reportVerdict 计算本轮耗时（SPA 换路由时判断「本站是否慢」用）
+    lastRunT0 = _runT0;
+    // ★ 2026-11-11：本轮分析的代数。后续每个 await 之后都校验一次，
+    //   一旦期间发生过 SPA 路由切换（reanalyzeForRoute 会 ++runGen），本轮的迟到结论全部作废。
+    const _gen = ++runGen;
     // 注入得意黑 @font-face（供网页内横幅使用；字体文件经 manifest web_accessible_resources 对 <all_urls> 开放）
     if (!fontFaceInjected) {
       fontFaceInjected = true;
@@ -2211,6 +2340,8 @@
     if (_host === 'localhost' || _host === '127.0.0.1' || _host === '[::1]') { setAnalyzing(false); return; }
 
     const settings = await getSettings();
+    // ★ SPA：await 期间可能已换路由 → 本轮作废（新一轮 run() 已接手）
+    if (_gen !== runGen) return;
     currentFontMode = settings.fontMode || 'system';
     currentScale = (typeof settings.fontScale === 'number') ? settings.fontScale : 1;
     // 得意黑内置 110% 基准系数（用户实测最佳）；跟随系统仍按滑块原值。
@@ -2333,13 +2464,15 @@
         console.log('[SilverFoxBlocker][快速通道] ' + (FAST_TEXT[_fast] || _fast) +
           '（跳过页面等待、ICP 与域名年龄查询），耗时 ' + (Date.now() - _runT0) + 'ms');
       } catch (e) {}
-      analyzeAndAct(settings, false, dataFast);
+      analyzeAndAct(settings, false, dataFast, _gen);
       return;
     }
 
     // 跳转链污染状态（本页是否由已判危站跳转而来）
     let chained = false;
     try { const r = await sendMsg({ type: 'sf-check-chain' }); chained = !!(r && r.tainted); } catch (e) {}
+    // ★ SPA：等后台回包期间可能已换路由 → 本轮作废
+    if (_gen !== runGen) return;
 
     // ★ 单次权威判定流程（2026-10-28 重构，根治「两次检测 / 评分跳变 / 重复记录」）：
     //   ① 等页面加载到 complete（有上限，见下方 5s 总预算）——页脚备案号渲染完整后再判定；
@@ -2358,17 +2491,22 @@
       const budgetLeft = () => Math.max(0, JUDGE_BUDGET_MS - (Date.now() - _runT0));
       // 等页面就绪最多占 2.8s，给补强留出 ≥2.2s；页面早就绪时它立即返回，不浪费预算
       await waitPageSettled(Math.min(2800, budgetLeft()));
+      // ★ SPA：等待页面就绪期间换路由 → 本轮作废（否则会拿新路由的 DOM 判旧路由的 URL）
+      if (_gen !== runGen) return;
       await collectCriticalEnrichments(settings, data, budgetLeft());
+      if (_gen !== runGen) return;
       // 载入域名级联动阻断集合（供子页连坐）：纯本地 storage 读，正常 <10ms；
       // 给个短上限兜底，避免极端情况下（集合极大 / storage 卡顿）拖延整体 5s 预算。
       await Promise.race([
         _ensureBlockedHostsLoaded(),
         new Promise((resolve) => setTimeout(resolve, Math.min(300, budgetLeft())))
       ]);
-      analyzeAndAct(settings, chained, data);   // 单次权威判定
-      enrichDeepAsync(settings, chained, data);  // 后台深度补强（可能再重判一次，已去重）
+      if (_gen !== runGen) return;
+      analyzeAndAct(settings, chained, data, _gen);   // 单次权威判定（带代数校验）
+      enrichDeepAsync(settings, chained, data, _gen);  // 后台深度补强（可能再重判一次，已去重）
     } catch (e) {
-      reportVerdict('safe');
+      // ★ SPA：迟到异常也只在本轮仍有效时才上报，避免把旧路由的失败写成新路由的 safe
+      if (_gen === runGen) reportVerdict('safe');
     }
 
   }
@@ -2623,6 +2761,11 @@
         if (stack && stack.children.length === 0) { try { stack.remove(); } catch (e) {} }
       }, 280);
     });
+    // ★ 2026-11-11 修复：这里原先漏了 banner.appendChild(btn)。
+    //   按钮被 createElement 出来、事件也绑上了，但从没进 DOM —— 于是 OpenPhish /
+    //   PhishDestroy / HaGeZi TIF 三条本地名单横幅只有文字和提醒语，没有「知道了」，
+    //   用户无法关闭（第三方情报的 renderIntelBanners 里一直是对的，两处实现分叉导致）。
+    banner.appendChild(btn);
     stack.appendChild(banner);
     appendSafetyAdvice(banner);   // OpenPhish / PhishDestroy / HaGeZi TIF 同样附带提醒语
     positionIntelStack(stack);
@@ -2712,8 +2855,124 @@
     if (msg && msg.type === 'sf-download-allow-failed') { showToast('⚠️ 请手动在站内点击下载，已临时放行该链接'); }
   });
 
+  // ===== SPA 路由变化：pushState / replaceState / popstate 后重新起闸并重判（2026-11-11 新增）=====
+  // 为什么用「轮询 + popstate」而不是包 history.pushState：
+  //   内容脚本运行在隔离世界（isolated world），在这里改写 history.pushState 只影响隔离世界，
+  //   改不到页面世界的同名方法 —— 页面自己调 pushState 时我们的包装根本不会执行。
+  //   要真正拦住只能用 chrome.scripting 注入 MAIN world 脚本，成本和风险都高得多；
+  //   而 URL 轮询只做字符串比较，700ms 一次几乎无开销。
+  //   后台侧另有 webNavigation.onHistoryStateUpdated 立即 armAnalysis（零延迟起闸），
+  //   所以这里的 ~1s 延迟只影响「多久出结论」，不影响「判定前下载已被拦住」。
+  function _stripHash(u) {
+    const i = String(u).indexOf('#');
+    return i === -1 ? String(u) : String(u).slice(0, i);
+  }
+
+  function checkRouteChange() {
+    try {
+      const now = (typeof location !== 'undefined' && location) ? location.href : '';
+      if (!now || now === lastRouteUrl) return;
+      const prev = lastRouteUrl;
+      lastRouteUrl = now;
+      // 纯锚点变化（同文档内 #section 跳转）不重判：页内下载入口没变
+      if (_stripHash(prev) === _stripHash(now)) return;
+      // ★ 先给「上一路由的框架」拍快照 —— 必须赶在框架重渲染/替换之前（同步执行）
+      _snapshotFramesBeforeRoute();
+      // 再等新路由 DOM 稳定后才重判（原来是固定 400ms，见 scheduleRouteReanalyze 的说明）
+      scheduleRouteReanalyze();
+    } catch (e) {}
+  }
+
+  // ★ 2026-11-11：「换路由后 400ms 就判」改成「等 DOM 稳定（静默 220ms）再判」，上限 900ms。
+  //   原因：React/Vue 换路由是异步渲染，400ms 时常常只渲染了一半 —— 链接数、下载入口数、
+  //   iframe 数都还在变，于是同一个 URL 两次访问拿到不同分数（实测 Evernote /download：
+  //   站内点进 61 分、直接访问 36 分）。等 DOM 静默能显著降低这种「取决于时机的判定」。
+  //   安全性不受影响：后台闸门在 URL 变化瞬间就已 arm（onHistoryStateUpdated），
+  //   这段时间里的下载依然被拦；这里只影响「多久出结论」。
+  function scheduleRouteReanalyze() {
+    if (routeSettleCancel) { try { routeSettleCancel(); } catch (e) {} routeSettleCancel = null; }
+    let done = false, quiet = null, hard = null, mo = null;
+    const fire = function () {
+      if (done) return;
+      done = true;
+      routeSettleCancel = null;
+      if (quiet) clearTimeout(quiet);
+      if (hard) clearTimeout(hard);
+      try { if (mo) mo.disconnect(); } catch (e) {}
+      reanalyzeForRoute();
+    };
+    const bump = function () {
+      if (done) return;
+      if (quiet) clearTimeout(quiet);
+      quiet = setTimeout(fire, 220);
+    };
+    hard = setTimeout(fire, 900);
+    bump();
+    try {
+      mo = new MutationObserver(bump);
+      mo.observe(document.documentElement || document, { childList: true, subtree: true });
+    } catch (e) {}
+    routeSettleCancel = function () {
+      done = true;
+      if (quiet) clearTimeout(quiet);
+      if (hard) clearTimeout(hard);
+      try { if (mo) mo.disconnect(); } catch (e) {}
+    };
+  }
+
+  function reanalyzeForRoute() {
+    routeSettleCancel = null;
+    try {
+      // ① 作废上一轮所有在途结论：run() 的每个 await 之后都会校验代数
+      runGen++;
+      // ② 清掉上一路由留在页面上的 UI（否则新路由会顶着旧路由的「危险」浮层/横幅）
+      try {
+        ['sf-overlay', 'sf-banner', 'sf-hint', 'sf-analyzing', 'sfIntelStack'].forEach(function (id) {
+          const el = document.getElementById(id);
+          if (el && el.parentNode) el.parentNode.removeChild(el);
+        });
+      } catch (e) {}
+      warningOverlay = null;
+      analyzingHintEl = null;
+      analyzingHintAt = 0;
+      if (analyzingHintTimer) { clearTimeout(analyzingHintTimer); analyzingHintTimer = null; }
+      // ③ 重置页面级判定状态（等价于一次全新加载）
+      lastResult = { analyzed: false };
+      unblocked = false;
+      dangerActive = false;
+      navBlock = false;
+      fullLockdown = false;
+      dangerReported = false;
+      dangerAcknowledged = false;
+      revoked = false;
+      didRun = false;
+      // ④ 重新进入「分析中」：常驻横幅 + 硬兜底计时重新开始
+      beginAnalyzing();
+      // ⑤ 用新路由的 URL/DOM 重跑一遍完整流程
+      run();
+    } catch (e) {
+      try { reportVerdict('safe'); } catch (e2) {}
+    }
+  }
+
+  function installSpaRouteWatch() {
+    if (spaHooked) return;
+    spaHooked = true;
+    // popstate / hashchange 是 DOM 事件，隔离世界能收到（pushState 不行，见上方说明）
+    try { window.addEventListener('popstate', checkRouteChange, true); } catch (e) {}
+    try { window.addEventListener('hashchange', checkRouteChange, true); } catch (e) {}
+    try {
+      setInterval(function () {
+        if (document.hidden) return;   // 后台标签页不检测，省电
+        checkRouteChange();
+      }, 700);
+    } catch (e) {}
+  }
+
   // 启动：document_start 时先装硬钩子（此时 body 可能未就绪，run 等 DOM）
   installHardGuards();
+  // SPA 路由监听（只装一次；与后台 onHistoryStateUpdated 互为双保险）
+  installSpaRouteWatch();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
   else run();
 
