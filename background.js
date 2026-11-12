@@ -1817,9 +1817,12 @@ function parseHost(url) {
 // 2026-11-11：自定义黑/白名单（settings.allowlist / customBadDomains）统一改由
 //   analyzer 的 matchHostList 匹配，现在支持 `*` / `?` 通配（`*` 不跨标签、`*.foo.com` 归一为后缀、
 //   TLD 位禁通配），语义与内置/云端名单完全一致。旧实现保留为回退分支（analyzer 缺失时）。
-function hostMatch(host, list) {
+// 2026-11-12：第 3 个参数是「这份名单属于哪一类」（六份名单之一），决定用哪份通配策略。
+//   缺省按自定义黑名单算；放行侧（白名单 / 受保护主机表）必须显式传 customWhite，
+//   将来若只放开拦截侧的某条限制，这里不传就会把拦截侧的宽松规则用到放行侧。
+function hostMatch(host, list, listKind) {
   try {
-    if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(host, list);
+    if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(host, list, listKind || 'customBlack');
   } catch (e) {}
   host = (host || '').toLowerCase();
   return (list || []).some(function (d) {
@@ -1893,7 +1896,7 @@ function downloadSourceUrl(item) {
 // 可信下载源：用户白名单 + 官方/云端白名单（与页面级 isOfficialDomain 同源）
 function isTrustedDownloadHost(h, settings) {
   if (!h) return false;
-  if (settings && hostMatch(h, settings.allowlist)) return true;
+  if (settings && hostMatch(h, settings.allowlist, 'customWhite')) return true;
   try { return !!(SF.isOfficialDomain && SF.isOfficialDomain(h)); } catch (e) { return false; }
 }
 
@@ -2152,9 +2155,9 @@ function _dlBlProtected(host, settings) {
   const h = (host || '').toLowerCase();
   if (!h) return true;
   const trusted = (self.SF_IOCS && self.SF_IOCS.TRUSTED_DOWNLOAD_HOSTS) || [];
-  if (hostMatch(h, trusted)) return true;
+  if (hostMatch(h, trusted, 'customWhite')) return true;
   try { if (SF && SF.isOfficialDomain && SF.isOfficialDomain(h)) return true; } catch (e) {}
-  if (settings && hostMatch(h, settings.allowlist)) return true;
+  if (settings && hostMatch(h, settings.allowlist, 'customWhite')) return true;
   return false;
 }
 // 记一次拦截：只记「下载文件所在的注册域名」（载荷域名），落地页域名仅作来源元数据留档
@@ -3321,9 +3324,9 @@ if (chrome.downloads && chrome.downloads.onCreated) {
       //   白名单 / 官方域名 / 可信下载源照常放行；其余高危文件（exe/zip/rar/网盘/脚本）
       //   一律拦截并弹「询问放行」窗——这是对「迅雷/IDM 等绕过浏览器直接下载」的兜底拦截。
       if (item.byExtensionId) {
-        if (hostMatch(host, settings.allowlist)) return;
+        if (hostMatch(host, settings.allowlist, 'customWhite')) return;
         if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;  // 路径白名单
-        if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist))) return;
+        if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist, 'customWhite'))) return;
         if (_dlBlProtected(host, settings)) return;   // TRUSTED_DOWNLOAD_HOSTS / 官方 / 用户白名单
         if (isHighRiskFile(item.url)) {
           cancelDownload(item.id, host || srcHost || '', item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename, true);
@@ -3348,9 +3351,9 @@ if (chrome.downloads && chrome.downloads.onCreated) {
         // ★ 自动下载兜底：下载在内容脚本「判定→标记危险」之前就已触发
         //   （覆盖「点进网站就下载」「服务端 Content-Disposition 强制下载」等抢跑场景）
         // 文件本身在白名单 / 来源是可信官方域名 → 放行
-        if (hostMatch(host, settings.allowlist)) return;
+        if (hostMatch(host, settings.allowlist, 'customWhite')) return;
         if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;  // 路径白名单
-        if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist))) return;
+        if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist, 'customWhite'))) return;
         if (isHighRiskFile(item.url)) {
           // 1) 来源域名自身像品牌仿冒（非官方）→ 直接拦，不依赖内容脚本判定
           //    注意：必须先排除官方域名，否则 qq.com / www.moonshot.cn 等含品牌词的官网会被误判仿冒而误拦下载

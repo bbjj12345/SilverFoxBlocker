@@ -1891,6 +1891,11 @@ html.theme-light .about-row .av.av-btns .gh-channel-tip { color: #a96500; opacit
    版本号从 .av 挪进了 .av-btns 里的 <span>，加粗要单独补；
    结果提示沿用 .about-note 的排版，但按三种状态给颜色（查到新版 / 无更新 / 查询失败）。 */
 .about-row .av.av-btns #verAbout { font-weight: 700; }
+/* 2026-11-12：检查更新按钮右侧的常驻提示「作者会不定期发布更新，建议每天检查一次」。
+   与 .update-tip 同排但语义不同：它是静态说明（始终可见），结果提示出现时允许换行到下一行。 */
+.about-row .av.av-btns .update-hint { flex: 1 1 240px; min-width: 0; font-weight: 400; font-size: calc(11.5px * var(--sf-scale));
+  line-height: 1.6; opacity: .55; white-space: normal; overflow-wrap: anywhere; }
+html.theme-light .about-row .av.av-btns .update-hint { opacity: .75; }
 .about-row .av.av-btns .update-tip { flex: 1 1 200px; min-width: 0; opacity: .85; white-space: normal; overflow-wrap: anywhere; }
 .about-row .av.av-btns .update-tip[hidden] { display: none; }
 .about-row .av.av-btns .update-tip.is-new { color: #ffb454; opacity: 1; font-weight: 600; }

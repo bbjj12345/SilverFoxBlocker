@@ -279,7 +279,7 @@
   //   下面的 else 分支就是改前的原实现（精确 + 子域），仅在 analyzer 尚未就绪时使用。
   function isAllowlisted(hostname, allowlist) {
     try {
-      if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(hostname, allowlist);
+      if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(hostname, allowlist, 'customWhite');
     } catch (e) {}
     // 旧实现（原样保留作回退，无通配）：
     hostname = (hostname || '').toLowerCase();
@@ -1473,7 +1473,7 @@
   //   旧实现保留为回退分支（normBlackDomain + 精确/子域比较）。
   function isHostBlacklisted(host, list) {
     try {
-      if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(host, list);
+      if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(host, list, 'customBlack');
     } catch (e) {}
     const h = String(host || '').toLowerCase().replace(/^www\./, '');
     if (!h) return false;
@@ -1619,6 +1619,32 @@
     }
   }
 
+  // ★ 2026-11-12 修复「第二次点『继续访问』无响应」：
+  //   事件是委托在浮层根节点上的，动作表存在 root.__sfActions 里，sfBindUiActions 是**整体替换**。
+  //   原实现里主卡的动作表只在 showWarning 内联写了一份，二次确认视图又写了一份（没有 continue），
+  //   于是「继续访问 → 二次确认 → 返回」重绘主卡后，动作表仍是二次确认那份 ——
+  //   data-sf-act="continue" 找不到处理函数，分发器静默 return，按钮看起来完全没反应。
+  //   现在主卡动作表集中生成，二次确认的动作表以它为基底再叠加 cc-back / cc-go，
+  //   任何一次重绘都不会丢掉主卡按钮的出口。
+  function sfMainActions(card, result) {
+    return {
+      leave: function () { leaveSite(); },
+      continue: function () { try { showContinueConfirm(card, result); } catch (e) {} },
+      // ★ 用户主动拉黑：判危不再自动写入自定义恶意域名黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
+      'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
+      // ★ 2026-11-12：访问被仿冒网站对应的正确官网（见 openCorrectSite）
+      'open-correct': function () { openCorrectSite(); },
+      __escape: function () { leaveSite(); }
+    };
+  }
+
+  // 重绘主卡 + 重新上色 + 重新绑定主卡动作表（返回主卡、原地刷新分数都走这里）
+  function sfRenderMainCard(root, card, result) {
+    renderWarning(card, result);
+    try { forceWhiteText(card, true); } catch (e) {}
+    if (root) sfBindUiActions(root, sfMainActions(card, result));
+  }
+
   function showWarning(result) {
     // 用户已确认「仍然继续」→ 本页不再重复弹 danger 浮层（下载拦截仍生效）。
     if (dangerAcknowledged) return;
@@ -1632,8 +1658,8 @@
       try {
         const _card = _existing.querySelector('.sf-card');
         if (_card && _card.querySelector('#sf-blocklist')) {
-          renderWarning(_card, result);
-          forceWhiteText(_card, true);
+          // 顺手重绑主卡动作表：万一此前停在别的视图上，这里保证按钮表与视图一致
+          sfRenderMainCard(_existing, _card, result);
         }
       } catch (e) {}
       return;
@@ -1652,15 +1678,7 @@
       className: 'sf-overlay' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : ''),
       html: '',
       fallbackLabel: '离开此网站',
-      actions: {
-        leave: function () { leaveSite(); },
-        continue: function () { try { showContinueConfirm(card, result); } catch (e) {} },
-        // ★ 用户主动拉黑：判危不再自动写入自定义恶意域名黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
-        'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
-        // ★ 2026-11-12：访问被仿冒网站对应的正确官网（当前为前端占位，见 openCorrectSite）
-        'open-correct': function () { openCorrectSite(); },
-        __escape: function () { leaveSite(); }
-      },
+      actions: sfMainActions(card, result),
       onFail: function () {
         try { showToast('⚠️ 拦截弹窗异常，已自动移除遮罩，请离开该网站'); } catch (e) {}
       }
@@ -1703,7 +1721,10 @@
       // ★ 动作改用 data-sf-act 标识，由 window 捕获阶段的事件委托统一分发
       //   （不再逐个 querySelector('#id').addEventListener —— 那正是黑屏死按钮的根源）
       '<button class="sf-btn sf-btn-leave" id="sf-leave" data-sf-act="leave" type="button">离开此网站</button>' +
-      '<button class="sf-btn sf-btn-continue" id="sf-continue" data-sf-act="continue" type="button">继续访问（仍拦截下载）</button>' +
+      // ★ 2026-11-12：文案改成两行——第一行单独标「（不推荐）」，第二行才是动作本身。
+      //   用 <br> 而不是让它自然折行：卡片宽度随视口变化，自然折行可能把「不推荐」和
+      //   「继续」挤在同一行，首行的「不推荐」提示就失效了。样式侧配了 white-space:normal。
+      '<button class="sf-btn sf-btn-continue" id="sf-continue" data-sf-act="continue" type="button">（不推荐）<br>继续访问，仍拦截下载</button>' +
       '</div>' +
       // ★ 2026-11-12：第三个出口——「访问正确的页面」。尺寸与「添加到自定义恶意域名黑名单」一致（独占一行）。
       //   为什么放在主按钮下方而不是并排：它是「修正入口」而不是「对本页做决定」，与离开/继续不是同级选择；
@@ -1730,23 +1751,22 @@
       '</div>' +
       '<p class="sf-foot">强烈建议点击「离开此网站」返回安全页面。如确需访问，请务必不要在此页面输入任何账号密码或下载文件。</p>';
 
-    // 切换视图时更新浮层根节点上的动作表（事件委托在根上，重绘后依然有效）
+    // 切换视图时更新浮层根节点上的动作表（事件委托在根上，重绘后依然有效）。
+    // ★ 2026-11-12：以主卡动作表为**基底**再叠加 cc-back / cc-go —— 主卡上的 leave / continue /
+    //   add-blacklist / open-correct 全部保留。早先这里是一张独立的小表，漏了 continue，
+    //   导致「返回」之后主卡的「继续访问」变成死按钮（第二次点无响应）。
     const root = warningOverlay || card;
-    sfBindUiActions(root, {
-      leave: function () { leaveSite(); },
-      'cc-back': function () { try { renderWarning(card, result); } catch (e) {} },
-      // 从二次确认返回主卡后，「添加到自定义恶意域名黑名单」按钮仍需可用
-      'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
-      // ★ 2026-11-12：同一动作表会在「二次确认 → 返回主卡」后继续复用，这里必须一并登记，
-      //   否则返回后的「访问正确的页面」会变成点了没反应的死按钮（分发器找不到函数就静默 return）。
-      'open-correct': function () { openCorrectSite(); },
-      'cc-go': function () {
-        dangerAcknowledged = true; // 标记本页已确认继续，不再重复弹报毒浮层
-        closeEl(root);
-        showBanner(result);
-      },
-      __escape: function () { leaveSite(); }
-    });
+    const ccActions = sfMainActions(card, result);
+    ccActions['cc-back'] = function () {
+      // 返回主卡：重绘内容 **并且** 把动作表还原成主卡那一份
+      try { sfRenderMainCard(root, card, result); } catch (e) {}
+    };
+    ccActions['cc-go'] = function () {
+      dangerAcknowledged = true; // 标记本页已确认继续，不再重复弹报毒浮层
+      closeEl(root);
+      showBanner(result);
+    };
+    sfBindUiActions(root, ccActions);
   }
 
   function showBanner(result) {

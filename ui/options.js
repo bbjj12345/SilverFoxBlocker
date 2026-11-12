@@ -1914,13 +1914,18 @@ async function init() {
   (function bindLanzouUpdate() {
     const el = $('lanzouUpdate'), tip = $('lanzouPwdTip');
     if (!el) return;
+    // 2026-11-12：提示文案改成「蓝奏云提取码：2hxh（点击按钮自动复制到剪贴板）」，
+    //   复制成功后换成「已复制」，2.2 秒后回落到**同一句**基础文案。
+    //   两个字符串在这里各存一份，避免与 options.html 里的初始文案写岔（改了要一起改）。
+    const BASE_TIP = '蓝奏云提取码：2hxh（点击按钮自动复制到剪贴板）';
+    const DONE_TIP = '蓝奏云提取码 2hxh 已复制，去蓝奏云页面粘贴即可';
     el.addEventListener('click', function () {
       try {
         if (!navigator.clipboard || !navigator.clipboard.writeText) return;
         navigator.clipboard.writeText('2hxh').then(function () {
           if (!tip) return;
-          tip.textContent = '提取码 2hxh 已复制，请在蓝奏云页面粘贴';
-          setTimeout(function () { tip.textContent = '提取码：2hxh'; }, 2200);
+          tip.textContent = DONE_TIP;
+          setTimeout(function () { tip.textContent = BASE_TIP; }, 2200);
         }, function () {});
       } catch (e) {}
     });
@@ -2745,10 +2750,14 @@ const CLOUD_DROP_REASON = {
   'idn-in-wildcard': '通配标签里有中文，请改写为 punycode',
   'suffix-malformed': '`*.` 后缀写法不合法',
   'need-two-labels': '至少要有两级域名',
-  'tld-wildcard': '不允许通配顶级域',
+  // 2026-11-12：云端黑名单已放开 TLD 通配，本原因码现在只出现在另外五份名单上。
+  'tld-wildcard': '该名单不允许通配顶级域（仅云端黑名单支持）',
   'bad-length': '长度不合法',
   'empty-label': '存在空标签',
   'bad-syntax': '无法编译为正则',
+  // 2026-11-12（策略 #1 配套）：前导 `*.` 混用 / TLD 通配被放开后，新增的「锚点太弱」原因码。
+  //   只有新放开的写法才会产生它，历史写法的判定一个都没变。
+  'weak-anchor': '通配过于宽泛（需保留至少 4 个字面字符作为品牌锚点）',
   // 2026-11-11：白名单也允许通配，本原因码仅在显式开启「严格模式」(allowWild:false) 时才会出现
   'wild-not-allowed': '该名单当前不允许通配符',
   // 2026-11-12：通配 / 路径的条数上限已取消，这两个原因码不会再产生；
@@ -3121,7 +3130,8 @@ async function fetchCloudList(type) {
       if (!raws) throw new Error('返回的结构无法识别（找不到域名数组）');
       // 2026-11-11：黑白名单都允许通配（白名单原先 allowWild:false，含 * / ? 的条目被丢弃）
       // 旧：const r = normalizeCloudListEx(json, { allowWild: !isWhite });
-      const r = normalizeCloudListEx(json, { allowWild: true });
+      // 2026-11-12：listKind 让预检与运行期用**同一份策略**（六份名单各自的通配护栏）。
+      const r = normalizeCloudListEx(json, { allowWild: true, listKind: isWhite ? 'cloudWhite' : 'cloudBlack' });
       // 有条目但全被丢弃 → 中止（否则等于把这份名单清空，用户却以为同步成功）
       // 这是**数据问题**，换通道也救不了，标记 noRetry 直接抛出
       if (raws.length && !r.list.length) {
@@ -3170,7 +3180,8 @@ async function updateCloudLists(btn) {
   if (!hasStorageLocal()) { setCloudStatus('当前环境不支持扩展存储'); return; }
   const orig = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
-  setCloudStatus('正在从云端拉取黑白名单…');
+  // 2026-11-12：文案里的「黑白名单」会读成「黑白·名单」，加一个斜杠断词
+  setCloudStatus('正在从云端拉取黑/白名单…');
   try {
     // 两份并行拉取；任一失败都会抛错，此时本地不做任何写入（不会出现半新半旧）
     // 两份并行拉取；任一失败都会抛错，此时本地不做任何写入（不会出现半新半旧）
@@ -3266,6 +3277,34 @@ async function updateCloudLists(btn) {
     if (btn) { btn.disabled = false; btn.textContent = orig; }
   }
 }
+
+// 2026-11-12：通配说明由 analyzer 的**策略对象**生成，而不是全部写死在 HTML 里。
+//   为什么：六份名单（云端黑/白、内置黑/白、自定义黑/白）的通配护栏现在可以分别开关
+//   （analyzer.LIST_WILD_POLICY），文案若写死，改了策略就会出现「页面说不能写、其实能写」
+//   这种最误导人的不一致。这里只在既有说明后追加一段「当前生效策略」，原有解释保持不动。
+(function initWildHelp() {
+  function fill() {
+    const A = (typeof window !== 'undefined' && window.SF_ANALYZER) || null;
+    if (!A || typeof A.wildHelpLines !== 'function') return;
+    const block = function (kind) {
+      return '<br><b>当前生效策略</b>：' + A.wildHelpLines(kind).join(' ');
+    };
+    const jobs = [
+      ['hxewy5k5Ol9hGfa8FSKkjc', 'customWhite', false],   // 自定义白名单 hint
+      ['DuU6p8uIlapO2ICPNd88hI', 'customBlack', false],   // 自定义黑名单 hint
+      ['SF_CLOUD_WILD_ROW', 'cloudBlack', true]           // 关于页「通配支持」整行（取 .av 单元格）
+    ];
+    jobs.forEach(function (j) {
+      const el = document.querySelector('[data-page-node-id="' + j[0] + '"]');
+      if (!el || el.getAttribute('data-wild-help') === '1') return;
+      const host = j[2] ? (el.querySelector('.av') || el) : el;
+      host.insertAdjacentHTML('beforeend', block(j[1]));
+      el.setAttribute('data-wild-help', '1');
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fill);
+  else fill();
+})();
 
 (function initCloudListSync() {
   function bind() {

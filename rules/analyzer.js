@@ -77,30 +77,40 @@
   //     `abi0?.8msg8.com` → `8msg8.com`
   //     倒数第二级也带通配（`foo.*.com`）→ 退化成 `.<TLD>` 桶（仍远小于全表）。
   //   TLD 位禁通配由 _compileBadWild 把关，最后一级永远是字面量，桶键必然存在。
+  //   返回 '' = 「TLD 位本身带通配」→ 尾部没有任何字面量可以分桶，落进 any 桶（见下）。
   function _wildBucketKey(pat) {
     const labels = String(pat).split('.');
     const tld = labels[labels.length - 1] || '';
+    if (tld.indexOf('*') !== -1 || tld.indexOf('?') !== -1) return '';
     const second = labels.length >= 2 ? labels[labels.length - 2] : '';
     if (second && second.indexOf('*') === -1 && second.indexOf('?') === -1) return second + '.' + tld;
     return '.' + tld;
   }
   // 通配容器：items 保持原顺序（诊断/导出要用），idx 是桶索引（判定用）
-  function _wildBag() { return { items: [], idx: new Map() }; }
+  //   any —— 「TLD 带通配」的条目（`*-deepseek-*.*`）。这类模式命中时尾部**没有**固定字面量，
+  //     用 idx 分桶必然对不上（桶键 `.*` 永不等于主机名的真实 TLD），会变成「写了却不生效」。
+  //     所以单列一个数组，在常规桶全部落空后多扫一遍。默认空数组 ⇒ 每次判定只多一次 length 判断，
+  //     对性能零影响；只有用户真的开了 tldWildcard 策略才会变长。
+  function _wildBag() { return { items: [], idx: new Map(), any: [] }; }
   function _wildBagAdd(bag, src, re) {
     const item = { src: src, re: re };
     bag.items.push(item);
     const key = _wildBucketKey(src);
+    if (!key) { bag.any.push(item); return; }
     let arr = bag.idx.get(key);
     if (!arr) { arr = []; bag.idx.set(key, arr); }
     arr.push(item);
   }
-  function _wildBagClear(bag) { bag.items.length = 0; bag.idx.clear(); }
+  function _wildBagClear(bag) { bag.items.length = 0; bag.idx.clear(); bag.any.length = 0; }
   function _wildBagScan(arr, h) {
     for (let i = 0; i < arr.length; i++) { if (arr[i].re.test(h)) return true; }
     return false;
   }
   function _wildBagHit(bag, h) {
-    if (!bag || !bag.idx || !bag.idx.size) return false;
+    if (!bag || !bag.idx) return false;
+    // any 桶（TLD 带通配）：默认长度为 0，这里只多一次判断
+    if (bag.any && bag.any.length && _wildBagScan(bag.any, h)) return true;
+    if (!bag.idx.size) return false;
     const d1 = h.lastIndexOf('.');
     if (d1 === -1) return false;
     const b1 = bag.idx.get('.' + h.slice(d1 + 1));   // 退化桶（倒数第二级带通配）
@@ -113,7 +123,54 @@
     return false;
   }
 
-  function _splitBuiltinList(list /*, wmax —— 已取消上限，形参保留仅为兼容旧调用签名 */) {
+  // ============ 通配符「放行策略」：一处开关，六份名单复用（2026-11-12）============
+  // 背景：通配护栏原先硬编码在 _compileBadWild 里，六份名单（云端黑/白、内置黑/白、自定义黑/白）
+  //   共用同一套并集。但放开某一条限制时，六处的风险面其实**不**一样：放行侧（白名单）比拦截侧
+  //   危险得多，内置名单还要跟发版，自定义名单则是用户手写、错了只影响自己。
+  //   所以把「哪些写法合法」抽成可覆写的策略对象：
+  //     · 编译器只认策略、不认名单来源 —— 六个调用点各传自己那份（_splitBuiltinList / registerCloud* /
+  //       sanitizeCloudDomains / matchHostList）；
+  //     · 每份名单是 WILD_POLICY 的一份**浅拷贝**，改一份不牵动其它五份；
+  //     · 默认值与旧行为逐位等价：新逻辑只在「原本就会被丢弃」的写法上生效（见 tools/test-wildcard.js
+  //       的「放开前后 diff = 0」核对）。
+  const WILD_POLICY = {
+    // #1 前导 `*.` 与其它通配混用（如 `*.ab?.foo.com`、`*.*deepseek*.com`）。
+    //    旧：整条按 suffix-malformed 丢弃；新：编译为「后缀正则」，语义 = rest 的任意子域
+    //    （与 `*.foo.com` 归一为 foo.com 完全同一语义：既命中 ab1.foo.com，也命中 x.ab1.foo.com）。
+    leadingDotMixed: true,
+    // #3 TLD 位允许通配（如 `*-deepseek-*.*`）。默认关 —— 一条 `*.*` 就能拦掉半个互联网。
+    tldWildcard: false,
+    // #3 的配套护栏：TLD 位一旦带通配，就要求「除 TLD 外至少有一个标签，去掉 * ? 后仍有 minAnchorLen
+    //    个字面字符」。否则 `*.*`、`*a*.*`、`*.c?m` 这类没有品牌锚点的写法照样能全拦。
+    minAnchorLen: 4,
+    // #3b TLD 位的裸 `*` 可吃**多级后缀**（`com.cn` / `co.uk` / `com.hk`）。默认关：
+    //    关着时 `*.?*deepseek*.*` 覆盖不到 app.vip-deepseek-offical.com.cn（后缀是 com.cn，
+    //    最后一个 `*` 只能吃一级），只能按后缀逐个列举。只对「TLD 位恰好是一个 `*`」生效。
+    tldMultilevel: false,
+    // #9 `*` 跨标签（等价 `.*`）。默认关：一条 `*deepseek*` 会连带匹配 URL 里的一切，
+    //    且分桶彻底失效（每次判定全表扫正则），风险与性能双输。
+    crossLabel: false
+  };
+  // 六份名单各自的策略。只在这里开个别名单的开关 —— 不用碰编译器，也不会牵连其它名单。
+  // 2026-11-12：**云端黑名单**放开 #3（TLD 位通配）。理由是「品牌词 + 连字符」型钓鱼站的 TLD
+  //   高度发散（.xyz/.top/.cc/.cloud…），按 TLD 逐条写要 200+ 条且永远追不上新后缀；
+  //   而这条限制的风险面本来是「一条 `*.*` 拦掉半个互联网」，配套的 minAnchorLen=4 护栏
+  //   已经把 `*.*` / `*a*.*` / `foo.*` 全部挡在编译阶段，所以只在**拦截侧**、且只在
+  //   「云端可热修」的这一份上打开。白名单（放行侧）与内置名单（跟发版、改错无法热修）维持关闭。
+  // 2026-11-12（续）：同时打开 #3b（TLD 位的 `*` 吃多级后缀），否则 `com.cn` / `co.uk` 这类
+  //   多级后缀仍然覆盖不到（app.vip-deepseek-offical.com.cn 就是 4 个标签）。
+  const LIST_WILD_POLICY = {
+    builtinBlack: Object.assign({}, WILD_POLICY),
+    builtinWhite: Object.assign({}, WILD_POLICY),
+    cloudBlack: Object.assign({}, WILD_POLICY, { tldWildcard: true, tldMultilevel: true }),
+    cloudWhite: Object.assign({}, WILD_POLICY),
+    customBlack: Object.assign({}, WILD_POLICY),
+    customWhite: Object.assign({}, WILD_POLICY)
+  };
+  function wildPolicyOf(kind) { return LIST_WILD_POLICY[kind] || WILD_POLICY; }
+  function _hasWild(s) { return s.indexOf('*') !== -1 || s.indexOf('?') !== -1; }
+
+  function _splitBuiltinList(list /*, wmax —— 已取消上限，形参保留仅为兼容旧调用签名 */, pol) {
     // exact — 精确/后缀条目（进 Set，走 _suffixHit）
     // wild  — 通配桶（{ items, idx }，仅精确未命中时按桶扫描）
     // skipped — 被护栏拒绝的条目（内置名单是发版数据，保留下来供测试脚本核对，不暴露到 UI）
@@ -125,9 +182,9 @@
       const raw = String(src[i] == null ? '' : src[i]).trim().toLowerCase();
       if (!raw) continue;
       if (raw.indexOf('*') === -1 && raw.indexOf('?') === -1) { exact.add(raw); continue; }
-      const c = _compileBadWild(raw);
+      const c = _compileBadWild(raw, pol);
       if (c.kind === 'suffix') { exact.add(c.value); continue; }   // `*.foo.com` → foo.com
-      if (c.kind !== 'wild') { skipped.push(raw); continue; }
+      if (c.kind !== 'wild' && c.kind !== 'suffix-wild') { skipped.push(raw); continue; }
       // 旧：if (wild.length >= (wmax || BUILTIN_WILD_MAX)) { skipped.push(raw); continue; }
       //   ↑ 不再按条数截断：被丢掉的条目会表现为「名单里写了却不生效」，属于最坏的静默失效。
       _wildBagAdd(wild, c.value, c.re);
@@ -147,7 +204,7 @@
   // 旧写法（仅精确/后缀，无通配）：
   //   const OFFICIAL_SET = new Set((IOCS.OFFICIAL_DOMAINS || []).map(d => d.toLowerCase()));
   // 旧：const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS, BUILTIN_WILD_MAX);
-  const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS);
+  const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS, wildPolicyOf('builtinWhite'));
   const OFFICIAL_SET = _OFFICIAL_BUILTIN.exact;
   const OFFICIAL_WILD = _OFFICIAL_BUILTIN.wild;
   // 只给「派生品牌词 / 通用词 / 品牌后缀」这几个静态索引用的精确条目快照。
@@ -227,7 +284,7 @@
   // 2026-11-11：改走 _splitBuiltinList —— 含 * ? 的条目编译成正则（如 `*bot.*.qpefh.com`），
   //   精确条目行为完全不变。语义与云端黑名单通配一致，见上方「内置名单通配符分层」注释。
   // 旧：const _BAD_BUILTIN = _splitBuiltinList(IOCS.KNOWN_BAD_DOMAINS, BUILTIN_WILD_MAX);
-  const _BAD_BUILTIN = _splitBuiltinList(IOCS.KNOWN_BAD_DOMAINS);
+  const _BAD_BUILTIN = _splitBuiltinList(IOCS.KNOWN_BAD_DOMAINS, wildPolicyOf('builtinBlack'));
   const BAD_SET = _BAD_BUILTIN.exact;
   const BAD_WILD = _BAD_BUILTIN.wild;
   const _badCache = new Map();
@@ -256,19 +313,154 @@
   // const WILD_MAX = 200;
   let _wildBadSkipped = [];        // 被护栏拒绝的条目，供诊断
 
+
   // 逐个字符转义，只保留 * 与 ? 为通配。
   // 不用「先整体转义再回填 \*」的写法：那样 a*b 的回填顺序与元字符处理容易互相污染。
   // 2026-11-09：补 'i' 标志。精确条目在 Set 里靠 _suffixHit 统一小写，通配若区分大小写
   //   就会比精确条目更弱，变成「同一份名单，有的条目认大小写、有的不认」的偶发漏判。
-  function _globToRegExp(pat) {
-    let out = '';
-    for (let i = 0; i < pat.length; i++) {
-      const ch = pat.charAt(i);
-      if (ch === '*') out += '[^.]*';
-      else if (ch === '?') out += '[^.]';
-      else out += (/[\\^$.|+()\[\]{}]/.test(ch) ? '\\' + ch : ch);
+  // 2026-11-12：拆出 _globBody，让「整串通配」与「后缀通配」共用同一份转义逻辑（策略只作用于 * 的宽度）。
+  //   并在末尾补一条策略 #3b：TLD 位的裸 `*` 可吃**多级后缀**（com.cn / co.uk / com.hk）。
+  //   为什么必须单独给这条：`*` 平时不跨 `.`，于是 `*-deepseek-*.*` 的最后一个 `*` 只能匹配
+  //   一级后缀，碰上 app.vip-deepseek-offical.com.cn（4 个标签、后缀是 com.cn）永远不命中 ——
+  //   用户只能按后缀逐个列举（com.cn / net.cn / org.cn / co.uk …），等于把 #3 的收益又还回去。
+  //   TLD 位在语义上就是「域名后缀」，让它按「一个或多个标签」匹配，是这里唯一自洽的解释；
+  //   其余位置的 `*` 仍然不跨点。只在显式打开 tldMultilevel 的名单上生效（当前仅云端黑名单）。
+  function _globBody(pat, pol) {
+    const star = (pol && pol.crossLabel) ? '.*' : '[^.]*';
+    const labels = String(pat).split('.');
+    const body = [];
+    for (let n = 0; n < labels.length; n++) {
+      const lab = labels[n];
+      let out = '';
+      for (let i = 0; i < lab.length; i++) {
+        const ch = lab.charAt(i);
+        if (ch === '*') out += star;
+        else if (ch === '?') out += '[^.]';
+        else out += (/[\\^$.|+()\[\]{}]/.test(ch) ? '\\' + ch : ch);
+      }
+      body.push(out);
     }
-    try { return new RegExp('^' + out + '$', 'i'); } catch (e) { return null; }
+    // 仅「TLD 位恰好是一个 `*`」时放宽；`x*`、`?`、`*a*` 等保持单标签，避免把语义搞得不可预期。
+    if (labels.length >= 2 && labels[labels.length - 1] === '*' && pol && pol.tldMultilevel) {
+      body[body.length - 1] = '(?:[^.]+\\.)*[^.]+';
+    }
+    return body.join('\\.');
+  }
+  function _globToRegExp(pat, pol) {
+    try { return new RegExp('^' + _globBody(pat, pol) + '$', 'i'); } catch (e) { return null; }
+  }
+  // 后缀通配：`*.` + rest（rest 仍含通配时）⇒ 「rest 的任意子域」。
+  //   前缀 `(?:[^.]*\.)*` 就是「任意层子域」，与精确后缀条目的语义对齐；
+  //   不写成 `*` + 拼接，是因为 `*` 只吃单标签，`x.ab1.foo.com` 会漏。
+  function _suffixGlobToRegExp(rest, pol) {
+    try { return new RegExp('^(?:[^.]*\\.)*' + _globBody(rest, pol) + '$', 'i'); } catch (e) { return null; }
+  }
+
+  // 通配模式的风险护栏（唯一入口）。返回 '' 通过，否则返回原因码。
+  //   risky=true  —— 本次新放开的写法（前导 `*.` 混用、TLD 位通配）：必须能指出「品牌锚点」，
+  //                  挡住 `*.*` / `*a*.*` 这类把半个互联网一起拦下来的规则；
+  //   risky=false —— 历史写法：只保留原有的 TLD 护栏，不新增任何拒绝条件
+  //                  （否则老条目会静默失效，那是最坏的一种回归）。
+  function _wildGuard(labels, pol, risky) {
+    const tld = labels[labels.length - 1] || '';
+    const tldWild = _hasWild(tld);
+    if (tldWild && !pol.tldWildcard) return 'tld-wildcard';
+    if (!risky) return '';
+    // 尾部两级都是字面量 ⇒ 模式已被这级后缀锚定（`*.*.foo.com` 也只是 foo.com 下的任意子域）
+    if (!tldWild) {
+      const second = labels[labels.length - 2] || '';
+      if (second && !_hasWild(second)) return '';
+    }
+    let anchor = 0;
+    for (let i = 0; i < labels.length; i++) {
+      const lit = labels[i].replace(/[*?]/g, '').length;
+      if (lit > anchor) anchor = lit;
+    }
+    if (anchor < (pol.minAnchorLen || 0)) return 'weak-anchor';
+    return '';
+  }
+
+  // 六份名单的统一预检入口（设置页 / 测试脚本 / 将来的诊断面板都用这一处）：
+  //   返回 { kind:'exact'|'suffix'|'suffix-wild'|'wild'|'', value, host, path, reason }
+  //   listKind 决定用哪份策略，与运行期注入完全同一套规则 —— 避免「预检说能生效、实际被丢」。
+  function compileWildEntry(entry, listKind) {
+    const ex = _normCloudEntryEx(entry, { allowWild: true });
+    if (!ex.value) return { kind: '', value: '', host: '', path: '', reason: ex.reason || 'invalid' };
+    if (!ex.wild) return { kind: 'exact', value: ex.value, host: ex.host, path: ex.path, reason: '' };
+    const c = _compileBadWild(ex.host, wildPolicyOf(listKind));
+    return {
+      kind: c.kind || '',
+      value: c.kind ? c.value + ex.path : '',
+      host: ex.host,
+      path: ex.path,
+      reason: c.reason || ''
+    };
+  }
+  // 当前策略的人话说明（设置页「关于 → 通配支持」与云端 `_wildcard_help` 的共同底稿）
+  function wildHelpLines(listKind) {
+    const p = wildPolicyOf(listKind);
+    const out = [];
+    out.push('* 匹配同一级域名内的任意字符（不跨 .），? 匹配单个字符；`*.foo.com` 等价于 `foo.com`。');
+    out.push(p.leadingDotMixed
+      ? '前导 `*.` 可与其它通配混用：`*.ab?.foo.com` = 「ab? 的任意子域」（含 ab1.foo.com 与 x.ab1.foo.com）。'
+      : '前导 `*.` 后面不允许再出现通配符，此类条目会被丢弃。');
+    out.push(p.tldWildcard
+      ? '顶级域可通配（`*-brand-*.*`），但除 TLD 外至少有一个标签需保留 ' + p.minAnchorLen + ' 个字面字符，否则丢弃。'
+      : '顶级域不可通配：`foo.*`、`*.*`、`*-brand-*.*` 一律丢弃（需要按 TLD 逐条写）。');
+    if (p.tldWildcard && p.tldMultilevel) {
+      out.push('TLD 位的 `*` 还包含多级后缀（`com.cn` / `co.uk` / `com.hk`），所以 `*.*deepseek-*.*` 能覆盖 `app.vip-deepseek-offical.com.cn`；其它位置的 `*` 仍不跨 `.`。');
+    }
+    out.push(p.crossLabel ? '`*` 可跨标签匹配（等价 `.*`）。' : '`*` 不跨标签，跨级要显式多写一段。');
+    return out;
+  }
+
+  // 编译单条通配写法（不改动任何全局状态）：{ kind:'suffix'|'suffix-wild'|'wild', value, re } 或 { kind:'', reason }
+  // 单独抽出来的原因：设置页需要**在不影响运行状态的前提下**先判断「这条会不会真正生效」，
+  //   否则「超上限被丢」「格式非法被丢」用户永远看不见（此前正是如此）。
+  // pol 缺省 = 默认策略（与各名单完全一致），旧调用点不传也不会变行为。
+  function _compileBadWild(v, pol) {
+    const P = pol || WILD_POLICY;
+    // 前导 `*.` ⇒ 等价后缀条目
+    if (v.slice(0, 2) === '*.') {
+      const rest = v.slice(2);
+      if (!_hasWild(rest) && rest.split('.').length >= 2) {
+        return { kind: 'suffix', value: rest };
+      }
+      // ★ 2026-11-12（策略 #1）：rest 仍含通配时，过去整条作废。现在按「rest 的任意子域」编译：
+      //   `*.ab?.foo.com` 命中 ab1.foo.com / x.ab1.foo.com。
+      if (!P.leadingDotMixed || !_hasWild(rest)) return { kind: '', reason: 'suffix-malformed' };
+      const rl = rest.split('.');
+      if (rl.length < 2) return { kind: '', reason: 'suffix-malformed' };
+      if (v.length < 4 || v.length > 253) return { kind: '', reason: 'bad-length' };
+      for (let i = 0; i < rl.length; i++) { if (!rl[i]) return { kind: '', reason: 'empty-label' }; }
+      const g = _wildGuard(rl, P, true);
+      if (g) return { kind: '', reason: g };
+      const sr = _suffixGlobToRegExp(rest, P);
+      if (!sr) return { kind: '', reason: 'bad-syntax' };
+      return { kind: 'suffix-wild', value: v, re: sr };
+    }
+    const labels = v.split('.');
+    // 护栏：至少两个标签（挡掉 *.com 归一后的 com）、TLD 位禁通配、长度上下限、禁空标签
+    if (labels.length < 2) return { kind: '', reason: 'need-two-labels' };
+    if (v.length < 4 || v.length > 253) return { kind: '', reason: 'bad-length' };
+    for (let i = 0; i < labels.length; i++) { if (!labels[i]) return { kind: '', reason: 'empty-label' }; }
+    // TLD 带通配 = 新放开的写法 → 走 risky 护栏；TLD 字面 = 历史写法 → 保持原判
+    const g = _wildGuard(labels, P, _hasWild(labels[labels.length - 1]));
+    if (g) return { kind: '', reason: g };
+    const re = _globToRegExp(v, P);
+    if (!re) return { kind: '', reason: 'bad-syntax' };
+    return { kind: 'wild', value: v, re: re };
+  }
+
+  // 返回 'suffix'（已按后缀条目收录）/ 'wild'（已编译）/ ''（被拒绝，原因进 skipped）
+  function _addBadWild(v, skipped, pol) {
+    const c = _compileBadWild(v, pol);
+    if (!c.kind) { skipped.push(v); return ''; }
+    if (c.kind === 'suffix') { EXTRA_BAD_SET.add(c.value); return 'suffix'; }
+    // 旧：if (EXTRA_BAD_WILD.length >= WILD_MAX) { skipped.push(v); return ''; }
+    // 旧：EXTRA_BAD_WILD.push({ src: c.value, re: c.re });
+    _wildBagAdd(EXTRA_BAD_WILD, c.value, c.re);
+    return 'wild';
   }
 
   // 非 ASCII 标签 → punycode。
@@ -297,41 +489,6 @@
       out.push(a);
     }
     return out.join('.');
-  }
-
-  // 编译单条通配写法（不改动任何全局状态）：{ kind:'suffix'|'wild', value, re } 或 { kind:'', reason }
-  // 单独抽出来的原因：设置页需要**在不影响运行状态的前提下**先判断「这条会不会真正生效」，
-  //   否则「超上限被丢」「格式非法被丢」用户永远看不见（此前正是如此）。
-  function _compileBadWild(v) {
-    // 前导 `*.` ⇒ 等价后缀条目
-    if (v.slice(0, 2) === '*.') {
-      const rest = v.slice(2);
-      if (rest.indexOf('*') === -1 && rest.indexOf('?') === -1 && rest.split('.').length >= 2) {
-        return { kind: 'suffix', value: rest };
-      }
-      return { kind: '', reason: 'suffix-malformed' };
-    }
-    const labels = v.split('.');
-    // 护栏：至少两个标签（挡掉 *.com 归一后的 com）、TLD 位禁通配、长度上下限、禁空标签
-    if (labels.length < 2) return { kind: '', reason: 'need-two-labels' };
-    const tld = labels[labels.length - 1];
-    if (!tld || tld.indexOf('*') !== -1 || tld.indexOf('?') !== -1) return { kind: '', reason: 'tld-wildcard' };
-    if (v.length < 4 || v.length > 253) return { kind: '', reason: 'bad-length' };
-    for (let i = 0; i < labels.length; i++) { if (!labels[i]) return { kind: '', reason: 'empty-label' }; }
-    const re = _globToRegExp(v);
-    if (!re) return { kind: '', reason: 'bad-syntax' };
-    return { kind: 'wild', value: v, re: re };
-  }
-
-  // 返回 'suffix'（已按后缀条目收录）/ 'wild'（已编译）/ ''（被拒绝，原因进 skipped）
-  function _addBadWild(v, skipped) {
-    const c = _compileBadWild(v);
-    if (!c.kind) { skipped.push(v); return ''; }
-    if (c.kind === 'suffix') { EXTRA_BAD_SET.add(c.value); return 'suffix'; }
-    // 旧：if (EXTRA_BAD_WILD.length >= WILD_MAX) { skipped.push(v); return ''; }
-    // 旧：EXTRA_BAD_WILD.push({ src: c.value, re: c.re });
-    _wildBagAdd(EXTRA_BAD_WILD, c.value, c.re);
-    return 'wild';
   }
 
   function _wildBadHit(h) {
@@ -381,26 +538,34 @@
   //     要按链接级放行请用云端名单的 `主机名/路径` 写法，避免两套语义混在一起。
   //   ⚠️ 不做任何「清洗」（不 split('?')、不 replace(/[*?]/g,'')）：`?` 在这里是通配符，
   //     任何按 query 起点截断的写法都会把 `ab?de.bad-site.top` 毁成 `ab`。
-  const _customPatCache = new Map();          // 模式 → { suffix } | { re } | null（null = 非法，跳过）
+  const _customPatCache = new Map();          // '名单种类|模式' → { suffix }|{ suffixRe }|{ re }|null（null = 非法，跳过）
   function _customHostHit(h, d) {
     return h === d || (h.length > d.length && h.slice(-(d.length + 1)) === '.' + d);
   }
-  function _customPattern(d) {
-    let p = _customPatCache.get(d);
+  // 2026-11-12：加上 pol —— 自定义黑/白名单是六份名单里的两份，通配护栏同样走策略对象，
+  //   将来「只给自定义黑名单放开某条限制」时不必再改这里。
+  function _customPattern(d, kind, pol) {
+    const key = kind + '|' + d;
+    let p = _customPatCache.get(key);
     if (p !== undefined) return p;
     let out = null;
     if (d.indexOf('*') !== -1 || d.indexOf('?') !== -1) {
       // ⚠️ 不要在这里手动处理前导 `*.`：`*.com` 必须走 _compileBadWild 的护栏才会被拒，
       //   否则 `*.com` 会被当成后缀条目 `com`，等于整站放行/拉黑半个互联网。
-      const c = _compileBadWild(d);
+      const c = _compileBadWild(d, pol);
       if (c.kind === 'suffix') out = { suffix: c.value };
+      else if (c.kind === 'suffix-wild') out = { suffixRe: c.re };
       else if (c.kind === 'wild') out = { re: c.re };
     }
     if (_customPatCache.size > 512) _customPatCache.clear();
-    _customPatCache.set(d, out);
+    _customPatCache.set(key, out);
     return out;
   }
-  function matchHostList(hostname, list) {
+  // listKind：'customWhite' | 'customBlack'（缺省按黑名单算 —— 两者当前策略相同，
+  //   区分只是为了将来「只给拦截侧放开」时不用再改调用点）。
+  function matchHostList(hostname, list, listKind) {
+    const kind = listKind || 'customBlack';
+    const pol = wildPolicyOf(kind);
     const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
     if (!h) return false;
     const arr = Array.isArray(list) ? list : [];
@@ -420,10 +585,10 @@
         if (_customHostHit(h, d)) return true;
         continue;
       }
-      const p = _customPattern(d);
+      const p = _customPattern(d, kind, pol);
       if (!p) continue;                               // 护栏拒掉的模式：静默跳过（与云端一致）
       if (p.suffix) { if (_customHostHit(h, p.suffix)) return true; continue; }
-      if (p.re.test(h)) return true;
+      if ((p.re || p.suffixRe).test(h)) return true;
     }
     return false;
   }
@@ -439,8 +604,10 @@
   // 2026-11-11：白名单也允许通配，设置页预检与运行期注入必须用同一个 allowWild，
   //   否则会出现「预检说无效、实际已生效」或反过来的静默不一致。
   // 2026-11-09：主机名/路径两种写法都接受（见 _normCloudEntryEx），路径条目同样要能报出丢弃原因。
+  // listKind：'cloudBlack' | 'cloudWhite'（设置页按名单类型传入；缺省用默认策略）。
   function sanitizeCloudDomains(arr, opts) {
     const allowWild = !(opts && opts.allowWild === false);
+    const pol = wildPolicyOf((opts && opts.listKind) || '');
     const seen = new Set();
     const list = [];
     const wild = [];
@@ -455,7 +622,7 @@
       }
       // 主机名带通配（黑白名单现在都可能有）：需再验一次能否编译
       if (ex.wild) {
-        const c = _compileBadWild(ex.host);
+        const c = _compileBadWild(ex.host, pol);
         if (!c.kind) { dropped.push({ entry: ex.value, reason: c.reason || 'wild-invalid' }); continue; }
         // 旧：if (wild.length >= WILD_MAX) { dropped.push({ entry: ex.value, reason: 'wild-over-limit' }); continue; }
         //   ↑ 2026-11-12：取消通配条数上限，只保留「能不能编译」这道格式护栏。
@@ -465,7 +632,7 @@
           list.push(stored);
           if (ex.path) paths++;
         }
-        if (c.kind === 'wild') wild.push(stored);
+        if (c.kind === 'wild' || c.kind === 'suffix-wild') wild.push(stored);
         continue;
       }
       if (ex.path) {
@@ -664,6 +831,7 @@
   //   不传 opts 时保持旧的累加行为，兼容其它调用方。
   function registerCloudOfficial(arr, opts) {
     const replace = !!(opts && opts.replace);
+    const pol = wildPolicyOf('cloudWhite');   // 六份名单之一：通配护栏走策略对象
     const skipped = [];
     // 2026-11-11：计数把通配条目也算进来，否则「只新增通配条目」时 after === before，
     //   下面的缓存失效条件会漏掉，导致刚注入的通配白名单在缓存里被判为「非官方」。
@@ -689,7 +857,7 @@
             EXTRA_OFFICIAL_PATH.push({ src: ex.value, host: ex.host, path: ex.path, re: null });
             continue;
           }
-          const c = _compileBadWild(ex.host);
+          const c = _compileBadWild(ex.host, pol);
           if (!c.kind) { skipped.push(ex.value); continue; }
           EXTRA_OFFICIAL_PATH.push({
             src: c.value + ex.path,
@@ -701,11 +869,12 @@
         }
         // 纯主机名：带通配 → 编译进正则表；否则仍旧进 Set 走后缀查表
         if (ex.wild) {
-          const c = _compileBadWild(ex.host);
+          const c = _compileBadWild(ex.host, pol);
           if (c.kind === 'suffix') { EXTRA_OFFICIAL_SET.add(c.value); continue; }  // `*.foo.com` → foo.com
           // 旧：if (c.kind !== 'wild' || EXTRA_OFFICIAL_WILD.length >= WILD_MAX) { skipped.push(ex.value); continue; }
           // 旧：EXTRA_OFFICIAL_WILD.push({ src: c.value, re: c.re });
-          if (c.kind !== 'wild') { skipped.push(ex.value); continue; }
+          // 2026-11-12：新增 suffix-wild（`*.ab?.foo.com` 这类「前导 *. + 通配」），与 wild 一样进通配桶
+          if (c.kind !== 'wild' && c.kind !== 'suffix-wild') { skipped.push(ex.value); continue; }
           _wildBagAdd(EXTRA_OFFICIAL_WILD, c.value, c.re);
           continue;
         }
@@ -728,6 +897,7 @@
   }
   function registerCloudBad(arr, opts) {
     const replace = !!(opts && opts.replace);
+    const pol = wildPolicyOf('cloudBlack');   // 六份名单之一：通配护栏走策略对象
     const before = EXTRA_BAD_SET.size + EXTRA_BAD_WILD.items.length + EXTRA_BAD_PATH.length;
     const skipped = [];
     if (replace) {
@@ -752,7 +922,7 @@
             EXTRA_BAD_PATH.push({ src: ex.value, host: ex.host, path: ex.path, re: null });
             continue;
           }
-          const c = _compileBadWild(ex.host);
+          const c = _compileBadWild(ex.host, pol);
           if (!c.kind) { skipped.push(ex.value); continue; }
           // `*.foo.com/bar` 归一为后缀条目：主机名取 c.value（去掉 *.)，仍然覆盖全部子域
           EXTRA_BAD_PATH.push({
@@ -764,7 +934,7 @@
           continue;
         }
         // 含通配符号的条目走独立编译流程；其余仍进 Set（O(标签数) 查表，最快路径）
-        if (ex.wild) _addBadWild(ex.host, skipped);
+        if (ex.wild) _addBadWild(ex.host, skipped, pol);
         else EXTRA_BAD_SET.add(ex.host);
       }
     }
@@ -3189,6 +3359,12 @@
     getCloudCorrectSites,
     registerCloudBad,
     sanitizeCloudDomains,
+    // 2026-11-12：通配符「放行策略」——六份名单共用一张表，设置页/测试脚本据此生成说明与预检
+    WILD_POLICY,
+    LIST_WILD_POLICY,
+    wildPolicyOf,
+    compileWildEntry,
+    wildHelpLines,
     isKnownBad,
     isCloudBad,
     isBuiltinBad,
