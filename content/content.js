@@ -1562,11 +1562,13 @@
 
   // ★ 2026-11-12：拦截弹窗「访问正确的页面」——从被拦主机名推断品牌，打开该品牌的真实官网。
   //
-  //   数据链路（三级，全部本地，无网络请求）：
+  //   数据链路（全部本地，无网络请求）：
   //     1) analyzer.resolveCorrectSite(host)：内置表（rules/iocs.js 的 CORRECT_SITE_CATALOG）
   //        → 云端补录（whitelist.json 的 correct_sites，由设置页同步后写入 storage.local）；
-  //     2) 命中：新标签页打开 https://<官网>/；
-  //     3) 未命中：新标签页打开说明页 ui/no-correct-site.html?host=…，
+  //     2) 字面查表落空时，再由 analyzer 复用检测链路（detectSpoof）的结论推一次：
+  //        typo（huorlong.cn → huorong.cn）/ branddomain（todesk.com.cn → todesk.com）；
+  //     3) 命中：新标签页打开 https://<官网>/；
+  //     4) 仍未命中：新标签页打开说明页 ui/no-correct-site.html?host=…，
   //        文案为「你访问的页面暂时没有已被收录的正确域名，或已被作者证实为应被拦截的页面。
   //                如果你认为这是一个错误，请在扩展的反馈页面向作者发送反馈。」
   //
@@ -1603,7 +1605,16 @@
 
     if (hit && hit.domain) {
       try {
-        showToast('已在新标签页打开' + (hit.product ? '「' + hit.product + '」的' : '') + '官网：' + hit.domain);
+        // 2026-11-12：检测结论回退命中时，域名是「推」出来的而不是查表直出的，
+        //   提示语要说清依据，免得用户以为域名没拼错 / 没被仿冒：
+        //   typo（huorlong.cn → huorong.cn）：当前域名拼写有误；
+        //   branddomain（todesk.com.cn → todesk.com）：主干同名但换了注册局，属仿冒站典型形态。
+        const who = hit.product ? '「' + hit.product + '」的' : '';
+        showToast(hit.confidence === 'typo'
+          ? '已按' + (who || '所属品牌') + '官网打开：' + hit.domain + '（当前域名拼写疑似有误）'
+          : hit.confidence === 'branddomain'
+            ? '已按' + (hit.product ? '「' + hit.product + '」' : '所属品牌') + '官网打开：' + hit.domain + '（当前域名与品牌同名、但分属其它注册局，疑为仿冒站）'
+            : '已在新标签页打开' + who + '官网：' + hit.domain);
       } catch (e) {}
     }
   }

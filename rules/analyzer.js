@@ -808,6 +808,7 @@
   //   2) 品牌词子串查找，左侧必须是标签边界（开头 / `.` / `-` / `_`），右侧不限；
   //   3) 长度 ≤ 3 且不含数字的品牌词额外要求右侧非字母（qq 命中 qq.com / qq2013.com，不命中 qqq.com；360 不受限）；
   //   4) 多词命中取**最长**品牌词（sogoubrowser 优先于 sogou）；等长取表内先出现的。
+  //   5) 字面全部落空时，再用检测链路的结论兜底（typo / branddomain，见 _spoofBrandFallback）：
   //   ⚠️ 这里只做「字符串猜测」，不做网络请求：按钮是用户被拦时的出口，
   //      不能因为查官网而卡住、更不能因为查不到就不给出口（查不到走说明页）。
   const EXTRA_CORRECT_MAP = new Map();   // 云端补录：`品牌词` → { domain, product }
@@ -884,6 +885,102 @@
     return null;
   }
 
+  // ===== 检测结论回退：typo + branddomain（2026-11-12 新增，同日扩展 branddomain）=====
+  // 背景：解析器原本只做「品牌词子串」匹配，于是两类主机名会自相矛盾 ——
+  //   ① typo：huorlong.cn（huorong 漏了一个 r）在检测链路能靠编辑距离被判仿冒
+  //      （弹窗写着「编辑距离 1」），但按钮拿不到官网，只能打开说明页；
+  //   ② branddomain：todesk.com.cn 的注册域主干 todesk 恰好等于品牌词，检测链路
+  //      判为「跨注册局抢注品牌名（仿冒站典型形态）」，但按钮侧同样可能查不到 ——
+  //      品牌词表（BRAND_KEYWORDS）和正确官网表（CORRECT_SITE_CATALOG）不是同一张表，
+  //      官网表里没登记的品牌词（huawei / quark / teams …）永远查不到，只能落说明页。
+  // 做法：解析失败时复用检测链路**已经算好**的结论（detectSpoof），把它的 brand
+  //   当作「用户其实想去的品牌」，再查一次正确官网表；branddomain 还有一条独有通道：
+  //   主干 == 品牌词 是强关联，可直接拿品牌词去官方域名表反查同名官网（todesk → todesk.com）。
+  //   不新增任何数据、不发起网络请求。
+  // 为什么不是机器学习：品牌词是有限闭集（1000+），typo 形态就是「编辑距离 1/2 的变形」
+  //   （漏字 / 多字 / 相邻互换 / o↔0 / rn↔m），编辑距离 + 首尾公共子串护栏足以覆盖；
+  //   而这个结论必须**可解释、可复现**（弹窗要给用户写原因，同一域名不能时灵时不灵），
+  //   概率模型两头都做不到，还会给 MV3 包体和每次分析加负担。
+  // 四层护栏，任一不过就退回说明页：
+  //   ① detectSpoof 自带：官方域 / UGC 平台 / 用户豁免域一律返回 null；
+  //   ② 只接受 matchType ∈ {typo, branddomain}：子串 / 段匹配类命中在上一步就已经能查到，
+  //      走到这里说明是「字面不同」的情形，正是本条要补的那类；
+  //   ③ 品牌词必须能查到官方域：优先正确官网表；branddomain 允许退一步在官方域名表
+  //      反查（要求官方域主干**恰好等于**该品牌词，不能只是包含）；
+  //   ④ 解析结果不得与被拦主机名同属一个注册域 —— 否则打开的是同一个站，等于没修。
+  // 已知误伤面：与品牌共享 ≥4 前缀/后缀、编辑距离 ≤2 的**另一家公司**（如 huolong.cn 火龙）
+  //   会被送到品牌官网。实测 huolong.cn 与 huorong 只共享前缀 'huo' 三字符，被 ② 的护栏挡住；
+  //   且本函数只在「页面已被拦截、用户主动点按钮」时才会被调用，误伤上限是「多开一个正确官网」。
+  //
+  // ⚠️ 必须显式传 { verifiedIcp: false }：detectSpoof 的 branddomain 分支在「无备案上下文」
+  //   （opts 缺省）时一律返回 null —— 那是给下载拦截路径留的旧行为（只拿到 hostname，
+  //   无法证实真伪故放行）。按钮侧恰恰需要这个结论，且只有带上下文才会给出。
+  //   verifiedIcp=false 只影响 branddomain 这一条判定，typo 结论不受任何影响。
+  // 品牌词（注册域主干）→ 官方域，来源是官方域名表（只收**主站级**条目，见 _isReverseEligibleSuffix）。
+  // 为什么这么挑：这张反查表是「主干同名」推出的，本身没有产品信息，必须靠后缀收窄可错范围。
+  //   实测反例：panda.com.cn → 表里只有 panda.tv（熊猫直播，2019 已停运），
+  //           2345.com.cn → 表里只有 haozip.2345.cc（好压子站），
+  //   这类「同名但不是主站」的条目一旦放进来，按钮就会把用户送到不相干的页面。
+  let _officialLabelIndex = null;
+  // 反查表可用的后缀：.com > .net/.org > 通用 gTLD；国别域（cn / tv / cc / io …）与二级后缀
+  // （com.cn / co.uk）一律不收 —— 它们多半是地区站或内容站，拿去代表「品牌主站」风险最高。
+  function _isReverseEligibleSuffix(suf) {
+    if (!suf || suf.indexOf('.') !== -1) return false;
+    if (_ABUSED_SUFFIX.has(suf) || _CHEAP_TLD.has(suf)) return false;
+    if (suf === 'com' || suf === 'net' || suf === 'org') return true;
+    return suf.length >= 3;   // info / app / dev / wiki …；两字母国别域直接排除
+  }
+  function _officialByLabel() {
+    if (_officialLabelIndex) return _officialLabelIndex;
+    const m = new Map();
+    for (let i = 0; i < OFFICIAL_EXACT_LIST.length; i++) {
+      const d = String(OFFICIAL_EXACT_LIST[i] || '').toLowerCase();
+      if (!d || d.indexOf('.') === -1 || /[*?\s]/.test(d)) continue;
+      const reg = getRegistrableDomain(d);
+      const lb = reg.split('.');
+      if (lb.length < 2) continue;
+      const sld = lb[0];
+      if (!sld || sld.length < 4) continue;
+      // 只收主站（裸域或 www.）：haozip.2345.cc 这类子站不能代表 2345
+      const dl = d.split('.');
+      if (dl.length !== lb.length && !(dl.length === lb.length + 1 && dl[0] === 'www')) continue;
+      const suf = lb.slice(1).join('.');
+      if (!_isReverseEligibleSuffix(suf)) continue;
+      const rank = (suf === 'com') ? 0 : ((suf === 'net' || suf === 'org') ? 1 : 2);
+      const cur = m.get(sld);
+      if (!cur || rank < cur.rank) m.set(sld, { domain: reg, rank: rank });
+    }
+    _officialLabelIndex = m;
+    return m;
+  }
+  function _spoofBrandFallback(h) {
+    let r = null;
+    try { r = detectSpoof(h, { verifiedIcp: false }); } catch (e) { return null; }
+    if (!r || !r.brand) return null;
+    const mt = r.matchType;
+    if (mt !== 'typo' && mt !== 'branddomain') return null;
+    const tables = _correctTables();
+    const e = tables.map.get(r.brand);
+    if (e && e.domain) {
+      if (e.domain === h) return null;
+      return { domain: e.domain, product: e.product || '', brand: r.brand, source: e.source, confidence: mt };
+    }
+    // 官网表里没登记这个品牌词：branddomain 还能靠「主干 == 品牌词」反查官方域名表；
+    // typo 不行 —— 错拼词若不在官网表里，就没有依据猜它该去哪（保持说明页）。
+    if (mt !== 'branddomain') return null;
+    const rev = _officialByLabel().get(r.brand);
+    if (!rev || !rev.domain || rev.domain === h) return null;
+    if (getRegistrableDomain(rev.domain) === getRegistrableDomain(h)) return null;
+    return { domain: rev.domain, product: '', brand: r.brand, source: 'official', confidence: 'branddomain' };
+  }
+  // 「被拦主机名的注册域主干恰好等于品牌词」—— 只用于给提示语定性，不参与域名解析。
+  // 与 detectSpoof 同一判据（含各层护栏），故不会和弹窗里的判定打架。
+  function _brandDomainVerdict(h) {
+    let r = null;
+    try { r = detectSpoof(h, { verifiedIcp: false }); } catch (e) { return false; }
+    return !!(r && r.matchType === 'branddomain');
+  }
+
   function _correctLookup(hostname) {
     let h = String(hostname || '').toLowerCase().trim();
     h = h.replace(/^https?:\/\//, '').replace(/[/?#].*$/, '');
@@ -897,14 +994,28 @@
     const tables = _correctTables();
     const hit = _scanCorrectTable(h, tables.brands, tables.map);
     if (hit && hit.entry && hit.entry.domain) {
-      out = { domain: hit.entry.domain, product: hit.entry.product || '', brand: hit.brand, source: hit.entry.source };
+      // 直出命中也可能出现在仿冒站上（todesk.com.cn 靠字面 todesk 就能查到 todesk.com），
+      // 这时仍补一次「主干 == 品牌词」判定：命中说明用户当前站是被抢注的同名域，
+      // 提示语要按「疑似仿冒站」措辞，而不是「打开该站官网」。判定失败不影响结果。
+      out = {
+        domain: hit.entry.domain,
+        product: hit.entry.product || '',
+        brand: hit.brand,
+        source: hit.entry.source,
+        confidence: _brandDomainVerdict(h) ? 'branddomain' : ''
+      };
+    } else {
+      // 字面查不到：huorlong（typo）/ todesk.com.cn（主干==品牌词）这类仍可能被检测链路
+      // 认出品牌，交给检测结论回退（typo / branddomain）
+      out = _spoofBrandFallback(h);
     }
     if (_correctCache.size >= CORRECT_CACHE_MAX) _correctCache.clear();
     _correctCache.set(h, out);
     return out;
   }
 
-  // 返回 { domain, product, brand, source } 或 null
+  // 返回 { domain, product, brand, source, confidence } 或 null
+  //   confidence：'' 直出（字面命中官网表）/ 'typo' 错拼推断 / 'branddomain' 主干同名抢注推断
   function resolveCorrectSite(hostname) { return _correctLookup(hostname); }
   // 只要域名（调用方不关心产品名时用这个）
   function resolveCorrectDomain(hostname) {

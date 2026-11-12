@@ -179,6 +179,89 @@ const CLOUD_CASES = [
   ['huorongsafe.com.cn', 'huorong.cn']          // 云端与内置同词 → 内置优先
 ];
 
+// ---- typo 回退（2026-11-12）----
+// 这些域名都没有「品牌词子串」，字面查表一定落空；能不能给出官网，全靠
+// analyzer 的 _typoBrandFallback 复用检测链路的编辑距离结论。
+// 最后一组是反向护栏：与品牌只差一两个字符的**别的公司**，必须仍然走说明页。
+const TYPO_CASES = [
+  ['huorlong.cn', 'huorong.cn'],
+  ['hurong.cn', 'huorong.cn'],
+  ['huoron.cn', 'huorong.cn'],   // 漏一个字母 g：字面查不到，只能走 typo 回退
+  ['huolong.cn', ''],            // 火龙：与 huorong 只共享 'huo' 三字符，护栏必须挡住
+  ['xb2999qq2013.com', ''],      // 含 qq 但左侧粘连、且与任何品牌都不成 typo
+];
+
+// ---- branddomain 回退（2026-11-12）----
+// 前半组：品牌词在正确官网表里（含产品名）→ 直接给出官网；
+// 后半组：品牌词只出现在官方域名表里 → 由「主干 == 品牌词」反查；
+// 最后是把反查表挡回去的情形（没有同名主站，宁可走说明页也不乱送）。
+const BRANDDOMAIN_CASES = [
+  ['todesk.com.cn', 'todesk.com'],
+  ['todesk.cn', 'todesk.com'],
+  ['www.todesk.com.cn', 'todesk.com'],
+  ['todesk.net.cn', 'todesk.com'],
+  ['anydesk.com.cn', 'anydesk.com'],
+  ['threatbook.com.cn', 'threatbook.cn'],
+  ['huorong.com.cn', 'huorong.cn'],
+  ['huawei.com.cn', 'huawei.com'],          // 官网表未收录 huawei → 官方域名表反查
+  ['huawei.cn', 'huawei.com'],
+  ['photoshop.com.cn', 'photoshop.com'],
+  ['ppsspp.cn', 'ppsspp.org'],
+  ['panda.com.cn', ''],                     // 只反查到 panda.tv（已停运的直播站）→ 宁可说明页
+  ['2345.com.cn', ''],                      // 只反查到 haozip.2345.cc（好压子站）→ 宁可说明页
+  ['teams.com.cn', ''],                     // 官方域是 teams.microsoft.com，主干不同名 → 不猜
+  ['chrome.com.cn', '']                     // 官方域是 google.com，主干不同名 → 不猜
+];
+
+function runTypo(cases) {
+  let bad = 0;
+  console.log('\n== typo 回退 ==');
+  cases.forEach(function (c) {
+    const host = c[0];
+    const want = c[1];
+    let got = '';
+    let conf = '';
+    try {
+      const r = A.resolveCorrectSite(host);
+      got = r ? r.domain : '';
+      conf = r ? (r.confidence || '') : '';
+    } catch (e) { got = 'ERR:' + e.message; }
+    const wantConf = want ? 'typo' : '';
+    if (got !== want || conf !== wantConf) {
+      bad++;
+      console.log('FAIL  ' + host.padEnd(24) + ' → ' + (got || '(说明页)') + ' conf=' + (conf || '-') + '   期望 ' + (want || '(说明页)') + ' conf=' + (wantConf || '-'));
+    }
+  });
+  console.log((bad ? '✗ ' : '✓ ') + (cases.length - bad) + '/' + cases.length + ' 通过');
+  return bad;
+}
+
+// ---- branddomain 回退（2026-11-12 同日扩展）----
+// 这些主机名的注册域主干恰好等于品牌词，但后缀换了注册局（todesk.com.cn / huawei.cn），
+// 检测链路判为 branddomain 仿冒。来源有两种：正确官网表（带产品名）与官方域名表反查。
+function runBrandDomain(cases) {
+  let bad = 0;
+  console.log('\n== branddomain 回退 ==');
+  cases.forEach(function (c) {
+    const host = c[0];
+    const want = c[1];
+    let got = '';
+    let conf = '';
+    try {
+      const r = A.resolveCorrectSite(host);
+      got = r ? r.domain : '';
+      conf = r ? (r.confidence || '') : '';
+    } catch (e) { got = 'ERR:' + e.message; }
+    const wantConf = want ? 'branddomain' : '';
+    if (got !== want || conf !== wantConf) {
+      bad++;
+      console.log('FAIL  ' + host.padEnd(24) + ' → ' + (got || '(说明页)') + ' conf=' + (conf || '-') + '   期望 ' + (want || '(说明页)') + ' conf=' + (wantConf || '-'));
+    }
+  });
+  console.log((bad ? '✗ ' : '✓ ') + (cases.length - bad) + '/' + cases.length + ' 通过');
+  return bad;
+}
+
 function run(title, cases) {
   let bad = 0;
   console.log('\n== ' + title + ' ==');
@@ -197,6 +280,8 @@ function run(title, cases) {
 }
 
 let fail = run('内置表', BUILTIN_CASES);
+fail += runTypo(TYPO_CASES);
+fail += runBrandDomain(BRANDDOMAIN_CASES);
 
 // 云端补录：读私有仓库里的 whitelist.json（不在本仓库内时跳过这一组）
 const WL = path.join(__dirname, '..', '..', 'SilverFoxBlocker-Cloud', 'List', 'whitelist.json');
