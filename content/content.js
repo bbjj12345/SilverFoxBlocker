@@ -58,14 +58,17 @@
       enabled: false,
       providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false },       googlesafebrowsing: { enabled: false, apiKey: '' } }
     },
-    // 社区维护的本地黑名单总开关（默认关）：关着时三个名单一律不查询、不渲染横幅
+    // 社区维护的本地黑名单总开关（默认关）：关着时五个名单一律不查询、不渲染横幅
     communityLists: { enabled: false },
     // OpenPhish 本地钓鱼黑名单：启用后与本地静态域名名单比对，命中即渲染横幅
     openphish: { enabled: false, lastUpdated: 0 },
     // PhishDestroy 本地钓鱼黑名单：同上的第二个静态名单源（独立横幅、独立开关）
     phishdestroy: { enabled: false, lastUpdated: 0 },
-    // HaGeZi's Threat Intelligence Feeds：第三个静态名单源（约 181 万条，独立横幅、独立开关）
-    hagezi: { enabled: false, lastUpdated: 0, variant: 'full' }
+    // HaGeZi's Threat Intelligence Feeds：第三个静态名单源（独立横幅、独立开关）
+    hagezi: { enabled: false, lastUpdated: 0, variant: 'full' },
+    // 第四 / 第五个静态名单源（AdBlock 语法，只收录整站域名规则）
+    badware: { enabled: false, lastUpdated: 0 },
+    dsam: { enabled: false, lastUpdated: 0 }
   };
 
   let lastResult = { analyzed: false };
@@ -217,7 +220,7 @@
     _cloudListsPromise = new Promise((resolve) => {
       const done = () => resolve();
       try {
-        chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [] }, (o) => {
+        chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [] }, (o) => {
           try {
             const w = (o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite : [];
             const b = (o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack : [];
@@ -225,6 +228,9 @@
             // 空数组也照常注入（等价于清空），不再用 length 做前置判断。
             if (SF.registerCloudOfficial) SF.registerCloudOfficial(w, { replace: true });
             if (SF.registerCloudBad) SF.registerCloudBad(b, { replace: true });
+            // ★ 2026-11-12：云端「品牌词 → 正确官网」补录（whitelist.json 的 correct_sites）。
+            //   与上面两份名单同源同步、同样整体覆盖；空数组＝云端没有补录，内置表照常生效。
+            if (SF.registerCloudCorrect) SF.registerCloudCorrect((o && Array.isArray(o.sfCloudCorrect)) ? o.sfCloudCorrect : []);
           } catch (e) {}
           done();
         });
@@ -238,9 +244,23 @@
       try {
         chrome.storage.sync.get(DEFAULTS, (s) => {
           const merged = Object.assign({}, DEFAULTS, s || {});
-          // 先保证云端名单已注入，再交回设置：否则首屏分析会以「未注入」的名单判定，
-          // 出现「刚同步的域名第一次打开仍被判危、刷新后才正常」的怪现象。
-          ensureCloudLists().then(() => resolve(merged), () => resolve(merged));
+          const finish = function () {
+            // 先保证云端名单已注入，再交回设置：否则首屏分析会以「未注入」的名单判定，
+            // 出现「刚同步的域名第一次打开仍被判危、刷新后才正常」的怪现象。
+            ensureCloudLists().then(() => resolve(merged), () => resolve(merged));
+          };
+          // ★ 2026-11-12：自定义名单以 storage.local 为准（sync 单键 8KB ≈ 550 条会静默失败）。
+          //   liststore 会在 local 缺失时把 sync 里的旧名单迁移过来，因此老用户无需任何操作。
+          try {
+            if (typeof SFListStore !== 'undefined' && SFListStore.read) {
+              SFListStore.read(function (lists) {
+                Object.keys(lists || {}).forEach(function (k) { merged[k] = lists[k]; });
+                finish();
+              });
+              return;
+            }
+          } catch (e) {}
+          finish();
         });
       } catch (e) { resolve(DEFAULTS); }
     });
@@ -1466,7 +1486,12 @@
   function syncBlacklistButton(card) {
     if (!card) return;
     try {
-      chrome.storage.sync.get({ customBadDomains: [] }, function (s) {
+      // 旧：chrome.storage.sync.get({ customBadDomains: [] }, function (s) { … });
+      // ★ 2026-11-12：名单以 storage.local 为准，直接读 sync 会把「已拉黑」显示成未拉黑。
+      const readList = (typeof SFListStore !== 'undefined' && SFListStore.read)
+        ? SFListStore.read
+        : function (cb) { chrome.storage.sync.get({ customBadDomains: [] }, cb); };
+      readList(function (s) {
         if (!isHostBlacklisted(location.hostname, s && s.customBadDomains)) return;
         let btn = null;
         try { btn = card.querySelector('.sf-btn-blocklist') || document.getElementById('sf-blocklist'); } catch (e) {}
@@ -1480,7 +1505,8 @@
     } catch (e) {}
   }
 
-  // ★ 用户主动「添加到自定义恶意域名黑名单」：写入 customBadDomains（chrome.storage.sync，跨站点永久生效）。
+  // ★ 用户主动「添加到自定义恶意域名黑名单」：写入 customBadDomains（storage.local，跨站点永久生效；
+  //   2026-11-12 起由 SFListStore 落盘，small 名单仍会镜像回 sync 以保留跨设备同步）。
   //   设计变更（2026-11-03）：判危本身**不再自动拉黑**（原逻辑会把 84 分的页面自动记入
   //   sfBlockedHosts，导致二次访问被连坐判 100 分，误报无法复查）。现在只有用户点这个按钮才拉黑。
   function addHostToGlobalBlacklist(btn) {
@@ -1500,6 +1526,25 @@
       if (msg) { try { showToast(msg); } catch (e) {} }
     };
     try {
+      // 旧：chrome.storage.sync.get({ customBadDomains: [] }, function (s) { … sync.set … });
+      // ★ 2026-11-12：改走 SFListStore —— 名单以 storage.local 为准（sync 单键 8KB ≈ 550 条会静默失败），
+      //   store 内部负责「local 缺失时先从 sync 迁移」。旧代码保留在下方注释里备查。
+      const store = (typeof SFListStore !== 'undefined') ? SFListStore : null;
+      const readList = store ? store.read : function (cb) { chrome.storage.sync.get({ customBadDomains: [] }, cb); };
+      const writeList = store ? store.write : function (o, cb) { chrome.storage.sync.set(o, cb); };
+      readList(function (s) {
+        try {
+          let arr = Array.isArray(s && s.customBadDomains) ? s.customBadDomains.slice() : [];
+          if (!isHostBlacklisted(host, arr)) arr.push(host);
+          writeList({ customBadDomains: arr }, function (err) {
+            if (err) { markDone(false, '加入自定义恶意域名黑名单失败：' + (err.message || err)); return; }
+            markDone(true, '已加入自定义恶意域名黑名单：' + host);
+          });
+        } catch (e) { markDone(false, '加入自定义恶意域名黑名单失败'); }
+      });
+    } catch (e) { markDone(false, '加入自定义恶意域名黑名单失败'); }
+    /*
+    try {
       chrome.storage.sync.get({ customBadDomains: [] }, function (s) {
         try {
           let arr = Array.isArray(s && s.customBadDomains) ? s.customBadDomains.slice() : [];
@@ -1512,6 +1557,55 @@
         } catch (e) { markDone(false, '加入自定义恶意域名黑名单失败'); }
       });
     } catch (e) { markDone(false, '加入自定义恶意域名黑名单失败'); }
+    */
+  }
+
+  // ★ 2026-11-12：拦截弹窗「访问正确的页面」——从被拦主机名推断品牌，打开该品牌的真实官网。
+  //
+  //   数据链路（三级，全部本地，无网络请求）：
+  //     1) analyzer.resolveCorrectSite(host)：内置表（rules/iocs.js 的 CORRECT_SITE_CATALOG）
+  //        → 云端补录（whitelist.json 的 correct_sites，由设置页同步后写入 storage.local）；
+  //     2) 命中：新标签页打开 https://<官网>/；
+  //     3) 未命中：新标签页打开说明页 ui/no-correct-site.html?host=…，
+  //        文案为「你访问的页面暂时没有已被收录的正确域名，或已被作者证实为应被拦截的页面。
+  //                如果你认为这是一个错误，请在扩展的反馈页面向作者发送反馈。」
+  //
+  //   为什么统一走后台开标签页：内容脚本没有 tabs 权限，window.open 又会被本页的
+  //   弹窗策略（部分仿冒站会重写 window.open）拦掉，按钮就成了「点了没反应」。
+  //   后台 chrome.tabs.create 不受页面策略影响，失败时才退回 window.open 兜底。
+  function openCorrectSite() {
+    let host = '';
+    try { host = String(location.hostname || '').toLowerCase().replace(/^www\./, ''); } catch (e) {}
+
+    let hit = null;
+    try {
+      if (SF && typeof SF.resolveCorrectSite === 'function') hit = SF.resolveCorrectSite(host);
+    } catch (e) {}
+
+    let target = '';
+    if (hit && hit.domain) {
+      target = 'https://' + hit.domain + '/';
+    } else {
+      try { target = chrome.runtime.getURL('ui/no-correct-site.html'); } catch (e) { target = ''; }
+      if (!target) { try { showToast('暂时无法打开说明页，请稍后重试'); } catch (e) {} return; }
+      target += '?host=' + encodeURIComponent(host || '');
+    }
+
+    const fallbackOpen = function () {
+      try { window.open(target, '_blank', 'noopener,noreferrer'); } catch (e) {}
+    };
+    try {
+      chrome.runtime.sendMessage({ type: 'SF_OPEN_TAB', url: target, active: true }, function (res) {
+        // 后台不可用 / 未响应 → 用页面自己的 window.open 兜底（可能被页面策略拦，但聊胜于无）
+        if (chrome.runtime.lastError || !res || !res.ok) fallbackOpen();
+      });
+    } catch (e) { fallbackOpen(); }
+
+    if (hit && hit.domain) {
+      try {
+        showToast('已在新标签页打开' + (hit.product ? '「' + hit.product + '」的' : '') + '官网：' + hit.domain);
+      } catch (e) {}
+    }
   }
 
   function showWarning(result) {
@@ -1552,6 +1646,8 @@
         continue: function () { try { showContinueConfirm(card, result); } catch (e) {} },
         // ★ 用户主动拉黑：判危不再自动写入自定义恶意域名黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
         'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
+        // ★ 2026-11-12：访问被仿冒网站对应的正确官网（当前为前端占位，见 openCorrectSite）
+        'open-correct': function () { openCorrectSite(); },
         __escape: function () { leaveSite(); }
       },
       onFail: function () {
@@ -1598,6 +1694,12 @@
       '<button class="sf-btn sf-btn-leave" id="sf-leave" data-sf-act="leave" type="button">离开此网站</button>' +
       '<button class="sf-btn sf-btn-continue" id="sf-continue" data-sf-act="continue" type="button">继续访问（仍拦截下载）</button>' +
       '</div>' +
+      // ★ 2026-11-12：第三个出口——「访问正确的页面」。尺寸与「添加到自定义恶意域名黑名单」一致（独占一行）。
+      //   为什么放在主按钮下方而不是并排：它是「修正入口」而不是「对本页做决定」，与离开/继续不是同级选择；
+      //   并排会让三按钮挤成一行，在 460px 卡片里字会被压到换行。
+      '<div class="sf-actions sf-actions-correct">' +
+      '<button class="sf-btn sf-btn-correct" id="sf-correct-site" data-sf-act="open-correct" type="button">访问正确的页面</button>' +
+      '</div>' +
       '<p class="sf-foot">银狐（游蛇）木马常通过仿冒官网投递带毒安装包，请勿轻易放行下载。<br>若已安装 IDM 等第三方下载器，请临时关闭其「浏览器接管」，以免其从链接直接抓取下载。</p>';
 
     // 若该域名已在自定义恶意域名黑名单中，按钮直接显示「✓ 已在自定义恶意域名黑名单」并禁用
@@ -1624,6 +1726,9 @@
       'cc-back': function () { try { renderWarning(card, result); } catch (e) {} },
       // 从二次确认返回主卡后，「添加到自定义恶意域名黑名单」按钮仍需可用
       'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
+      // ★ 2026-11-12：同一动作表会在「二次确认 → 返回主卡」后继续复用，这里必须一并登记，
+      //   否则返回后的「访问正确的页面」会变成点了没反应的死按钮（分发器找不到函数就静默 return）。
+      'open-correct': function () { openCorrectSite(); },
       'cc-go': function () {
         dangerAcknowledged = true; // 标记本页已确认继续，不再重复弹报毒浮层
         closeEl(root);
@@ -2411,7 +2516,7 @@
       }
     } catch (e) {}
 
-    // —— HaGeZi's TIF 本地威胁情报黑名单：第三个静态名单（约 181 万条），命中同样渲染横幅 ——
+    // —— HaGeZi's TIF 本地威胁情报黑名单：第三个静态名单（体量最大），命中同样渲染横幅 ——
     try {
       const hg = (settings && settings.hagezi) || {};
       const clOn = !!(settings && settings.communityLists && settings.communityLists.enabled);
@@ -2424,6 +2529,44 @@
               renderHaGeZiBanner(_host);
             } else {
               console.log('[SilverFoxBlocker][HaGeZi] 未命中（本地名单数量=' + ((r && r.count) || 0) + '）');
+            }
+          } catch (e) {}
+        }).catch(function () {});
+      }
+    } catch (e) {}
+
+    // —— uBlock Origin - Badware risks：第四个静态名单（AdBlock 语法，只取整站域名规则）——
+    try {
+      const bw = (settings && settings.badware) || {};
+      const clOn = !!(settings && settings.communityLists && settings.communityLists.enabled);
+      if (clOn && bw.enabled && _host) {
+        console.log('[SilverFoxBlocker][uBlock] 已启用，向后台查询本地风险名单：' + _host);
+        sendMsg({ type: 'sf-adlist-check', id: 'badware', hostname: _host }).then(function (r) {
+          try {
+            if (r && r.listed) {
+              console.log('[SilverFoxBlocker][uBlock] 命中本地风险名单：' + _host + '，渲染横幅');
+              renderAdListBanner('badware', _host);
+            } else {
+              console.log('[SilverFoxBlocker][uBlock] 未命中（本地名单数量=' + ((r && r.count) || 0) + '）');
+            }
+          } catch (e) {}
+        }).catch(function () {});
+      }
+    } catch (e) {}
+
+    // —— Dandelion Sprout's Anti-Malware List：第五个静态名单（同 AdBlock 语法）——
+    try {
+      const ds = (settings && settings.dsam) || {};
+      const clOn = !!(settings && settings.communityLists && settings.communityLists.enabled);
+      if (clOn && ds.enabled && _host) {
+        console.log('[SilverFoxBlocker][Dandelion] 已启用，向后台查询本地风险名单：' + _host);
+        sendMsg({ type: 'sf-adlist-check', id: 'dsam', hostname: _host }).then(function (r) {
+          try {
+            if (r && r.listed) {
+              console.log('[SilverFoxBlocker][Dandelion] 命中本地风险名单：' + _host + '，渲染横幅');
+              renderAdListBanner('dsam', _host);
+            } else {
+              console.log('[SilverFoxBlocker][Dandelion] 未命中（本地名单数量=' + ((r && r.count) || 0) + '）');
             }
           } catch (e) {}
         }).catch(function () {});
@@ -2639,7 +2782,7 @@
     if (!stack) return;
     if (!stack._sfKeys) stack._sfKeys = new Set();
 
-    results.forEach(function (r) {
+    results.forEach(function (r, ri) {
       const banner = document.createElement('div');
       // 配色：VT「可能是误报」与「仅历史记录」（URLhaus / NetAPI 的 stale 结果）用琥珀色（低置信度）；
       // VT「请提高警惕」用更深的警示红；其余（VT「请保持谨慎」/ URLhaus 活跃 / NetAPI 当前在列 / GSB）
@@ -2702,7 +2845,8 @@
           if (stack && stack.children.length === 0) { try { stack.remove(); } catch (e) {} }
         }, 280);
       });
-      stack.appendChild(banner);
+      // 第三方情报固定排在最上面（rank 1~4），给并行到达的本地名单横幅让出下方位置
+      ibInsertSorted(stack, banner, IB_ORDER.intel + (ri || 0));
     });
 
     // 容器本身、以及「跟随 .sf-banner/.sf-hint 下移」的观察器都由 ensureIntelStack() 负责，
@@ -2734,10 +2878,28 @@
     return stack;
   }
 
+  // 横幅显示顺序（数值小的在上）。
+  // 五份本地名单的判断是**并行**发出的，谁先回包谁先插入容器 —— 不排序的话，用户刷新几次
+  // 就会看到「TIF 有时在 OpenPhish 上面、有时在下面」。这里给每条横幅盖一个固定 rank，
+  // 插入时按 rank 归位，保证永远是：VT → URLhaus → NetAPI → GSB → OpenPhish →
+  // PhishDestroy → TIF → uBlock → Dandelion。
+  const IB_ORDER = { intel: 1, openphish: 10, phishdestroy: 20, hagezi: 30, badware: 40, dsam: 50 };
+
+  function ibInsertSorted(stack, banner, rank) {
+    const r = (typeof rank === 'number') ? rank : 100;
+    try { banner.setAttribute('data-sf-order', String(r)); } catch (e) {}
+    const kids = stack.children;
+    for (let i = 0; i < kids.length; i++) {
+      const o = parseInt(kids[i].getAttribute('data-sf-order'), 10);
+      if (!isNaN(o) && o > r) { stack.insertBefore(banner, kids[i]); return; }
+    }
+    stack.appendChild(banner);
+  }
+
   // 往堆叠容器里追加一条横幅（含「知道了」独立关闭按钮）
   // 幂等：同一容器内相同 class + 相同文案只保留一条（run 重跑 / SPA 重判 / 多次情报回包
   // 都不会再叠出两条一模一样的横幅）。用户点「知道了」关掉后也不会被再次打扰。
-  function appendIntelBanner(cls, textStr) {
+  function appendIntelBanner(cls, textStr, rank) {
     const stack = ensureIntelStack();
     if (!stack) return;
     if (!stack._sfKeys) stack._sfKeys = new Set();
@@ -2766,24 +2928,37 @@
     //   PhishDestroy / HaGeZi TIF 三条本地名单横幅只有文字和提醒语，没有「知道了」，
     //   用户无法关闭（第三方情报的 renderIntelBanners 里一直是对的，两处实现分叉导致）。
     banner.appendChild(btn);
-    stack.appendChild(banner);
-    appendSafetyAdvice(banner);   // OpenPhish / PhishDestroy / HaGeZi TIF 同样附带提醒语
+    appendSafetyAdvice(banner);   // 五份名单的横幅统一附带提醒语
+    ibInsertSorted(stack, banner, rank);
     positionIntelStack(stack);
   }
 
-  // OpenPhish 命中本地黑名单 → 横幅「OpenPhish 已将其拉黑」（.sf-openphish：深红）
+  // OpenPhish 命中本地黑名单 → 横幅「OpenPhish 已将其拉黑」
   function renderOpenPhishBanner(host) {
-    appendIntelBanner('sf-openphish', 'OpenPhish 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）');
+    appendIntelBanner('sf-openphish', 'OpenPhish 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）', IB_ORDER.openphish);
   }
 
-  // PhishDestroy 命中本地黑名单 → 横幅「PhishDestroy 已将其拉黑」（.sf-phishdestroy：紫罗兰，与上者区分）
+  // PhishDestroy 命中本地黑名单 → 横幅「PhishDestroy 已将其拉黑」
   function renderPhishDestroyBanner(host) {
-    appendIntelBanner('sf-phishdestroy', 'PhishDestroy 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）');
+    appendIntelBanner('sf-phishdestroy', 'PhishDestroy 已将其拉黑（' + host + ' 命中本地钓鱼黑名单）', IB_ORDER.phishdestroy);
   }
 
-  // HaGeZi TIF 命中本地威胁情报名单 → 横幅（.sf-hagezi：青蓝，与红色系、紫罗兰区分）
+  // HaGeZi TIF 命中本地威胁情报名单 → 横幅（与上面两条同色，文案里已标明来源）
   function renderHaGeZiBanner(host) {
-    appendIntelBanner('sf-hagezi', "HaGeZi's TIF 已将其拉黑（" + host + ' 命中本地威胁情报黑名单）');
+    appendIntelBanner('sf-hagezi', "HaGeZi's TIF 已将其拉黑（" + host + ' 命中本地威胁情报黑名单）', IB_ORDER.hagezi);
+  }
+
+  // 两份 AdBlock 风险名单（uBlock Origin Badware risks / Dandelion Sprout Anti-Malware）：
+  // 它们的定位是「有据可查的高风险站点」，不是说每个页面都已被确认挂马，所以用「判定为高风险」
+  // 而不是「已将其拉黑」；配色与 TIF 完全一致（同一套青蓝），靠文案区分来源。
+  const ADLIST_INFO = {
+    badware: { cls: 'sf-ublock', order: IB_ORDER.badware, name: 'uBlock Origin - Badware risks' },
+    dsam: { cls: 'sf-dsam', order: IB_ORDER.dsam, name: "Dandelion Sprout's Anti-Malware List" }
+  };
+  function renderAdListBanner(id, host) {
+    const info = ADLIST_INFO[id];
+    if (!info) return;
+    appendIntelBanner(info.cls, info.name + ' 已将 ' + host + ' 判定为高风险站点', info.order);
   }
 
   // ===== 硬拦截钩子（document_start 即安装，抢在站点脚本之前） =====

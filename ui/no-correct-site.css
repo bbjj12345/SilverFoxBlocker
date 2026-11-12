@@ -1,0 +1,137 @@
+/* no-correct-site.css —— 「访问正确的页面」说明页样式
+ * 独立页面自有样式，不依赖 options.css（那边有大量设置页专用布局与主题变量）。
+ * 主题跟随系统 prefers-color-scheme，与设置页的深色/浅色观感保持一致。 */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --text: #1a1c20;
+  --muted: #61666e;
+  --line: #e3e6ea;
+  --primary: #1d4ed8;
+  --primary-hover: #1a45bd;
+  --sec-bg: #eef0f3;
+  --sec-hover: #e3e6eb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --card: #1e2126;
+    --text: #e9ebee;
+    --muted: #9aa1ab;
+    --line: #2d3138;
+    --primary: #3b6fe0;
+    --primary-hover: #4a7cea;
+    --sec-bg: #272b31;
+    --sec-hover: #30353c;
+  }
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+}
+
+.card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 34px 30px 26px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .08);
+  text-align: center;
+}
+
+.icon { display: flex; justify-content: center; margin-bottom: 14px; }
+
+h1 {
+  margin: 0 0 14px;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: .2px;
+}
+
+.lead {
+  margin: 0 0 14px;
+  font-size: 14px;
+  color: var(--text);
+  text-align: left;
+  text-indent: 0;
+}
+
+.meta {
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--sec-bg);
+  font-size: 13px;
+  color: var(--muted);
+  text-align: left;
+  word-break: break-all;
+}
+.meta b { color: var(--text); font-weight: 600; }
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+
+.btn {
+  flex: 1 1 0;
+  padding: 11px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-primary:hover { background: var(--primary-hover); }
+
+.btn-sec {
+  background: var(--sec-bg);
+  color: var(--text);
+  border-color: var(--line);
+}
+.btn-sec:hover { background: var(--sec-hover); }
+
+.foot {
+  margin: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+@media (max-width: 420px) {
+  .card { padding: 26px 18px 20px; }
+  .actions { flex-direction: column; }
+}

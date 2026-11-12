@@ -280,7 +280,7 @@
             <div class="row" style="border:0;padding:0" data-page-node-id="sfClRow1">
               <div class="rl" data-page-node-id="sfClRl1">
                 <div class="rt" data-page-node-id="sfClRt1">社区维护的本地黑名单（可选）</div>
-                <div class="rd" data-page-node-id="sfClRd1">启用后展示可选的社区名单。名单每日自动抓取并保存在本地（chrome.storage.local / IndexedDB，不上传、不发送任何查询内容），浏览器启动时载入内存常驻，访问网站时在本地比对，命中即渲染横幅。默认关闭，不影响任何本地检测。当前开放 OpenPhish、PhishDestroy 与 HaGeZi's Threat Intelligence Feeds；需各自单独开启才会参与比对，横幅自上而下依次为 OpenPhish → PhishDestroy → HaGeZi's TIF。</div>
+                <div class="rd" data-page-node-id="sfClRd1">启用后展示可选的社区名单。名单每日自动抓取并保存在本地（chrome.storage.local / IndexedDB，不上传、不发送任何查询内容），浏览器启动时载入内存常驻，访问网站时在本地比对，命中即渲染横幅。默认关闭，不影响任何本地检测。当前开放 OpenPhish、PhishDestroy、HaGeZi's Threat Intelligence Feeds、uBlock Origin - Badware risks 与 Dandelion Sprout's Anti-Malware List；需各自单独开启才会参与比对，横幅自上而下依次为 OpenPhish → PhishDestroy → HaGeZi's TIF → uBlock Origin → Dandelion Sprout（第三方情报横幅始终排在这五条之上）。<b>不建议同时开启这三份大名单（HaGeZi's TIF、uBlock Origin - Badware risks、Dandelion Sprout's Anti-Malware List）</b>：它们同属「整站风险名单」，收录重叠度高，同一站点容易叠出多条内容相近的横幅，也白白多下载几十 MB；按需保留 1~2 份即可。</div>
               </div>
               <label class="switch" data-page-node-id="sfClSw1"><input type="checkbox" id="communityListsEnabled" data-page-node-id="sfClCb1"><span class="slider" data-page-node-id="sfClSl1"></span></label>
             </div>
@@ -315,7 +315,7 @@
                 <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClHgRow">
                   <div class="rl" data-page-node-id="sfClHgRl">
                     <div class="rt" data-page-node-id="sfClHgRt">HaGeZi's Threat Intelligence Feeds 黑名单</div>
-                    <div class="rd" data-page-node-id="sfClHgRd">第三个静态名单源，规模约 181 万条域名（恶意软件、挖矿、诈骗、垃圾邮件与钓鱼）。启用后扩展每日自动从 hagezi/dns-blocklists 的 tif.txt 抓取，并以「布隆过滤器位图」形式保存在本地 IndexedDB（约 5MB，不上传、不保存明文域名）；浏览器启动时直接读取该位图常驻内存，访问网站时与本地名单实时比对（精确 + 父域回溯），命中即渲染横幅「HaGeZi's TIF 已将其拉黑」。也可随时手动「立即更新」，更新过程会实时显示下载进度。无需 API Key。误判率约 2.5e-5，且不会漏判。</div>
+                    <div class="rd" data-page-node-id="sfClHgRd">第三个静态名单源，覆盖恶意软件、挖矿、诈骗、垃圾邮件与钓鱼等类别。启用后扩展每日自动从 hagezi/dns-blocklists 的 tif.txt 抓取，并以「布隆过滤器位图」形式保存在本地 IndexedDB（不上传、不保存明文域名）；浏览器启动时直接读取该位图常驻内存，访问网站时与本地名单实时比对（精确 + 父域回溯），命中即渲染横幅「HaGeZi's TIF 已将其拉黑」。也可随时手动「立即更新」，更新过程会实时显示下载进度。无需 API Key。误判率约 2.5e-5，且不会漏判。</div>
                   </div>
                   <label class="switch" data-page-node-id="sfClHgSw"><input type="checkbox" id="hageziEnabled" data-page-node-id="hageziEnabledId"><span class="slider" data-page-node-id="sfClHgSl"></span></label>
                 </div>
@@ -326,10 +326,36 @@
                 <div style="margin:0 0 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap">
                   <label for="hageziVariant" style="font-size:13px">名单版本</label>
                   <select id="hageziVariant" class="ti-select">
-                    <option value="full">完整版（181 万条，约 36MB 下载，最全）</option>
-                    <option value="medium">中等版（31.8 万条，约 6.6MB 下载，更轻快）</option>
+                    <option value="full">完整版（覆盖最全，下载体积较大）</option>
+                    <option value="medium">中等版（体积更小、更新更快）</option>
                   </select>
                   <span class="hint" style="margin:0">切换版本后会自动重新抓取一次</span>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfClBw">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClBwRow">
+                  <div class="rl" data-page-node-id="sfClBwRl">
+                    <div class="rt" data-page-node-id="sfClBwRt">uBlock Origin - Badware risks</div>
+                    <div class="rd" data-page-node-id="sfClBwRd">第四个静态名单源（uBlock Origin 官方维护）。原始文件是 AdBlock 语法，同时混着域名规则、路径规则、正则、元素隐藏规则与例外规则；扩展<b>只提取「整站域名规则」（||域名^）</b>，IP、路径、正则与处理规则全部丢弃。启用后每日自动抓取，并以「布隆过滤器位图」形式保存在本地 IndexedDB（不上传、不保存明文域名）；访问网站时在本地比对（精确 + 父域回溯），命中即渲染横幅「uBlock Origin - Badware risks 已将 … 判定为高风险站点」。也可随时手动「立即更新」。无需 API Key。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClBwSw"><input type="checkbox" id="badwareEnabled" data-page-node-id="badwareEnabledId"><span class="slider" data-page-node-id="sfClBwSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="badwareUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="badwareStatus" class="hint" style="margin:0"></span>
+                </div>
+              </div>
+              <div class="ti-provider" data-page-node-id="sfClDs">
+                <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfClDsRow">
+                  <div class="rl" data-page-node-id="sfClDsRl">
+                    <div class="rt" data-page-node-id="sfClDsRt">Dandelion Sprout's Anti-Malware List</div>
+                    <div class="rd" data-page-node-id="sfClDsRd">第五个静态名单源，侧重恶意跳转链、域名停放与流氓推广。同样是 AdBlock 语法，扩展<b>只提取「整站域名规则」</b>，丢弃 IP、路径（如 <code>apps.apple.com/xxx</code>）、正则与元素隐藏规则，以及 <code>||top^</code> 这类「封整个顶级域」的规则。启用后每日自动抓取，以「布隆过滤器位图」保存在本地 IndexedDB（不上传、不保存明文域名）；命中即渲染横幅「Dandelion Sprout's Anti-Malware List 已将 … 判定为高风险站点」。也可随时手动「立即更新」。无需 API Key。</div>
+                  </div>
+                  <label class="switch" data-page-node-id="sfClDsSw"><input type="checkbox" id="dsamEnabled" data-page-node-id="dsamEnabledId"><span class="slider" data-page-node-id="sfClDsSl"></span></label>
+                </div>
+                <div style="margin:2px 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                  <button id="dsamUpdateBtn" type="button" class="ti-update-btn">立即更新</button>
+                  <span id="dsamStatus" class="hint" style="margin:0"></span>
                 </div>
               </div>
             </div>
@@ -362,7 +388,7 @@
           <div class="field" data-page-node-id="jDlQ29lEEyfjarTIksHNJn">
             <label data-page-node-id="uVK2NcPxJOx7wrHK2FKdsP">自定义信任域名白名单（每行一个，命中后不拦截；与黑名单冲突时按黑名单处理；支持 <code>*</code> 与 <code>?</code> 通配符）</label>
             <textarea id="allowlist" placeholder="每行一个域名，例如：&#10;my-company.com&#10;trusted-site.cn"></textarea>
-            <div class="hint" data-page-node-id="hxewy5k5Ol9hGfa8FSKkjc">支持精确域名与后缀（子域）匹配：填写 example.com 将同时信任 a.example.com、a.b.example.com（标签对齐，即必须以 . 分隔，不会匹配 myexample.com）。<strong>支持通配符</strong>：<code>*</code> 匹配同一级域名内的任意字符（<code>cdn*.example.com</code> 可命中 cdn1 / cdn-bj），<code>?</code> 匹配单个字符，<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域（<code>*.com</code> 不会生效）。</div>
+            <div class="hint" data-page-node-id="hxewy5k5Ol9hGfa8FSKkjc">支持精确域名与后缀（子域）匹配：填写 example.com 将同时信任 a.example.com、a.b.example.com（标签对齐，即必须以 . 分隔，不会匹配 myexample.com）。<strong>支持通配符</strong>：<code>*</code> 匹配同一级域名内的任意字符（<code>cdn*.example.com</code> 可命中 cdn1 / cdn-bj），<code>?</code> 匹配单个字符，<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域（<code>*.com</code> 不会生效）。<b>不限条数</b>：名单存在本地（storage.local），不再受浏览器 sync 单键 8KB（约 550 条）限制。</div>
             <div class="list-mail" data-page-node-id="SF_MAIL_WHITE">
               <button class="btn btn-sec" id="mailWhiteBtn" type="button" data-page-node-id="SF_MAIL_WHITE_BTN">发送白名单到作者邮箱</button>
               <span class="upd-checking" id="mailWhiteSpin" hidden>发送中…</span>
@@ -390,7 +416,7 @@
           <div class="field" data-page-node-id="y3DDoYBoz80Vu1XJdUEsIf">
             <label data-page-node-id="mYDrheFoC3k5YjwRnTUJ4Q">自定义恶意域名黑名单（命中直接判危；支持 <code>*</code> 与 <code>?</code> 通配符）</label>
             <textarea id="customBadDomains" placeholder="每行一个域名，例如：&#10;bad-site.top"></textarea>
-            <div class="hint" data-page-node-id="DuU6p8uIlapO2ICPNd88hI">这些域名一旦出现即视为银狐风险站点，填写父域名即覆盖其全部子域。<strong>支持通配符</strong>：<code>*</code> 匹配同一级域名内的任意字符（<code>*bot.qpefh.com</code> 可命中 7f3abot / xbot），<code>?</code> 匹配单个字符（<code>abi0?.8msg8.com</code>），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域，单份名单最多 400 条通配。</div>
+            <div class="hint" data-page-node-id="DuU6p8uIlapO2ICPNd88hI">这些域名一旦出现即视为银狐风险站点，填写父域名即覆盖其全部子域。<strong>支持通配符</strong>：<code>*</code> 匹配同一级域名内的任意字符（<code>*bot.qpefh.com</code> 可命中 7f3abot / xbot），<code>?</code> 匹配单个字符（<code>abi0?.8msg8.com</code>），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域，<b>不限制条数</b>（名单存在本地 storage.local，不受 sync 单键 8KB 限制；通配按尾部标签分桶查找，条数只影响内存）。</div>
             <div class="list-mail" data-page-node-id="SF_MAIL_BLACK">
               <button class="btn btn-sec" id="mailBlackBtn" type="button" data-page-node-id="SF_MAIL_BLACK_BTN">发送黑名单到作者邮箱</button>
               <span class="upd-checking" id="mailBlackSpin" hidden>发送中…</span>
@@ -574,15 +600,16 @@
           <div class="about-row" data-page-node-id="fk21QpHx5xnayIpYBJ9Pik"><span class="ak" data-page-node-id="JbbL5e2HWqX5LYCJ8QWO1G">隐私政策</span><span class="av" data-page-node-id="ewLZB8QUme2ckphjySGFDn"><a href="https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" data-page-node-id="2JDU7smH0eGm2Bl4mg9DuW">github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md</a><span class="mirror-line" data-page-node-id="SF_PRIVACY_GITEE_LINE"><span class="mirror-tag">Gitee 镜像</span><a href="https://gitee.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" title="Gitee 镜像：内容与 GitHub 上的 PRIVACY.md 相同，只是域名不同" data-page-node-id="SF_PRIVACY_GITEE">gitee.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md</a></span></span></div>
           <div class="about-row" data-page-node-id="ZlA8G7QHjra4Ijrc81pZPq"><span class="ak" data-page-node-id="tM4qhnfyTX2IAV1dUYCjEp">项目仓库</span><span class="av" data-page-node-id="MlOWp3serjw4b3xhPnYT6c"><a href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="9PdYDUpYdaZAR3gH1hmKTg">github.com/bbjj12345/SilverFoxBlocker</a><span class="mirror-line" data-page-node-id="SF_REPO_GITEE_LINE"><span class="mirror-tag">Gitee 镜像</span><a href="https://gitee.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" title="Gitee 镜像：内容与 GitHub 仓库同步，只是域名不同（国内直连更快）" data-page-node-id="SF_REPO_GITEE">gitee.com/bbjj12345/SilverFoxBlocker</a></span></span></div>
           <div class="about-row" data-page-node-id="SF_UC_ROW_VER"><span class="ak" data-page-node-id="SF_UC_AK_VER">版本更新</span><span class="av av-btns"><a class="btn-mini" id="manualCheckUpdate" href="https://github.com/bbjj12345/SilverFoxBlocker/releases/latest" target="_blank" rel="noreferrer" title="直连 github.com 不通时会自动改用公共镜像；镜像也不通时，经代理查询最新版本号；仍不行可改用右侧「前往 Gitee 查看更新」" data-page-node-id="SF_UC_GH">前往 GitHub 查看更新</a><a class="btn-mini" id="giteeUpdate" href="https://gitee.com/bbjj12345/SilverFoxBlocker/releases/latest" target="_blank" rel="noreferrer" title="Gitee 镜像（国内直连，内容与 GitHub Release 同步）；GitHub 打不开时用这个" data-page-node-id="SF_UC_GITEE">前往 Gitee 查看更新</a><a class="btn-mini" id="lanzouUpdate" href="https://wwavz.lanzout.com/b01gigjayb" target="_blank" rel="noreferrer" title="提取码：2hxh（点击后自动复制）" data-page-node-id="SF_UC_LZ">前往蓝奏云查看更新</a><span class="about-note" id="lanzouPwdTip" data-page-node-id="SF_UC_LZ_TIP">提取码：2hxh</span><span class="about-note gh-channel-tip" id="ghChannelTip" hidden data-page-node-id="SF_GH_CHANNEL_TIP"></span></span></div>
-          <div class="about-row" data-page-node-id="SF_UC_ROW_CLOUD"><span class="ak" data-page-node-id="SF_UC_AK_CLOUD">云端名单更新</span><span class="av av-btns"><button class="btn-mini" id="cloudPullList" type="button" title="优先 GitHub：云端接口（Worker 内部 GitHub→Gitee）→ GitHub 直连 → 公共代理（gh-proxy / ghfast / ghproxy.net 等）→ Gitee 镜像，逐级重试" data-page-node-id="SF_CLOUD_LST">从云端更新名单</button><span class="about-note" data-page-node-id="SF_CLOUD_TIP">云端名单可作为拦截危险网站的重要补充依据，建议每天更新一次</span></span></div>
+          <div class="about-row" data-page-node-id="SF_UC_ROW_CLOUD"><span class="ak" data-page-node-id="SF_UC_AK_CLOUD">云端名单更新</span><span class="av av-btns"><button class="btn-mini" id="cloudPullList" type="button" title="优先 GitHub：云端接口（Worker 内部 GitHub→Gitee）→ GitHub 直连 → 公共代理（gh-proxy / ghfast / ghproxy.net 等）→ Gitee 镜像，逐级重试" data-page-node-id="SF_CLOUD_LST">从云端更新名单</button><span class="about-note" data-page-node-id="SF_CLOUD_TIP">云端名单可作为拦截危险网站的重要补充依据，建议每天更新一次；白名单里的「官网映射」（correct_sites）也会一并同步，供拦截浮层的「访问正确的页面」按钮使用</span></span></div>
           <!-- 云端名单同步状态：由 ui/options.js 的 refreshCloudListStatus() 回填，
                展示「黑白各多少条 / 上次同步时间」，避免同步完看不出是否真的生效。 -->
           <div class="about-row" data-page-node-id="SF_CLOUD_STATUS_ROW"><span class="ak">云端名单</span><span class="av" id="cloudListStatus" data-page-node-id="SF_CLOUD_STATUS">未同步</span></div>
-          <!-- 未生效条目明细：云端名单里被丢弃的条目（通配超上限、IDN 通配、路径超上限等）
+          <!-- 未生效条目明细：云端名单里被丢弃的条目（写法非法、IDN 通配等）
+               2026-11-12：条数上限已取消，这里不再可能出现「超上限」类原因 -->
                以前只在控制台 console.warn 里出现，等于对用户静默。这里把原文 + 原因直接列出来，
                让用户/作者能照着自己改名单。默认隐藏，无丢弃时不占位。 -->
           <div class="about-row" id="cloudDropRow" data-page-node-id="SF_CLOUD_DROP_ROW" style="display:none"><span class="ak">未生效条目</span><span class="av" id="cloudDropDetail" data-page-node-id="SF_CLOUD_DROP" style="font-weight:400;opacity:.75;word-break:break-all"></span></div>
-          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75"><b>云端黑名单、云端白名单</b>，以及「规则与名单」里的<b>两个自定义名单</b>都支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域。<br>另支持<b>路径条目</b>（云端黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；单次最多收录 500 条路径条目。</span></div>
+          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75"><b>云端黑名单、云端白名单</b>，以及「规则与名单」里的<b>两个自定义名单</b>都支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配，也不能通配顶级域。<br>另支持<b>路径条目</b>（云端黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；<b>路径条目也不限条数</b>。<br><b>官网映射</b>（<code>correct_sites</code>，只服务「访问正确的页面」按钮）不支持通配：官网必须是一个确定的主机名，写 <code>*</code> 或 <code>?</code> 会被丢弃。</span></div>
         </div>
 
         <!-- 反馈与建议：两个通道 —— 打开预填的 GitHub Issues 新建页，或经自建 Worker 代发邮件到作者邮箱。
@@ -709,8 +736,9 @@
 
   <script src="../rules/iocs.js"></script>
   <script src="../rules/analyzer.js"></script>
+  <script src="../rules/liststore.js"></script>
   <script src="../crypto-helper.js"></script>
   <script src="feedback-config.js?v=20261102"></script>
-  <script src="options.js?v=20261110f"></script>
+  <script src="options.js?v=20261111h"></script>
 </body>
 </html>

@@ -9,7 +9,7 @@
  */
 'use strict';
 
-importScripts('rules/iocs.js', 'rules/analyzer.js', 'crypto-helper.js');
+importScripts('rules/iocs.js', 'rules/analyzer.js', 'rules/liststore.js', 'crypto-helper.js');
 
 // 兼容 service worker（self，无 window）与内容脚本（window 隔离世界）两种上下文：
 // iocs.js / analyzer.js 已同时挂到 self 与 window。兜底 stub 防止依赖缺失时崩溃。
@@ -33,6 +33,12 @@ function applyCloudLists(o) {
     if (SF.registerCloudBad) {
       SF.registerCloudBad((o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack : [], { replace: true });
     }
+    // ★ 2026-11-12：云端「品牌词 → 正确官网」补录（whitelist.json 的 correct_sites）。
+    //   仅服务拦截弹窗的「访问正确的页面」按钮，不参与放行/拦截判定；
+    //   与上面两份名单的 replace 语义无关（内置表始终保留，云端只补空缺）。
+    if (SF.registerCloudCorrect) {
+      SF.registerCloudCorrect((o && Array.isArray(o.sfCloudCorrect)) ? o.sfCloudCorrect : []);
+    }
   } catch (e) {}
 }
 // 云端名单的「就绪」promise。MV3 的 service worker 随时会被唤醒/回收，
@@ -44,7 +50,7 @@ let _cloudReady = Promise.resolve();
 function reloadCloudLists() {
   try {
     _cloudReady = new Promise(function (resolve) {
-      chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [] }, function (o) {
+      chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [] }, function (o) {
         applyCloudLists(o);
         resolve();
       });
@@ -56,7 +62,7 @@ function cloudReady() { return _cloudReady; }
 reloadCloudLists();
 try {
   chrome.storage.onChanged.addListener(function (ch, area) {
-    if (area === 'local' && (ch.sfCloudWhite || ch.sfCloudBlack)) reloadCloudLists();
+    if (area === 'local' && (ch.sfCloudWhite || ch.sfCloudBlack || ch.sfCloudCorrect)) reloadCloudLists();
   });
 } catch (e) {}
 
@@ -160,8 +166,13 @@ const DEFAULTS = {
   // PhishDestroy 本地钓鱼黑名单：与 OpenPhish 并列的第二个静态名单源（约 14 万条裸域名），
   // 同样是「每日自动更新 + 手动更新 → 落盘 storage.local → 启动即载入内存常驻」。
   phishdestroy: { enabled: false, lastUpdated: 0 },
-  // HaGeZi's Threat Intelligence Feeds（TIF）：AdBlock 语法，约 181 万条，机制同上但改用哈希索引
-  hagezi: { enabled: false, lastUpdated: 0, variant: 'full' }
+  // HaGeZi's Threat Intelligence Feeds（TIF）：AdBlock 语法，量级最大，机制同上但改用布隆位图
+  hagezi: { enabled: false, lastUpdated: 0, variant: 'full' },
+  // 2026-11-11 新增：两份「社区 AdBlock 风险名单」，结构同 TIF（布隆位图 + IndexedDB），
+  // 但从 AdBlock 语法里**只提取整站域名规则** ||host^，IP / 路径 / 正则 / 例外 / TLD 规则全部丢弃。
+  // badware = uBlock Origin - Badware risks；dsam = Dandelion Sprout's Anti-Malware List
+  badware: { enabled: false, lastUpdated: 0 },
+  dsam: { enabled: false, lastUpdated: 0 }
 };
 
 // ===== 威胁情报 API 注册表（框架化）=====
@@ -833,6 +844,13 @@ function releaseCommunityLists() {
   _opDomains = null; _opMeta = null;
   _pdDomains = null; _pdMeta = null;
   _hgBits = null; _hgMeta = null; _hgCount = 0; _hgLoadTried = false;
+  // 两份 AdBlock 风险名单（位图很小，但同样按「关掉即释放」处理，语义一致）
+  try {
+    Object.keys(_adl).forEach(function (k) {
+      _adl[k].bits = null; _adl[k].m = 0; _adl[k].count = 0;
+      _adl[k].loadTried = false; _adl[k].meta = null;
+    });
+  } catch (e) {}
 }
 
 // 将 feed 文本解析为去重域名数组（仅收录含点、无空格/端口冒号的「域名形态」，避免把异常行当域名污染名单）
@@ -1438,6 +1456,283 @@ try {
   });
 } catch (e) {}
 
+// ===== 社区 AdBlock 风险名单：uBlock Origin - Badware risks / Dandelion Sprout =====
+// 数据源都是 AdBlock Plus 语法（.txt），文件里混着四类东西：
+//   ① 整站域名规则  ||example.com^          ← 只有这类能用
+//   ② 路径规则      ||example.com/xxx/$doc  ← 只对某个路径生效，整站收录会误报（如 apps.apple.com）
+//   ③ 正则 / 元素隐藏 / 例外(@@) / TLD 规则（||top^，等于封整个顶级域）
+//   ④ 头部注释、IP、端口等
+// 我们只做「命中即提示」，既不隐藏元素也不按路径拦截，所以**只提取 ①**：
+//   · '||' 开头；主机名只允许 [a-z0-9.-]；遇到 ^ $ / | 结束
+//   · 结束符必须是 ^ 或 $ 或行尾（遇 '/' 说明是路径规则 → 丢弃）
+//   · 必须含点，且最后一段 TLD ≥ 2 字符（顺带挡掉 ||top^ 这类 TLD 级规则）
+// 其余全部丢弃，不做任何语法解释。
+//
+// 存储与 HaGeZi TIF 同构（布隆过滤器 + IndexedDB 位图），但这两份名单实际只有 3 千 / 1.2 万条，
+// 位图仅几 KB ~ 几十 KB，构建与比对都是毫秒级；误判率按 16bit/条 + 11 哈希计算约 1e-4，
+// 且**绝不漏判**（名单太小，代价可忽略）。
+const ADL_LISTS = {
+  badware: {
+    id: 'badware',
+    name: 'uBlock Origin - Badware risks',
+    idbKey: 'adlist-ubadware',
+    metaKey: 'sfUBlockBadwareMeta',
+    expectBytes: 273771,
+    // 直链优先，镜像兜底（raw 被墙时走 jsDelivr，再不行走文件反代）
+    sources: [
+      'https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt',
+      'https://cdn.jsdelivr.net/gh/uBlockOrigin/uAssetsCDN@main/filters/badware.txt',
+      'https://fastly.jsdelivr.net/gh/uBlockOrigin/uAssetsCDN@main/filters/badware.txt',
+      'https://gh-proxy.com/https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt'
+    ]
+  },
+  dsam: {
+    id: 'dsam',
+    name: "Dandelion Sprout's Anti-Malware List",
+    idbKey: 'adlist-dsam',
+    metaKey: 'sfDandelionAntiMalwareMeta',
+    expectBytes: 445662,
+    sources: [
+      "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Dandelion%20Sprout's%20Anti-Malware%20List.txt",
+      // 用户给的「镜像」是 github.com/.../blob/... 网页地址，返回的是 HTML 而不是名单，
+      // 直接解析会把整页 HTML 当名单 → 这里改用等价的可直接读取镜像（jsDelivr CDN）。
+      "https://cdn.jsdelivr.net/gh/DandelionSprout/adfilt@master/Dandelion%20Sprout's%20Anti-Malware%20List.txt",
+      "https://fastly.jsdelivr.net/gh/DandelionSprout/adfilt@master/Dandelion%20Sprout's%20Anti-Malware%20List.txt",
+      "https://gh-proxy.com/https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Dandelion%20Sprout's%20Anti-Malware%20List.txt"
+    ]
+  }
+};
+const ADL_BITS_PER_ENTRY = 16;
+const ADL_K = 11;
+
+// 每份名单一份运行状态（位图 + meta + 单飞锁）
+const _adl = {
+  badware: { bits: null, m: 0, count: 0, meta: null, updating: false, loadTried: false },
+  dsam: { bits: null, m: 0, count: 0, meta: null, updating: false, loadTried: false }
+};
+
+// ---------- 哈希（与 TIF 同一套 FNV/乘法混合，单趟折叠大小写） ----------
+let _adlH1 = 0, _adlH2 = 0;
+function adlHashRange(s, start, end) {
+  let h1 = 0x811c9dc5, h2 = 0x27d4eb2d;
+  for (let i = start; i < end; i++) {
+    let c = s.charCodeAt(i);
+    if (c >= 65 && c <= 90) c += 32;
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h2 = Math.imul(h2, 2246822519) >>> 0;
+    h2 = (h2 ^ (h2 >>> 13)) >>> 0;
+  }
+  _adlH1 = h1 >>> 0; _adlH2 = h2 >>> 0;
+}
+
+// 单趟扫描：只挑出「整站域名规则」的主机名区间，命中时回调 sink(start,end)
+// 返回收录条数；sink 为空时即「只统计不置位」（用于先数出 n 再分配位图）
+function adlScanHosts(src, sink) {
+  const len = src.length;
+  let count = 0, start = 0;
+  for (let i = 0; i <= len; i++) {
+    if (i !== len && src.charCodeAt(i) !== 10) continue;
+    const s0 = start; start = i + 1;
+    let p = s0;
+    while (p < i && (src.charCodeAt(p) === 32 || src.charCodeAt(p) === 9 || src.charCodeAt(p) === 13)) p++;
+    if (p >= i) continue;
+    if (src.charCodeAt(p) !== 124 || src.charCodeAt(p + 1) !== 124) continue;   // 必须 '||'
+    p += 2;
+    let e = p, lastDot = -1, bad = false, stop = 0;
+    for (; e < i; e++) {
+      const c = src.charCodeAt(e);
+      if (c === 94 /* ^ */ || c === 36 /* $ */ || c === 47 /* / */ || c === 124 /* | */) { stop = c; break; }
+      if (c === 46 /* . */) lastDot = e;
+      else if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 45) { /* ok */ }
+      else { bad = true; break; }                 // * ~ _ : ? 等一律丢弃
+    }
+    if (bad || lastDot < 0) continue;             // 无点 → TLD 级规则（||top^），丢弃
+    if (stop === 47) continue;                    // 路径规则 → 丢弃（避免整站误报）
+    let end = e;
+    if (src.charCodeAt(end - 1) === 46) end--;    // 结尾多余的点
+    if (end - p < 4) continue;
+    if (end - lastDot - 1 < 2) continue;          // TLD 至少两位
+    if (sink) sink(p, end);
+    count++;
+  }
+  return count;
+}
+
+function adlBloomTestRange(st, s, start, end) {
+  if (!st.bits || !st.m) return false;
+  adlHashRange(s, start, end);
+  const a = _adlH1, b = (_adlH2 | 1) >>> 0;
+  const bits = st.bits, m = st.m;
+  for (let i = 0; i < ADL_K; i++) {
+    const idx = ((a + Math.imul(i, b)) >>> 0) % m;
+    if ((bits[idx >>> 3] & (1 << (idx & 7))) === 0) return false;
+  }
+  return true;
+}
+
+// 域名是否命中：精确 + 逐级回溯父域（与 TIF / OpenPhish 的连坐口径一致）
+function adlHit(id, host) {
+  const st = _adl[id];
+  if (!st || !st.bits || !st.m) return false;
+  let d = String(host || '').toLowerCase();
+  if (d.charAt(d.length - 1) === '.') d = d.slice(0, -1);
+  while (d) {
+    if (adlBloomTestRange(st, d, 0, d.length)) return true;
+    const i = d.indexOf('.');
+    if (i < 0) return false;
+    d = d.slice(i + 1);
+  }
+  return false;
+}
+
+// 构建：先数条数分配位图，再扫一遍置位（两份名单都只有几百 KB，无需分段让出主线程）
+async function buildAdlBloom(text) {
+  const src = String(text);
+  const n = adlScanHosts(src, null) || 1;
+  const mBits = Math.max(64, Math.ceil(n * ADL_BITS_PER_ENTRY / 8) * 8);
+  const bits = new Uint8Array(mBits >>> 3);
+  const st = { bits: bits, m: mBits };
+  let count = 0;
+  adlScanHosts(src, function (p, e) {
+    adlHashRange(src, p, e);
+    const a = _adlH1, b = (_adlH2 | 1) >>> 0;
+    for (let t = 0; t < ADL_K; t++) {
+      const idx = ((a + Math.imul(t, b)) >>> 0) % mBits;
+      bits[idx >>> 3] |= (1 << (idx & 7));
+    }
+    count++;
+  });
+  await new Promise(function (r) { setTimeout(r, 0); });   // 让出一次事件循环，SW 保持响应
+  return { bits: bits, m: mBits, count: count };
+}
+
+async function loadAdl(id, force) {
+  const st = _adl[id];
+  const cfg = ADL_LISTS[id];
+  if (!st || !cfg) return false;
+  if (st.bits && !force) return true;
+  if (st.loadTried && !force) return false;
+  st.loadTried = true;
+  try {
+    const rec = await hgIdbGet(cfg.idbKey);
+    if (rec && rec.bits && rec.m) {
+      st.bits = new Uint8Array(rec.bits);
+      st.m = rec.m;
+      st.count = rec.count || 0;
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function notifyAdlUpdated(id, r) {
+  sfBroadcast({ type: 'sf-adlist-updated', id: id, result: (r || { ok: true }) });
+}
+function notifyAdlProgress(id, received, total, stage) {
+  sfBroadcast({ type: 'sf-adlist-progress', id: id, received: received, total: total, stage: stage || 'download' });
+}
+
+async function fetchAdlFeed(id) {
+  const cfg = ADL_LISTS[id];
+  const st = _adl[id];
+  const failures = [];
+  const startedAt = Date.now();
+  for (let si = 0; si < cfg.sources.length; si++) {
+    const src = cfg.sources[si];
+    if (Date.now() - startedAt > 180000) { failures.push('已超过本次更新时限（3 分钟）'); break; }
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, 60000);
+      let res;
+      try {
+        res = await fetch(src, { method: 'GET', cache: 'no-store', signal: ctrl.signal, redirect: 'follow' });
+      } finally { clearTimeout(to); }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      notifyAdlProgress(id, 0, 0);
+      const text = await res.text();
+      // 兜底：镜像若返回网页（HTML）而不是名单，这里会一个字都解析不出来
+      const built = await buildAdlBloom(text);
+      if (!built.count) throw new Error('内容非名单（未解析到 ||domain^ 规则）');
+      await hgIdbPut(cfg.idbKey, { bits: built.bits.buffer, m: built.m, count: built.count, updated: Date.now(), source: src });
+      st.bits = built.bits; st.m = built.m; st.count = built.count;
+      const meta = { updated: Date.now(), count: built.count, bytes: text.length, error: '', source: src };
+      st.meta = meta;
+      await new Promise(function (r) { chrome.storage.local.set({ [cfg.metaKey]: meta }, r); });
+      notifyAdlProgress(id, text.length, text.length, 'done');
+      return { ok: true, count: built.count, source: src, bytes: text.length, ms: Date.now() - startedAt };
+    } catch (e) {
+      const h = (function () { try { return new URL(src).host; } catch (_) { return src; } })();
+      failures.push(h + ': ' + ((e && e.message) || String(e)));
+    }
+  }
+  const brief = failures.map(function (s) { return s.replace('Failed to fetch', '网络不可达'); }).join('；');
+  const errMsg = brief || '所有更新源均失败';
+  try {
+    const prev = (st.meta && st.meta.updated) || 0;      // 失败保留旧位图，不推进 updated
+    st.meta = { updated: prev, count: st.count, error: errMsg, lastAttempt: Date.now() };
+    await new Promise(function (r) { chrome.storage.local.set({ [cfg.metaKey]: st.meta }, r); });
+  } catch (_) {}
+  return { ok: false, error: errMsg, attempts: failures.length };
+}
+
+async function maybeUpdateAdl(id, force) {
+  const cfg = ADL_LISTS[id];
+  const st = _adl[id];
+  if (!cfg || !st) return { ok: false, skipped: true };
+  if (st.updating) return { ok: false, skipped: true, busy: true };
+  const s = await getSettings();
+  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
+  const cfgUser = (s && s[id]) || {};
+  if (!cfgUser.enabled && !force) return { ok: false, skipped: true };
+  if (!st.meta) {
+    try {
+      st.meta = await new Promise(function (r) {
+        chrome.storage.local.get({ [cfg.metaKey]: { updated: 0 } }, function (o) { r(o[cfg.metaKey] || { updated: 0 }); });
+      });
+    } catch (e) { st.meta = { updated: 0 }; }
+  }
+  const last = (st.meta && st.meta.updated) || 0;
+  const lastTry = (st.meta && st.meta.lastAttempt) || 0;
+  if (!force) {
+    if ((Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: st.count };
+    if (lastTry && (Date.now() - lastTry) < 30 * 60 * 1000) return { ok: false, skipped: true };
+  }
+  st.updating = true;
+  try {
+    return await fetchAdlFeed(id);
+  } finally {
+    st.updating = false;
+  }
+}
+
+try {
+  // 一个每日 alarm 覆盖两份名单（各自内部还有 24h 判断，不会重复抓）
+  chrome.alarms.get('sfAdlDaily', function (a) {
+    if (!a) { try { chrome.alarms.create('sfAdlDaily', { periodInMinutes: 1440 }); } catch (e) {} }
+  });
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (!alarm) return;
+    const nm = String(alarm.name || '');
+    if (nm === 'sfAdlDaily') {
+      for (const id of Object.keys(ADL_LISTS)) {
+        try {
+          const s = await getSettings();
+          if (!(s && s.communityLists && s.communityLists.enabled)) return;
+          if (!(s[id] && s[id].enabled)) continue;
+          notifyAdlUpdated(id, await maybeUpdateAdl(id, false));
+        } catch (e) {}
+      }
+      return;
+    }
+    if (nm.indexOf('sfAdlManual_') === 0) {
+      const id = nm.slice('sfAdlManual_'.length);
+      try { notifyAdlUpdated(id, await maybeUpdateAdl(id, true)); }
+      catch (e) { notifyAdlUpdated(id, { ok: false, error: String((e && e.message) || e) }); }
+    }
+  });
+} catch (e) {}
+
 // ===== 会话级状态（service worker 重启不丢）=====
 function loadState() {
   return new Promise(function (resolve) {
@@ -1479,14 +1774,32 @@ function getSettings() {
   if (_settingsCache) return Promise.resolve(_settingsCache);
   return new Promise(function (resolve) {
     chrome.storage.sync.get(DEFAULTS, function (s) {
-      _settingsCache = Object.assign({}, DEFAULTS, s || {});
-      resolve(_settingsCache);
+      // ★ 只填充局部 merged，等名单合并完成后再一次性写入 _settingsCache；
+      //   原实现先赋 _settingsCache 再异步覆盖，中间这段时间别的调用会拿到「没有自定义名单」的设置。
+      var merged = Object.assign({}, DEFAULTS, s || {});
+      // ★ 2026-11-12：自定义名单以 storage.local 为准（sync 单键 8KB ≈ 550 条，超出后 set 静默失败）。
+      //   SFListStore 在 local 缺失时会先把 sync 里的旧名单迁移过来，老用户无需操作。
+      var finish = function () { _settingsCache = merged; resolve(merged); };
+      try {
+        if (typeof SFListStore !== 'undefined' && SFListStore.read) {
+          SFListStore.read(function (lists) {
+            Object.keys(lists || {}).forEach(function (k) { merged[k] = lists[k]; });
+            finish();
+          });
+          return;
+        }
+      } catch (e) {}
+      finish();
     });
   });
 }
 if (chrome.storage && chrome.storage.onChanged) {
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area === 'sync' && _settingsCache) _settingsCache = null; // 任意 sync 设置变更 → 下次 getSettings 重新拉取
+    // ★ 2026-11-12：自定义名单已挪到 storage.local（见 rules/liststore.js），
+    //   设置页保存名单只会触发 local 变更；这里必须一并失效，否则后台仍用旧名单判定下载。
+    //   只认这两个键：云端名单 / 统计也写在 local，若不加判断会每次同步都丢掉设置缓存。
+    if (area === 'local' && _settingsCache && changes && (changes.allowlist || changes.customBadDomains)) _settingsCache = null;
     // 社区名单总开关被关掉 → 立即释放常驻内存（OpenPhish/PhishDestroy 的 Set 与 HaGeZi 位图）
     if (area === 'sync' && changes.communityLists) {
       const cl = changes.communityLists.newValue || {};
@@ -1676,6 +1989,8 @@ async function warmCommunityLists() {
     if (s.openphish && s.openphish.enabled) loadOpenPhishDomains().catch(function () {});
     if (s.phishdestroy && s.phishdestroy.enabled) loadPhishDestroyDomains().catch(function () {});
     if (s.hagezi && s.hagezi.enabled) loadHaGeZiFilter().catch(function () {});   // IndexedDB 直接取位图，无需解码
+    if (s.badware && s.badware.enabled) loadAdl('badware').catch(function () {});
+    if (s.dsam && s.dsam.enabled) loadAdl('dsam').catch(function () {});
   } catch (e) {}
 }
 
@@ -1701,6 +2016,8 @@ chrome.runtime.onInstalled.addListener(function (details) {  chrome.storage.sync
     if (pd.enabled) { loadPhishDestroyDomains().catch(function () {}); maybeUpdatePhishDestroy(false); }
     const hg = (s && s.hagezi) || {};
     if (hg.enabled) { loadHaGeZiFilter().catch(function () {}); maybeUpdateHaGeZi(false); }
+    if (s && s.badware && s.badware.enabled) { loadAdl('badware').catch(function () {}); maybeUpdateAdl('badware', false); }
+    if (s && s.dsam && s.dsam.enabled) { loadAdl('dsam').catch(function () {}); maybeUpdateAdl('dsam', false); }
   }).catch(function () {});
   // OOBE 首次引导向导已移除：安装/升级不再弹出初始化设置页
   if (details.reason === 'update') {
@@ -2375,6 +2692,26 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   // （云端官网库展示已改为「设置页纯前端直接 fetch CDN 公开名单 + 读 storage.local」，不再经此后台消息端口）
 
 
+  // ===== 「访问正确的页面」开标签页（内容脚本没有 tabs 权限）=====
+  //   为什么要经后台：仿冒站常常重写 window.open / 弹窗策略，直接开会被拦成「死按钮」。
+  //   只放行 http(s) 与本扩展自身的 chrome-extension:// 地址，防止被页面借此开任意协议
+  //   （javascript: / file: / data: 一律拒绝）。
+  if (msg.type === 'SF_OPEN_TAB') {
+    try {
+      const u = String(msg.url || '');
+      const selfBase = chrome.runtime.getURL('');
+      const okUrl = /^https?:[/][/]/i.test(u) || (u.indexOf(selfBase) === 0);
+      if (!okUrl) { try { sendResponse({ ok: false, error: 'bad_url' }); } catch (e) {} return true; }
+      chrome.tabs.create({ url: u, active: msg.active !== false }, function (tab) {
+        const err = chrome.runtime.lastError;
+        try { sendResponse({ ok: !err, tabId: tab && tab.id, error: err ? err.message : '' }); } catch (e) {}
+      });
+    } catch (e) {
+      try { sendResponse({ ok: false, error: (e && e.message) || 'open_failed' }); } catch (e2) {}
+    }
+    return true;
+  }
+
   // ===== AI 浮球请求打开设置子页面（content script 无 tabs 权限时的兜底通道）=====
   if (msg.type === 'SF_OPEN_OPTIONS_SECTION') {
     try {
@@ -2705,6 +3042,36 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           try { _hgMeta = await new Promise((res) => chrome.storage.local.get({ [HG_META_KEY]: { updated: 0 } }, (o) => res(o[HG_META_KEY] || { updated: 0 }))); } catch (e) {}
         }
         try { sendResponse({ listed: listed, count: _hgCount, updated: ((_hgMeta && _hgMeta.updated) || 0) }); } catch (e) {}
+      } catch (e) { try { sendResponse({ listed: false, count: 0, updated: 0 }); } catch (_) {} }
+    })();
+    return true;
+  }
+  // ===== 社区 AdBlock 风险名单（uBlock Badware risks / Dandelion Sprout）=====
+  if (msg.type === 'sf-adlist-update') {
+    const id = String(msg.id || '');
+    if (!ADL_LISTS[id]) { try { sendResponse({ started: false, error: '未知名单' }); } catch (e) {}
+      return true; }
+    try { chrome.alarms.create('sfAdlManual_' + id, { when: Date.now() + 200 }); } catch (e) {}
+    try { sendResponse({ started: true }); } catch (e) {}
+    return true;
+  }
+  if (msg.type === 'sf-adlist-check') {
+    const id = String(msg.id || '');
+    (async () => {
+      try {
+        if (!ADL_LISTS[id] || !(await communityListsOn())) {
+          try { sendResponse({ listed: false, count: 0, updated: 0, disabled: true }); } catch (_) {}
+          return;
+        }
+        const st = _adl[id];
+        if (!st.bits) await loadAdl(id);
+        if (!st.meta) {
+          try {
+            st.meta = await new Promise((res) => chrome.storage.local.get({ [ADL_LISTS[id].metaKey]: { updated: 0 } }, (o) => res(o[ADL_LISTS[id].metaKey] || { updated: 0 })));
+          } catch (e) {}
+        }
+        const listed = adlHit(id, (msg.hostname || '').toLowerCase());
+        try { sendResponse({ listed: listed, count: st.count, updated: ((st.meta && st.meta.updated) || 0) }); } catch (e) {}
       } catch (e) { try { sendResponse({ listed: false, count: 0, updated: 0 }); } catch (_) {} }
     })();
     return true;

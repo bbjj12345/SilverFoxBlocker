@@ -77,8 +77,11 @@ const DEFAULTS = {
   openphish: { enabled: false, lastUpdated: 0 },
   // PhishDestroy 本地钓鱼黑名单：第二个静态名单源（约 14 万条域名），机制与 OpenPhish 完全一致
   phishdestroy: { enabled: false, lastUpdated: 0 },
-  // HaGeZi's Threat Intelligence Feeds：第三个静态名单源（约 181 万条），本地以哈希索引保存
+  // HaGeZi's Threat Intelligence Feeds：第三个静态名单源，本地以布隆位图保存
   hagezi: { enabled: false, lastUpdated: 0, variant: 'full' },
+  // 第四 / 第五个静态名单源（AdBlock 语法，只收录整站域名规则）
+  badware: { enabled: false, lastUpdated: 0 },
+  dsam: { enabled: false, lastUpdated: 0 },
   customTheme: null,    // 用户导入的自定义主题：{ name, theme:{ bgPrimary,bgSecondary,accent,accent2,text,surface,border,material,sidebar,control } }
   reduceMotion: false,  // 减弱动画效果：关闭全部过渡与动画
   layout: 'new',        // 设置页布局：'new'(新版 8 项分组导航，默认) | 'old'(旧版 11 项平铺导航)
@@ -113,7 +116,20 @@ function hasStorage() { return (typeof chrome !== 'undefined') && chrome.storage
 function hasStorageLocal() { return (typeof chrome !== 'undefined') && chrome.storage && chrome.storage.local; }
 function getSettings() {
   if (!hasStorage()) return Promise.resolve(Object.assign({}, DEFAULTS));
-  return new Promise((resolve) => chrome.storage.sync.get(DEFAULTS, (s) => resolve(Object.assign({}, DEFAULTS, s || {}))));
+  return new Promise((resolve) => chrome.storage.sync.get(DEFAULTS, (s) => {
+    const merged = Object.assign({}, DEFAULTS, s || {});
+    // ★ 2026-11-12：自定义名单以 storage.local 为准（sync 单键 8KB ≈ 550 条，超出后保存静默失败）。
+    //   SFListStore 会在 local 缺失时先把 sync 里的旧名单迁移过来，老用户打开设置页即可无感升级。
+    try {
+      if (typeof SFListStore !== 'undefined' && SFListStore.read) {
+        return SFListStore.read((lists) => {
+          Object.keys(lists || {}).forEach((k) => { merged[k] = lists[k]; });
+          resolve(merged);
+        });
+      }
+    } catch (e) {}
+    resolve(merged);
+  }));
 }
 
 // ===== 旧版明文 VirusTotal Key → AES-GCM 密文自动迁移 =====
@@ -785,7 +801,7 @@ function updateHaGeZi(statusEl) {
   try {
     const btn = $('hageziUpdateBtn');
     if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
-    if (statusEl) statusEl.textContent = '正在抓取 HaGeZi TIF 名单（约 181 万条、36MB，首次约需 10~60 秒）…';
+    if (statusEl) statusEl.textContent = '正在抓取 HaGeZi TIF 名单（首次可能需要 10~60 秒）…';
     chrome.runtime.sendMessage({ type: 'sf-hagezi-update' }, function () {
       // 仅收到后台 ACK；真正结果在 sf-hagezi-updated 推送里
       if (chrome.runtime.lastError) {
@@ -884,7 +900,114 @@ chrome.runtime.onMessage.addListener(function (msg) {
       statusEl.textContent = '已有更新任务正在进行，请等它结束（状态行会实时显示下载进度）';
       statusEl.style.color = '';
     } else if (r.skipped) {
-      statusEl.textContent = '更新跳过（24 小时内已成功更新，或距上次失败不足 30 分钟）';
+      statusEl.textContent = '更新跳过（24 小时内已成功更新，或距上次失败不足 30 分钟）' + (r.count ? '（共 ' + r.count + ' 条域名）' : '');
+      statusEl.style.color = '';
+    } else {
+      statusEl.textContent = '更新失败（全部源均不可达，已保留本地旧名单）：' + (r.error || '未知错误');
+      statusEl.style.color = '#c0392b';
+    }
+  } catch (e) {}
+});
+
+// ===== 社区 AdBlock 风险名单（uBlock Origin - Badware risks / Dandelion Sprout）=====
+// 两份名单共用一套 UI 逻辑：开关 + 立即更新 + 状态行，靠 id 分派到各自的 DOM 节点。
+const ADL_UI = {
+  badware: { name: 'uBlock Origin - Badware risks', btn: 'badwareUpdateBtn', status: 'badwareStatus', metaKey: 'sfUBlockBadwareMeta' },
+  dsam: { name: "Dandelion Sprout's Anti-Malware List", btn: 'dsamUpdateBtn', status: 'dsamStatus', metaKey: 'sfDandelionAntiMalwareMeta' }
+};
+
+function adlFmtTime(ts) {
+  const d = new Date(ts || Date.now());
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') +
+    ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+function adlSourceNote(s) {
+  if (!s) return '';
+  if (s.indexOf('gh-proxy') >= 0) return '，源：GitHub 反代';
+  if (s.indexOf('jsdelivr') >= 0) return '，源：jsDelivr 镜像';
+  if (s.indexOf('raw.githubusercontent') >= 0) return '，源：GitHub raw';
+  return '，源：官方';
+}
+// 状态行：读 meta 回填（含最近一次成功抓取解析出的域名条数；随上游增删而变，仅供参考）
+function refreshAdlStatus(id) {
+  const cfg = ADL_UI[id];
+  const el = cfg && $(cfg.status);
+  if (!el) return;
+  try {
+    chrome.storage.local.get({ [cfg.metaKey]: { updated: 0, error: '' } }, function (r) {
+      const m = (r && r[cfg.metaKey]) || {};
+      if (m.updated) {
+        el.textContent = '本地名单已更新：' + adlFmtTime(m.updated) + (m.count ? '（共 ' + m.count + ' 条域名）' : '') + (m.error ? '；上次更新出错：' + m.error : '');
+        el.style.color = m.error ? '#c0392b' : '';
+      } else if (m.error) {
+        el.textContent = '本地名单尚未更新；上次更新失败：' + m.error;
+        el.style.color = '#c0392b';
+      } else {
+        el.textContent = '本地名单尚未更新（启用后点击「立即更新」抓取，或等待每日自动更新）';
+        el.style.color = '';
+      }
+    });
+  } catch (e) {}
+}
+
+function updateAdl(id, statusEl) {
+  const cfg = ADL_UI[id];
+  if (!cfg) return;
+  const btn = $(cfg.btn);
+  if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+  if (statusEl) { statusEl.style.color = ''; statusEl.textContent = '正在连接下载源…'; }
+  try {
+    chrome.runtime.sendMessage({ type: 'sf-adlist-update', id: id }, function () {
+      if (chrome.runtime.lastError) {
+        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+        if (statusEl) {
+          statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载）';
+          statusEl.style.color = '#c0392b';
+        }
+      }
+    });
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+    if (statusEl) { statusEl.textContent = '更新请求发送失败：' + ((e && e.message) || e); statusEl.style.color = '#c0392b'; }
+  }
+}
+
+// 下载进度（两份名单都很小，通常 1~2 秒完成，这里只给「已接收多少」）
+chrome.runtime.onMessage.addListener(function (msg) {
+  try {
+    if (!msg || msg.type !== 'sf-adlist-progress') return;
+    const cfg = ADL_UI[msg.id];
+    if (!cfg) return;
+    const statusEl = $(cfg.status);
+    const btn = $(cfg.btn);
+    if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+    if (!statusEl) return;
+    const got = msg.received || 0;
+    if (msg.stage === 'done') return;              // 完成由 sf-adlist-updated 统一渲染
+    statusEl.textContent = got ? ('正在下载名单：已接收 ' + (got / 1024).toFixed(1) + ' KB') : '正在连接下载源…';
+    statusEl.style.color = '';
+  } catch (e) {}
+});
+
+chrome.runtime.onMessage.addListener(function (msg) {
+  try {
+    if (!msg || msg.type !== 'sf-adlist-updated') return;
+    const id = msg.id;
+    const cfg = ADL_UI[id];
+    if (!cfg) return;
+    const r = msg.result || {};
+    const btn = $(cfg.btn);
+    const statusEl = $(cfg.status);
+    if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+    if (!statusEl) return;
+    if (r.ok) {
+      statusEl.textContent = '更新成功：' + adlFmtTime(Date.now()) + '（共 ' + (r.count || 0) + ' 条域名' + adlSourceNote(r.source) + '）';
+      statusEl.style.color = '';
+    } else if (r.busy) {
+      statusEl.textContent = '已有更新任务正在进行，请稍候';
+      statusEl.style.color = '';
+    } else if (r.skipped) {
+      statusEl.textContent = '更新跳过（24 小时内已成功更新，或距上次失败不足 30 分钟）' + (r.count ? '（共 ' + r.count + ' 条域名）' : '');
       statusEl.style.color = '';
     } else {
       statusEl.textContent = '更新失败（全部源均不可达，已保留本地旧名单）：' + (r.error || '未知错误');
@@ -1014,7 +1137,7 @@ function bindControls(settings) {
     });
   }
 
-  // 社区维护的本地黑名单：主开关默认不勾选；勾选后才展开三个名单子项（各自还有独立开关）
+  // 社区维护的本地黑名单：主开关默认不勾选；勾选后才展开五个名单子项（各自还有独立开关）
   const clEnabled = $('communityListsEnabled');
   if (clEnabled) {
     const clProviders = $('communityProviders');
@@ -1084,7 +1207,7 @@ function bindControls(settings) {
       if (m.updated) {
         const d = new Date(m.updated);
         const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-        hgStatus.textContent = '本地名单已更新：' + ds + '（共 ' + (m.count || 0) + ' 条域名）' + (m.error ? '；上次更新出错：' + m.error : '');
+        hgStatus.textContent = '本地名单已更新：' + ds + (m.count ? '（共 ' + m.count + ' 条域名）' : '') + (m.error ? '；上次更新出错：' + m.error : '');
         hgStatus.style.color = m.error ? '#c0392b' : '';
       } else if (m.error) {
         hgStatus.textContent = '本地名单尚未更新；上次更新失败：' + m.error;
@@ -1095,6 +1218,17 @@ function bindControls(settings) {
     });
   } catch (e) {}
   if (hgUpdateBtn) hgUpdateBtn.addEventListener('click', function () { updateHaGeZi(hgStatus); });
+
+  // uBlock Origin - Badware risks / Dandelion Sprout：与上面三条同构的「开关 + 立即更新 + 状态」
+  ['badware', 'dsam'].forEach(function (id) {
+    const cfg = ADL_UI[id];
+    const el = $(id + 'Enabled');
+    if (el) el.checked = !!(settings[id] && settings[id].enabled);
+    const btn = $(cfg.btn);
+    const status = $(cfg.status);
+    if (btn) btn.addEventListener('click', function () { updateAdl(id, status); });
+    refreshAdlStatus(id);
+  });
 
   // ===== 灵敏度（low/medium/high）控件已不存在 —— 2026-11-11 注释保留，便于日后恢复 =====
   //   实情：options.html 里已经没有 id="sensitivity" 的控件（防护总览页重构时被删除），
@@ -1455,6 +1589,8 @@ async function collectSettings() {
       enabled: ($('hageziEnabled') ? $('hageziEnabled').checked : false),
       variant: ($('hageziVariant') && $('hageziVariant').value === 'medium') ? 'medium' : 'full'
     },
+    badware: { enabled: ($('badwareEnabled') ? $('badwareEnabled').checked : false) },
+    dsam: { enabled: ($('dsamEnabled') ? $('dsamEnabled').checked : false) },
     enabled,
     weights,
     allowlist: splitLines($('allowlist').value),
@@ -1551,7 +1687,9 @@ function bindRulesIO() {
   const impFile = $('rulesImportFile');
   if (expBtn) expBtn.addEventListener('click', () => {
     if (!hasStorage()) return;
-    chrome.storage.sync.get({ allowlist: [], customKeywords: [], customBadDomains: [] }, (s) => {
+    // ★ 2026-11-12：走 getSettings() 而不是直接 sync.get —— 名单已改存 storage.local，
+    //   只读 sync 会导出「升级前的那份旧名单」（甚至空数组）。
+    getSettings().then((s) => {
       const payload = { app: 'silverfox-guard', type: 'rules', version: '1.5.3', exportedAt: Date.now(),
         allowlist: s.allowlist || [], customKeywords: s.customKeywords || [], customBadDomains: s.customBadDomains || [] };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1577,14 +1715,27 @@ function bindRulesIO() {
           if (Array.isArray(data.customBadDomains)) patch.customBadDomains = data.customBadDomains;
           if (!Object.keys(patch).length) { alert('文件中没有可导入的白名单 / 规则数据。'); return; }
           if (!confirm('导入将覆盖当前「自定义信任域名白名单 / 自定义风险关键词 / 自定义恶意域名黑名单」三项内容，确定继续？')) return;
-          if (hasStorage()) chrome.storage.sync.set(patch, () => {
-            if (window.__sfSettings) Object.assign(window.__sfSettings, patch);
-            // 同步回填到对应文本框（若当前在编辑态）
-            if ($('allowlist') && Array.isArray(patch.allowlist)) $('allowlist').value = patch.allowlist.join('\n');
-            if ($('customKeywords') && Array.isArray(patch.customKeywords)) $('customKeywords').value = patch.customKeywords.join('\n');
-            if ($('customBadDomains') && Array.isArray(patch.customBadDomains)) $('customBadDomains').value = patch.customBadDomains.join('\n');
-            showToast();
-          });
+          // ★ 2026-11-12：导入同样要把域名名单写进 storage.local（sync 单键 8KB 会截断大名单）
+          if (hasStorage()) {
+            const all = Object.assign({}, patch);
+            const listPatch = {};
+            if (typeof SFListStore !== 'undefined' && SFListStore.write) {
+              SFListStore.KEYS.forEach(function (k) {
+                if (Array.isArray(all[k])) { listPatch[k] = all[k]; delete patch[k]; }
+              });
+            }
+            const after = function () {
+              if (window.__sfSettings) Object.assign(window.__sfSettings, all);
+              // 同步回填到对应文本框（若当前在编辑态）
+              if ($('allowlist') && Array.isArray(all.allowlist)) $('allowlist').value = all.allowlist.join('\n');
+              if ($('customKeywords') && Array.isArray(patch.customKeywords)) $('customKeywords').value = patch.customKeywords.join('\n');
+              if ($('customBadDomains') && Array.isArray(all.customBadDomains)) $('customBadDomains').value = all.customBadDomains.join('\n');
+              showToast();
+            };
+            const writeSync = function () { chrome.storage.sync.set(patch, after); };
+            if (Object.keys(listPatch).length) SFListStore.write(listPatch, function () { writeSync(); });
+            else writeSync();
+          }
         } catch (e) {
           alert('文件解析失败，请确认是 SilverFoxBlocker 导出的 JSON 配置。');
         } finally {
@@ -1953,14 +2104,28 @@ async function init() {
         return;
       }
       if (hasStorage()) {
-        chrome.storage.sync.set(patch, () => {
-          if (chrome.runtime.lastError) {
-            console.error('[SilverFoxBlocker][设置] sync.set 失败：', chrome.runtime.lastError);
-            alert('设置保存失败：' + (chrome.runtime.lastError && chrome.runtime.lastError.message || '未知错误') + '（常见于 sync 配额超限）');
+        // ★ 2026-11-12：域名名单（allowlist / customBadDomains）改存 storage.local ——
+        //   sync 的单键上限 8192 字节（≈550 个域名），超出后 set 只会置 lastError，用户看到的是
+        //   「保存成功、名单却缺了后半截」。其余设置仍走 sync，保持跨设备同步。
+        const done = function (err) {
+          if (err) {
+            console.error('[SilverFoxBlocker][设置] 保存失败：', err);
+            alert('设置保存失败：' + (err.message || err) + '（域名名单已改存本地，不受 sync 配额限制；此项多半是其它设置超限）');
           } else {
             showToast(); loadStats();
           }
-        });
+        };
+        const listPatch = {};
+        if (typeof SFListStore !== 'undefined' && SFListStore.write) {
+          SFListStore.KEYS.forEach(function (k) {
+            if (Array.isArray(patch[k])) { listPatch[k] = patch[k]; delete patch[k]; }
+          });
+        }
+        const writeSync = function () {
+          chrome.storage.sync.set(patch, function () { done(chrome.runtime.lastError); });
+        };
+        if (Object.keys(listPatch).length) SFListStore.write(listPatch, function (err) { if (err) return done(err); writeSync(); });
+        else writeSync();
       } else {
         showToast();
       }
@@ -2472,6 +2637,7 @@ async function sfFetchLatestRelease(onStage) {
  *
  * 语义是「镜像覆盖」不是「合并追加」：
  *   每次拉取成功后，用云端这一份**整体替换**上一份快照，本地 sfCloudWhite / sfCloudBlack
+ *   （以及白名单附带的官网补录 sfCloudCorrect）
  *   始终等于云端最新内容。这样云端删掉的条目（误报反馈后的移除）才能真正生效——
  *   并集语义下删掉的条目会永久留在本地，状态行的条数也只会单调递增。
  *   云端的空响应已在 fetchCloudList() 里被拦下（抛错，不进入写入路径），
@@ -2495,6 +2661,10 @@ const SF_CLOUD_API_KEY = 'R6fNcSm^$Z5d6s';
 // 与 analyzer / content / background 三处约定的存储键，改名要同步改那三处
 const SF_CLOUD_KEY_WHITE = 'sfCloudWhite';
 const SF_CLOUD_KEY_BLACK = 'sfCloudBlack';
+// ★ 2026-11-12：云端白名单可附带「品牌词 → 正确官网」补录（whitelist.json 的 correct_sites），
+//   供拦截浮层的「访问正确的页面」按钮使用。与黑白名单分开存：它不参与任何放行/拦截判定，
+//   结构也不同（对象数组，不是字符串数组），混在 sfCloudWhite 里会把 analyze 端的名单洗坏。
+const SF_CLOUD_KEY_CORRECT = 'sfCloudCorrect';
 const SF_CLOUD_META_KEY = 'sfCloudListMeta';
 
 // ---------------------------------------------------------------------------
@@ -2581,8 +2751,10 @@ const CLOUD_DROP_REASON = {
   'bad-syntax': '无法编译为正则',
   // 2026-11-11：白名单也允许通配，本原因码仅在显式开启「严格模式」(allowWild:false) 时才会出现
   'wild-not-allowed': '该名单当前不允许通配符',
-  'wild-over-limit': '超出 200 条通配上限',
-  'path-over-limit': '超出 500 条路径条目上限'
+  // 2026-11-12：通配 / 路径的条数上限已取消，这两个原因码不会再产生；
+  //   保留映射是为了兼容升级前已落盘的历史快照（旧 dropped 明细里可能仍带这两个 code）。
+  'wild-over-limit': '超出 200 条通配上限（该限制已取消）',
+  'path-over-limit': '超出 500 条路径条目上限（该限制已取消）'
 };
 function dropReasonText(code) { return CLOUD_DROP_REASON[code] || code || '无效'; }
 function dropReasonBrief(dropped) {
@@ -2647,6 +2819,40 @@ function normalizeCloudListEx(json, opts) {
 // 旧签名（只取条目），保留给其它调用点
 function normalizeCloudList(json, opts) { return normalizeCloudListEx(json, opts).list; }
 
+// 云端「品牌词 → 正确官网」补录的清洗。与域名名单**不共用** sanitizeCloudDomains：
+//   这里每个条目是一个对象（产品名 / 品牌词 / 官网），官网必须是确定的主机名（不收通配），
+//   品牌词必须是 2 字符以上的 ASCII 片段（收 `*` `?` 只会永不命中，属于静默失效）。
+// 兼容三种写法：{product,brands:[],domain} / 简写 {p,b,d} / 字符串 '域名|品牌词 品牌词'。
+function normalizeCloudCorrect(arr) {
+  const out = [];
+  if (!Array.isArray(arr)) return out;
+  const seen = new Set();
+  arr.forEach(function (x) {
+    let domain = '', brands = [], product = '';
+    if (typeof x === 'string') {
+      const parts = x.split('|');
+      domain = parts[0] || '';
+      brands = String(parts[1] || '').split(/[\s,]+/);
+    } else if (x && typeof x === 'object') {
+      domain = x.domain || x.d || '';
+      product = x.product || x.p || '';
+      const b = (x.brands != null) ? x.brands : x.b;
+      brands = Array.isArray(b) ? b : String(b || '').split(/[\s,]+/);
+    } else { return; }
+    domain = String(domain).trim().toLowerCase()
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '');
+    if (!domain || domain.indexOf('.') === -1 || /[*?\s/]/.test(domain)) return;
+    const clean = brands.map(function (b) { return String(b == null ? '' : b).trim().toLowerCase(); })
+      .filter(function (b) { return b && b.length >= 2 && !/[*?\s]/.test(b); });
+    if (!clean.length) return;
+    const key = domain + '|' + clean.join(' ');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ product: String(product).slice(0, 60), brands: clean, domain: domain });
+  });
+  return out;
+}
+
 function setCloudStatus(text) {
   const el = $('cloudListStatus');
   if (el) el.textContent = text;
@@ -2657,7 +2863,7 @@ function setCloudStatus(text) {
 // ★ 2026-11-09：条数改为「实际生效条数」，并单独报出被丢弃的条目数。
 //   此前把被丢弃的也算进去（通配超 200 条、白名单写通配、中文域名），
 //   用户看到「已更新 205 条」却只有 200 条生效，属于最坏的静默失败。
-function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source) {
+function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source, correctN) {
   // 通配条目单独点出来：否则用户写完 `*web.cdn-deepseek.com` 只看到"黑名单 1 条"，
   // 无法判断那条到底是被当成普通域名（永不命中）还是被当成规则收录了。
   // 2026-11-09：路径条目（主机名/路径）同理——只对特定链接生效，必须让用户看得见。
@@ -2670,8 +2876,13 @@ function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, 
   let s = '已更新' + (unchanged ? '（无变化）' : '') +
     '，云端黑名单' + b + '条' + tags(bw, pathB) +
     '，云端白名单' + w + '条' + tags(0, pathW);
-  if (ignoredB) s += '；已忽略黑名单 ' + ignoredB + ' 条（格式不合法或超出通配上限）';
-  if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（格式不合法或超出通配上限）';
+  // 旧：if (ignoredB) s += '；已忽略黑名单 ' + ignoredB + ' 条（格式不合法或超出通配上限）';
+  // 旧：if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（格式不合法或超出通配上限）';
+  // 2026-11-12：条数上限取消后「被忽略」只剩格式问题，文案不再提上限。
+  if (ignoredB) s += '；已忽略黑名单 ' + ignoredB + ' 条（格式不合法）';
+  if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（格式不合法）';
+  // 官网补录单独报一条：它既不是域名也不是路径，混进黑白条数里会让人以为名单凭空变多
+  if (correctN) s += '；云端官网映射 ' + correctN + ' 条';
   // 只有走了备用通道才标注来源：默认直连时不必让用户看到技术细节
   if (source && source !== '云端接口') s += '（数据源：' + source + '）';
   return s;
@@ -2731,14 +2942,16 @@ function refreshCloudListStatus() {
   const dropRow = $('cloudDropRow');
   const hideDrops = function () { if (dropRow) dropRow.style.display = 'none'; };
   if (!hasStorageLocal()) { el.textContent = '未同步（当前环境无扩展存储）'; hideDrops(); return; }
-  chrome.storage.local.get({ [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_META_KEY]: {} }, (o) => {
+  chrome.storage.local.get({ [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_KEY_CORRECT]: [], [SF_CLOUD_META_KEY]: {} }, (o) => {
     const w = (o[SF_CLOUD_KEY_WHITE] || []).length;
+    // 官网补录条数：老快照没有这个键时退回 0，不影响黑白名单的既有展示
+    const cN = (o[SF_CLOUD_KEY_CORRECT] || []).length;
     const b = (o[SF_CLOUD_KEY_BLACK] || []).length;
     const m = o[SF_CLOUD_META_KEY] || {};
     const t = Math.max((m.white && m.white.updated) || 0, (m.black && m.black.updated) || 0);
     // 两份名单都为空但存在同步元数据 → 云端确实同步过、只是内容为空，
     //   报「未同步」会让用户以为没生效（尤其此时还可能有被忽略的条目要展示）。
-    if (!w && !b && !t) { el.textContent = '未同步'; hideDrops(); return; }
+    if (!w && !b && !cN && !t) { el.textContent = '未同步'; hideDrops(); return; }
     const mb = m.black || {};
     const mw = m.white || {};
     // 通配数 / 忽略数优先取同步时记下的元数据；老快照没有这两个字段时回退到现场统计。
@@ -2756,7 +2969,8 @@ function refreshCloudListStatus() {
       (mw.paths != null ? mw.paths : countPathEntries(o[SF_CLOUD_KEY_WHITE])),
       // 刷新后也要看得出上次是走备用通道拿到的（否则用户以为一直直连成功）
       (mw.source && mw.source !== '云端接口') ? mw.source
-        : ((mb.source && mb.source !== '云端接口') ? mb.source : '')
+        : ((mb.source && mb.source !== '云端接口') ? mb.source : ''),
+      (mw.correct != null ? mw.correct : cN)
     );
     // 未生效条目的明细（原文 + 原因）直接列在下面：此前只在 console 里，用户看不到
     // 旧：白名单里含 * / ? 的条目一律列为「不会生效」的杂项；2026-11-11 起白名单也支持通配，
@@ -2899,6 +3113,9 @@ async function fetchCloudList(type) {
           throw err;
         }
       }
+      // ★ 2026-11-12：白名单 JSON 除 domains 外还可带 correct_sites（品牌词 → 正确官网），
+      //   两份数组互不影响：extractCloudArray 只认 domains，这里单独抽官网补录。
+      const correct = isWhite ? normalizeCloudCorrect(json && json.correct_sites) : [];
       const raws = extractCloudArray(json);
       // 结构都认不出来（例如 Worker 返回了 {error:...}）→ 换通道，别写空名单
       if (!raws) throw new Error('返回的结构无法识别（找不到域名数组）');
@@ -2915,6 +3132,7 @@ async function fetchCloudList(type) {
       }
       // 原本就是空数组 → 允许（例如白名单暂时清空），状态行会显示 0 条，不会被误解
       r.source = c.name;
+      r.correct = correct;
       // Worker 会在响应头里注明这份名单最终取自 GitHub 还是 Gitee 镜像，
       // 转发到状态行（「数据源：云端接口·Gitee」），否则源站切换了用户完全看不出来。
       if (c.name === '云端接口') {
@@ -2962,7 +3180,7 @@ async function updateCloudLists(btn) {
     const black = lists[1];
     const cur = await new Promise((resolve) => {
       chrome.storage.local.get({
-        [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_META_KEY]: {}
+        [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_KEY_CORRECT]: [], [SF_CLOUD_META_KEY]: {}
       }, resolve);
     });
     // 镜像覆盖：云端这份直接替换旧快照（不是并集），云端删掉的条目才会真正失效
@@ -2983,6 +3201,9 @@ async function updateCloudLists(btn) {
     };
     const sameW = sameList(cur[SF_CLOUD_KEY_WHITE], white.list);
     const sameB = sameList(cur[SF_CLOUD_KEY_BLACK], black.list);
+    // 官网补录是对象数组，sameList 只比字符串；用「序列化后逐字比较」等价实现，
+    //   顺序也算变化（云端重排同样没必要写盘，与黑白名单口径一致）。
+    const sameC = JSON.stringify(cur[SF_CLOUD_KEY_CORRECT] || []) === JSON.stringify(white.correct || []);
     const dw = diff(cur[SF_CLOUD_KEY_WHITE], white.list);
     const db = diff(cur[SF_CLOUD_KEY_BLACK], black.list);
     const now = Date.now();
@@ -2995,6 +3216,7 @@ async function updateCloudLists(btn) {
       updated: now, count: white.list.length, pulled: white.list.length + white.dropped.length,
       added: dw.added, removed: dw.removed, wild: white.wild.length, dropped: white.dropped.length,
       paths: white.paths || 0, drops: white.dropped.slice(0, 40),
+      correct: (white.correct || []).length,
       source: white.source || '云端接口'
     };
     meta.black = {
@@ -3007,6 +3229,8 @@ async function updateCloudLists(btn) {
     //   一份干净的名单也跟着抖一下。
     const payload = { [SF_CLOUD_META_KEY]: meta };
     if (!sameW) payload[SF_CLOUD_KEY_WHITE] = white.list;
+    // 官网补录与白名单同源同批，但独立成键：任何一份名单单独变化都不影响另一份的落盘判断
+    if (!sameC) payload[SF_CLOUD_KEY_CORRECT] = white.correct || [];
     if (!sameB) payload[SF_CLOUD_KEY_BLACK] = black.list;
     await new Promise((resolve) => {
       chrome.storage.local.set(payload, resolve);
@@ -3024,7 +3248,8 @@ async function updateCloudLists(btn) {
       white.list.length, black.list.length, black.wild.length,
       white.dropped.length, black.dropped.length, sameW && sameB,
       black.paths || 0, white.paths || 0,    // 形参顺序：pathB, pathW
-      srcNote
+      srcNote,
+      (white.correct || []).length
     ));
     console.log('[云端名单] 黑', black.list.length, '条（通配', black.wild.length,
       '/ 忽略', black.dropped.length, '；新增', db.added, '/ 移除', db.removed,

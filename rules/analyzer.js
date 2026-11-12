@@ -68,13 +68,57 @@
   //   再因「不足两个标签」被静默丢弃——云端名单 2026-11-10 就踩过这个坑（见 _splitHostPath 注释）。
   //   `*` 同理：`String.prototype.split('*')`、`.replace(/[*?]/g, '')` 这类「清洗」都会毁掉模式本身。
   //   另：条目只接受小写化与首尾空白裁剪，**不做**任何其它规范化（尾点、连续点等由编译期护栏挡掉）。
-  const BUILTIN_WILD_MAX = 400;    // 每条内置名单的通配上限：防止误把大表塞成通配后拖慢所有页面
-  function _splitBuiltinList(list, wmax) {
+  // 旧：const BUILTIN_WILD_MAX = 400;    // 每条内置名单的通配上限：防止误把大表塞成通配后拖慢所有页面
+  // ★ 2026-11-12：取消通配条数的硬上限（内置 / 云端 / 自定义一律不再截断）。
+  //   去掉上限的前提是「单次查找不再随条数线性增长」，所以通配改成按尾部标签分桶：
+  //   同一主机名只跑同桶内的几条正则，总条数只影响内存，不影响单页耗时。
+  //   分桶键必须是「模式命中时一定出现在主机名尾部」的字面量：
+  //     `*bot.qpefh.com`  → `qpefh.com`
+  //     `abi0?.8msg8.com` → `8msg8.com`
+  //     倒数第二级也带通配（`foo.*.com`）→ 退化成 `.<TLD>` 桶（仍远小于全表）。
+  //   TLD 位禁通配由 _compileBadWild 把关，最后一级永远是字面量，桶键必然存在。
+  function _wildBucketKey(pat) {
+    const labels = String(pat).split('.');
+    const tld = labels[labels.length - 1] || '';
+    const second = labels.length >= 2 ? labels[labels.length - 2] : '';
+    if (second && second.indexOf('*') === -1 && second.indexOf('?') === -1) return second + '.' + tld;
+    return '.' + tld;
+  }
+  // 通配容器：items 保持原顺序（诊断/导出要用），idx 是桶索引（判定用）
+  function _wildBag() { return { items: [], idx: new Map() }; }
+  function _wildBagAdd(bag, src, re) {
+    const item = { src: src, re: re };
+    bag.items.push(item);
+    const key = _wildBucketKey(src);
+    let arr = bag.idx.get(key);
+    if (!arr) { arr = []; bag.idx.set(key, arr); }
+    arr.push(item);
+  }
+  function _wildBagClear(bag) { bag.items.length = 0; bag.idx.clear(); }
+  function _wildBagScan(arr, h) {
+    for (let i = 0; i < arr.length; i++) { if (arr[i].re.test(h)) return true; }
+    return false;
+  }
+  function _wildBagHit(bag, h) {
+    if (!bag || !bag.idx || !bag.idx.size) return false;
+    const d1 = h.lastIndexOf('.');
+    if (d1 === -1) return false;
+    const b1 = bag.idx.get('.' + h.slice(d1 + 1));   // 退化桶（倒数第二级带通配）
+    if (b1 && _wildBagScan(b1, h)) return true;
+    const d2 = h.lastIndexOf('.', d1 - 1);
+    if (d2 !== -1) {
+      const b2 = bag.idx.get(h.slice(d2 + 1));       // 常规桶：尾部两级标签
+      if (b2 && _wildBagScan(b2, h)) return true;
+    }
+    return false;
+  }
+
+  function _splitBuiltinList(list /*, wmax —— 已取消上限，形参保留仅为兼容旧调用签名 */) {
     // exact — 精确/后缀条目（进 Set，走 _suffixHit）
-    // wild  — [{ src, re }]（仅精确未命中时线性扫描）
+    // wild  — 通配桶（{ items, idx }，仅精确未命中时按桶扫描）
     // skipped — 被护栏拒绝的条目（内置名单是发版数据，保留下来供测试脚本核对，不暴露到 UI）
     const exact = new Set();
-    const wild = [];
+    const wild = _wildBag();
     const skipped = [];
     const src = Array.isArray(list) ? list : [];
     for (let i = 0; i < src.length; i++) {
@@ -84,14 +128,17 @@
       const c = _compileBadWild(raw);
       if (c.kind === 'suffix') { exact.add(c.value); continue; }   // `*.foo.com` → foo.com
       if (c.kind !== 'wild') { skipped.push(raw); continue; }
-      if (wild.length >= (wmax || BUILTIN_WILD_MAX)) { skipped.push(raw); continue; }
-      wild.push({ src: c.value, re: c.re });
+      // 旧：if (wild.length >= (wmax || BUILTIN_WILD_MAX)) { skipped.push(raw); continue; }
+      //   ↑ 不再按条数截断：被丢掉的条目会表现为「名单里写了却不生效」，属于最坏的静默失效。
+      _wildBagAdd(wild, c.value, c.re);
     }
     return { exact: exact, wild: wild, skipped: skipped };
   }
   // 通配命中（只对单个主机名，不带 www. 前缀的归一化由调用方保证）
   function _wildListHit(wild, h) {
-    if (!wild || !wild.length) return false;
+    if (!wild) return false;
+    if (wild.idx) return _wildBagHit(wild, h);              // 新：分桶
+    if (!wild.length) return false;                          // 旧形态（[{src,re}] 数组）兜底
     for (let i = 0; i < wild.length; i++) { if (wild[i].re.test(h)) return true; }
     return false;
   }
@@ -99,7 +146,8 @@
   // ============ 官方域名快速索引（精确 + 子域匹配 + 内置通配）============
   // 旧写法（仅精确/后缀，无通配）：
   //   const OFFICIAL_SET = new Set((IOCS.OFFICIAL_DOMAINS || []).map(d => d.toLowerCase()));
-  const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS, BUILTIN_WILD_MAX);
+  // 旧：const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS, BUILTIN_WILD_MAX);
+  const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS);
   const OFFICIAL_SET = _OFFICIAL_BUILTIN.exact;
   const OFFICIAL_WILD = _OFFICIAL_BUILTIN.wild;
   // 只给「派生品牌词 / 通用词 / 品牌后缀」这几个静态索引用的精确条目快照。
@@ -178,7 +226,8 @@
   //   const BAD_SET = new Set((IOCS.KNOWN_BAD_DOMAINS || []).map(d => d.toLowerCase()));
   // 2026-11-11：改走 _splitBuiltinList —— 含 * ? 的条目编译成正则（如 `*bot.*.qpefh.com`），
   //   精确条目行为完全不变。语义与云端黑名单通配一致，见上方「内置名单通配符分层」注释。
-  const _BAD_BUILTIN = _splitBuiltinList(IOCS.KNOWN_BAD_DOMAINS, BUILTIN_WILD_MAX);
+  // 旧：const _BAD_BUILTIN = _splitBuiltinList(IOCS.KNOWN_BAD_DOMAINS, BUILTIN_WILD_MAX);
+  const _BAD_BUILTIN = _splitBuiltinList(IOCS.KNOWN_BAD_DOMAINS);
   const BAD_SET = _BAD_BUILTIN.exact;
   const BAD_WILD = _BAD_BUILTIN.wild;
   const _badCache = new Map();
@@ -199,8 +248,12 @@
   //   · 前导 `*.` 视为后缀条目：`*.foo.com` 注册时归一成 `foo.com`，即覆盖**全部子域**
   //     （后缀匹配本身已覆盖子域），避免「通配只吃一层」与用户直觉冲突。
   //   · 通配**不**作用于 TLD 位：`*.com`、`foo.*`、裸 `*` 一律拒绝，防止一条规则拦掉半个互联网。
-  const EXTRA_BAD_WILD = [];       // [{ src, re }]
-  const WILD_MAX = 200;            // 上限：每遇到一个新域名都要跑一遍正则（_badCache 摊平重复）
+  // 旧：const EXTRA_BAD_WILD = [];       // [{ src, re }]
+  // 旧：const WILD_MAX = 200;            // 上限：每遇到一个新域名都要跑一遍正则（_badCache 摊平重复）
+  // ★ 2026-11-12：改为桶索引容器并取消 200 条上限（见 _wildBag 注释）。
+  const EXTRA_BAD_WILD = _wildBag();
+  // WILD_MAX 不再参与任何截断；保留常量名会让人以为还有上限，因此一并注释掉。
+  // const WILD_MAX = 200;
   let _wildBadSkipped = [];        // 被护栏拒绝的条目，供诊断
 
   // 逐个字符转义，只保留 * 与 ? 为通配。
@@ -275,17 +328,15 @@
     const c = _compileBadWild(v);
     if (!c.kind) { skipped.push(v); return ''; }
     if (c.kind === 'suffix') { EXTRA_BAD_SET.add(c.value); return 'suffix'; }
-    if (EXTRA_BAD_WILD.length >= WILD_MAX) { skipped.push(v); return ''; }
-    EXTRA_BAD_WILD.push({ src: c.value, re: c.re });
+    // 旧：if (EXTRA_BAD_WILD.length >= WILD_MAX) { skipped.push(v); return ''; }
+    // 旧：EXTRA_BAD_WILD.push({ src: c.value, re: c.re });
+    _wildBagAdd(EXTRA_BAD_WILD, c.value, c.re);
     return 'wild';
   }
 
   function _wildBadHit(h) {
-    if (!EXTRA_BAD_WILD.length) return false;
-    for (let i = 0; i < EXTRA_BAD_WILD.length; i++) {
-      if (EXTRA_BAD_WILD[i].re.test(h)) return true;
-    }
-    return false;
+    // 旧：if (!EXTRA_BAD_WILD.length) return false; + for 全表线性扫
+    return _wildBagHit(EXTRA_BAD_WILD, h);
   }
 
   function isKnownBad(hostname) {
@@ -406,7 +457,8 @@
       if (ex.wild) {
         const c = _compileBadWild(ex.host);
         if (!c.kind) { dropped.push({ entry: ex.value, reason: c.reason || 'wild-invalid' }); continue; }
-        if (wild.length >= WILD_MAX) { dropped.push({ entry: ex.value, reason: 'wild-over-limit' }); continue; }
+        // 旧：if (wild.length >= WILD_MAX) { dropped.push({ entry: ex.value, reason: 'wild-over-limit' }); continue; }
+        //   ↑ 2026-11-12：取消通配条数上限，只保留「能不能编译」这道格式护栏。
         const stored = c.value + ex.path;   // `*.foo.com/bar` 归一成 `foo.com/bar`
         if (!seen.has(stored)) {
           seen.add(stored);
@@ -417,7 +469,8 @@
         continue;
       }
       if (ex.path) {
-        if (paths >= PATH_MAX) { dropped.push({ entry: ex.value, reason: 'path-over-limit' }); continue; }
+        // 旧：if (paths >= PATH_MAX) { dropped.push({ entry: ex.value, reason: 'path-over-limit' }); continue; }
+        //   ↑ 2026-11-12：取消路径条目 500 条上限（路径表按主机前缀分桶，见 EXTRA_*_PATH 注释）。
         if (!seen.has(ex.value)) { seen.add(ex.value); list.push(ex.value); paths++; }
         continue;
       }
@@ -453,7 +506,9 @@
   //   编译期规则（* 不跨标签、TLD 位禁通配、`*.com` 一律拒绝）已经把风险面收住了；
   //   而实际需求是「整批 CDN 子域 / 随机子域分发页一次放行」，一条条枚举根本追不上。
   //   上限沿用 WILD_MAX，与黑名单一致。
-  const EXTRA_OFFICIAL_WILD = [];   // [{ src, re }]
+  // 旧：const EXTRA_OFFICIAL_WILD = [];   // [{ src, re }]
+  // ★ 2026-11-12：与黑名单同步取消 200 条上限，改用桶索引容器。
+  const EXTRA_OFFICIAL_WILD = _wildBag();
   let _wildOfficialSkipped = [];    // 被护栏拒绝的白名单通配条目（诊断用，与黑名单同构）
   // 云端名单统一清洗：小写、去 www.、剔除含空格/斜杠/协议等明显不是域名的项
   // 带 reason 的版本：设置页要把「为什么这条没生效」讲清楚，只返回 '' 就只能报"无效"。
@@ -495,7 +550,10 @@
   //   （仿冒判定、下载可信源、_memoHost 缓存），改成吃 URL 会污染全部调用点。
   const EXTRA_OFFICIAL_PATH = [];  // [{ src, host, path }]
   const EXTRA_BAD_PATH = [];       // [{ src, host, path, re }]（re 仅主机名带通配时存在）
-  const PATH_MAX = 500;            // 路径条目上限：每条都要线性扫一遍，防止名单把页面判定拖慢
+  // 旧：const PATH_MAX = 500;            // 路径条目上限：每条都要线性扫一遍，防止名单把页面判定拖慢
+  // ★ 2026-11-12：取消 500 条上限。路径表只在「页面 URL / 下载 URL」上各扫一次（不是每个链接都扫），
+  //   几千条的量级代价可忽略；若日后涨到数万条，再给这两张表加「按主机名分桶」的索引即可，
+  //   判定接口（matchCloudBadUrl / matchCloudWhiteUrl）无需改动。
 
   // 「主机名/路径」拆分：容忍带协议的完整链接、带端口、?query / #hash。
   // 返回 { host, path }，path 为 '' 表示整站条目。
@@ -609,10 +667,11 @@
     const skipped = [];
     // 2026-11-11：计数把通配条目也算进来，否则「只新增通配条目」时 after === before，
     //   下面的缓存失效条件会漏掉，导致刚注入的通配白名单在缓存里被判为「非官方」。
-    const before = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_WILD.length + EXTRA_OFFICIAL_PATH.length;
+    const before = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_WILD.items.length + EXTRA_OFFICIAL_PATH.length;
     if (replace) {
       EXTRA_OFFICIAL_SET.clear();
-      EXTRA_OFFICIAL_WILD.length = 0;
+      // 旧：EXTRA_OFFICIAL_WILD.length = 0;
+      _wildBagClear(EXTRA_OFFICIAL_WILD);
       EXTRA_OFFICIAL_PATH.length = 0;
     }
     if (Array.isArray(arr)) {
@@ -624,7 +683,7 @@
           continue;
         }
         if (ex.path) {
-          if (EXTRA_OFFICIAL_PATH.length >= PATH_MAX) { skipped.push(ex.value); continue; }
+          // 旧：if (EXTRA_OFFICIAL_PATH.length >= PATH_MAX) { skipped.push(ex.value); continue; }
           // 路径条目：主机名可带通配 → 预编译正则；不带通配就只存字符串，比对更快
           if (!ex.wild) {
             EXTRA_OFFICIAL_PATH.push({ src: ex.value, host: ex.host, path: ex.path, re: null });
@@ -644,15 +703,17 @@
         if (ex.wild) {
           const c = _compileBadWild(ex.host);
           if (c.kind === 'suffix') { EXTRA_OFFICIAL_SET.add(c.value); continue; }  // `*.foo.com` → foo.com
-          if (c.kind !== 'wild' || EXTRA_OFFICIAL_WILD.length >= WILD_MAX) { skipped.push(ex.value); continue; }
-          EXTRA_OFFICIAL_WILD.push({ src: c.value, re: c.re });
+          // 旧：if (c.kind !== 'wild' || EXTRA_OFFICIAL_WILD.length >= WILD_MAX) { skipped.push(ex.value); continue; }
+          // 旧：EXTRA_OFFICIAL_WILD.push({ src: c.value, re: c.re });
+          if (c.kind !== 'wild') { skipped.push(ex.value); continue; }
+          _wildBagAdd(EXTRA_OFFICIAL_WILD, c.value, c.re);
           continue;
         }
         EXTRA_OFFICIAL_SET.add(ex.host);
       }
     }
     _wildOfficialSkipped = skipped;
-    const after = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_WILD.length + EXTRA_OFFICIAL_PATH.length;
+    const after = EXTRA_OFFICIAL_SET.size + EXTRA_OFFICIAL_WILD.items.length + EXTRA_OFFICIAL_PATH.length;
     const added = replace ? after : after - before;
     // 覆盖模式下即使集合最终为空（云端清空名单）也必须失效缓存，
     // 否则先前按「官方」缓存的域名会一直判为安全。
@@ -667,11 +728,12 @@
   }
   function registerCloudBad(arr, opts) {
     const replace = !!(opts && opts.replace);
-    const before = EXTRA_BAD_SET.size + EXTRA_BAD_WILD.length + EXTRA_BAD_PATH.length;
+    const before = EXTRA_BAD_SET.size + EXTRA_BAD_WILD.items.length + EXTRA_BAD_PATH.length;
     const skipped = [];
     if (replace) {
       EXTRA_BAD_SET.clear();
-      EXTRA_BAD_WILD.length = 0;
+      // 旧：EXTRA_BAD_WILD.length = 0;
+      _wildBagClear(EXTRA_BAD_WILD);
       EXTRA_BAD_PATH.length = 0;
     }
     if (Array.isArray(arr)) {
@@ -684,8 +746,8 @@
           continue;
         }
         if (ex.path) {
+          // 旧：if (EXTRA_BAD_PATH.length >= PATH_MAX) { skipped.push(ex.value); continue; }
           // 路径条目：主机名可能带通配 → 预先编译正则；不带通配就只存字符串，比对更快
-          if (EXTRA_BAD_PATH.length >= PATH_MAX) { skipped.push(ex.value); continue; }
           if (!ex.wild) {
             EXTRA_BAD_PATH.push({ src: ex.value, host: ex.host, path: ex.path, re: null });
             continue;
@@ -707,7 +769,7 @@
       }
     }
     _wildBadSkipped = skipped;
-    const after = EXTRA_BAD_SET.size + EXTRA_BAD_WILD.length + EXTRA_BAD_PATH.length;
+    const after = EXTRA_BAD_SET.size + EXTRA_BAD_WILD.items.length + EXTRA_BAD_PATH.length;
     const added = replace ? after : after - before;
     if (replace || added) _badCache.clear();
     return added;
@@ -716,7 +778,8 @@
   // 诊断用：当前生效的通配条目 / 后缀条目 / 路径条目 / 被护栏拒掉的条目
   function getCloudBadWild() {
     return {
-      active: EXTRA_BAD_WILD.map((x) => x.src),
+      // 旧：active: EXTRA_BAD_WILD.map((x) => x.src),
+      active: EXTRA_BAD_WILD.items.map((x) => x.src),
       suffix: Array.from(EXTRA_BAD_SET),
       paths: EXTRA_BAD_PATH.map((x) => x.src),
       skipped: _wildBadSkipped.slice()
@@ -725,11 +788,183 @@
   // 白名单版诊断（2026-11-11 白名单支持通配后补齐，结构与黑名单一致）
   function getCloudWhiteWild() {
     return {
-      active: EXTRA_OFFICIAL_WILD.map((x) => x.src),
+      // 旧：active: EXTRA_OFFICIAL_WILD.map((x) => x.src),
+      active: EXTRA_OFFICIAL_WILD.items.map((x) => x.src),
       suffix: Array.from(EXTRA_OFFICIAL_SET),
       paths: EXTRA_OFFICIAL_PATH.map((x) => x.src),
       skipped: _wildOfficialSkipped.slice()
     };
+  }
+
+  // ============ 「访问正确的页面」：被拦主机名 → 正确官网（2026-11-12）============
+  // 数据源两级：内置表（iocs.js 的 CORRECT_DOMAIN_MAP，随扩展发布）
+  //            + 云端补录（云端白名单 JSON 的 correct_sites 字段，同步下来后注入）。
+  // 为什么是「品牌词 → 官网」而不是「仿冒域 → 官网」：
+  //   仿冒域是无限的（huorongsafe / huorong-safe / hu0rong…），永远列不完；
+  //   而品牌词是有限的，只要从主机名里认出品牌，就能给出唯一确定的官网。
+  //
+  // 匹配规则（与 iocs.js 表头注释一致，改这里必须同步改那边）：
+  //   1) 主机名小写、去前导 www.；
+  //   2) 品牌词子串查找，左侧必须是标签边界（开头 / `.` / `-` / `_`），右侧不限；
+  //   3) 长度 ≤ 3 且不含数字的品牌词额外要求右侧非字母（qq 命中 qq.com / qq2013.com，不命中 qqq.com；360 不受限）；
+  //   4) 多词命中取**最长**品牌词（sogoubrowser 优先于 sogou）；等长取表内先出现的。
+  //   ⚠️ 这里只做「字符串猜测」，不做网络请求：按钮是用户被拦时的出口，
+  //      不能因为查官网而卡住、更不能因为查不到就不给出口（查不到走说明页）。
+  const EXTRA_CORRECT_MAP = new Map();   // 云端补录：`品牌词` → { domain, product }
+  // 合并表：内置 ∪ 云端，并在同一次扫描里比长度。
+  //   为什么不能「先查内置、没命中再查云端」：内置的 `qq` 会先命中 exmail-qq.com，
+  //   云端更精确的 `exmail` 永远轮不到，"补录" 就成了死数据。合并后正确语义是：
+  //   多个品牌词同时命中 → 取**最长**（跨两级数据源统一比较）；等长 → 内置优先。
+  //   同一个品牌词两边都有时，内置覆盖云端（防止云端误配把用户送到错站）。
+  let _correctMerged = null;             // { brands: [...], map: Map } 懒构造，两份表都变时置 null
+  let _correctSkipped = [];              // 云端被护栏拒掉的条目（诊断用）
+  const _correctCache = new Map();       // host → { domain, product, brand, source } | null
+  const CORRECT_CACHE_MAX = 512;
+
+  function _correctBoundaryOk(h, at, token) {
+    // 含数字的品牌词（360 / 126）不适用「右侧非字母」护栏：
+    //   360safe / 360anquan 这类后缀正是仿冒站的典型写法，而 360 本身就是数字，不会与普通词根混淆。
+    const short = token.length <= 3 && !/[0-9]/.test(token);
+    let ok;
+    if (at === 0) {
+      ok = true;
+    } else {
+      const prev = h.charAt(at - 1);
+      ok = (prev === '.' || prev === '-' || prev === '_');
+    }
+    if (!ok) return false;
+    if (!short) return true;
+    // 短词（qq / 126 / avg）后面紧跟字母时多半是别的词根（qqq、126blog→ok，qqmail→拒绝），
+    // 用「右侧非字母」这一条兜住误报；右侧是数字/点/连字符/结尾都放行。
+    const next = h.charAt(at + token.length);
+    return next === '' || !/[a-z]/.test(next);
+  }
+
+  // 合并两级数据源（内置 + 云端）。顺序即优先级：内置表先入、云端只补新词；
+  // 排序用稳定排序（V8 保证），因此同长度的词仍然保持「内置在前」。
+  function _correctTables() {
+    if (_correctMerged) return _correctMerged;
+    const map = new Map();
+    const order = [];
+    const bm = IOCS.CORRECT_DOMAIN_MAP || {};
+    const bl = IOCS.CORRECT_BRANDS || [];
+    for (let i = 0; i < bl.length; i++) {
+      const k = bl[i];
+      const v = bm[k];
+      if (!v || !v.domain) continue;
+      map.set(k, { domain: v.domain, product: v.product || '', source: 'builtin' });
+      order.push(k);
+    }
+    EXTRA_CORRECT_MAP.forEach(function (v, k) {
+      if (map.has(k)) return;                      // 同名 → 内置优先
+      map.set(k, { domain: v.domain, product: v.product || '', source: 'cloud' });
+      order.push(k);
+    });
+    // 长词优先：exmail 优于 qq、sogoubrowser 优于 sogou
+    order.sort(function (a, b) { return b.length - a.length; });
+    _correctMerged = { brands: order, map: map };
+    return _correctMerged;
+  }
+
+  // 在一张「品牌词 → 条目」的表里找最长命中；命中返回 { brand, entry }
+
+  function _scanCorrectTable(h, brands, map) {
+    for (let i = 0; i < brands.length; i++) {
+      const token = brands[i];
+      let at = h.indexOf(token);
+      while (at !== -1) {
+        // 内置表是普通对象（Object.create(null)），云端表是 Map —— 两种容器都要能取
+        if (_correctBoundaryOk(h, at, token)) {
+          const entry = (typeof map.get === 'function') ? map.get(token) : map[token];
+          return { brand: token, entry: entry };
+        }
+        at = h.indexOf(token, at + 1);
+      }
+    }
+    return null;
+  }
+
+  function _correctLookup(hostname) {
+    let h = String(hostname || '').toLowerCase().trim();
+    h = h.replace(/^https?:\/\//, '').replace(/[/?#].*$/, '');
+    h = h.replace(/:\d+$/, '').replace(/^www\./, '');
+    if (!h || h.indexOf('.') === -1) return null;
+    if (_correctCache.has(h)) return _correctCache.get(h);
+
+    // 两级数据源先合并成一张表再扫：这样「云端的长词」才能压过「内置的短词」，
+    // 而同名词仍然内置优先。先查内置、再查云端的写法会让云端补录永远生效不了。
+    let out = null;
+    const tables = _correctTables();
+    const hit = _scanCorrectTable(h, tables.brands, tables.map);
+    if (hit && hit.entry && hit.entry.domain) {
+      out = { domain: hit.entry.domain, product: hit.entry.product || '', brand: hit.brand, source: hit.entry.source };
+    }
+    if (_correctCache.size >= CORRECT_CACHE_MAX) _correctCache.clear();
+    _correctCache.set(h, out);
+    return out;
+  }
+
+  // 返回 { domain, product, brand, source } 或 null
+  function resolveCorrectSite(hostname) { return _correctLookup(hostname); }
+  // 只要域名（调用方不关心产品名时用这个）
+  function resolveCorrectDomain(hostname) {
+    const r = _correctLookup(hostname);
+    return r ? r.domain : '';
+  }
+
+  // 云端补录注入：arr 元素支持三种写法
+  //   { product:'…', brands:['huorong'], domain:'huorong.cn' }
+  //   { p:'…', b:'huorong', d:'huorong.cn' }        （简写）
+  //   'huorong.cn|huorong'                          （字符串：域名|品牌词，多个品牌词空格分隔）
+  // 覆盖语义：云端这份是镜像，每次同步整体替换；空数组等价于「没有云端补录」。
+  // 注意：这里**不清空内置表**——两者是不同层级的补充关系，不是同一份名单的两个来源。
+  function registerCloudCorrect(arr) {
+    EXTRA_CORRECT_MAP.clear();
+    _correctSkipped = [];
+    if (Array.isArray(arr)) {
+      for (let i = 0; i < arr.length; i++) {
+        const raw = arr[i];
+        let domain = '', brands = [], product = '';
+        if (typeof raw === 'string') {
+          const parts = raw.split('|');
+          domain = String(parts[0] || '').trim().toLowerCase();
+          brands = String(parts[1] || '').toLowerCase().split(/\s+/);
+        } else if (raw && typeof raw === 'object') {
+          domain = String(raw.domain || raw.d || '').trim().toLowerCase();
+          product = String(raw.product || raw.p || '');
+          const b = (raw.brands != null) ? raw.brands : raw.b;
+          brands = Array.isArray(b) ? b.slice() : String(b || '').split(/[\s,]+/);
+        } else {
+          continue;
+        }
+        domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+        // 护栏：域名至少要两级、不能带通配（官网必须是一个确定的主机名）
+        if (!domain || domain.indexOf('.') === -1 || /[*?\s/]/.test(domain)) {
+          _correctSkipped.push(String(raw));
+          continue;
+        }
+        let added = 0;
+        for (let k = 0; k < brands.length; k++) {
+          const token = String(brands[k] || '').trim().toLowerCase();
+          if (!token || token.length < 2 || /[*?\s]/.test(token)) continue;
+          if (EXTRA_CORRECT_MAP.has(token)) continue;
+          EXTRA_CORRECT_MAP.set(token, { domain: domain, product: product });
+          added++;
+        }
+        if (!added) _correctSkipped.push(String(domain));
+      }
+    }
+    _correctMerged = null;   // 云端表变了 → 合并表重建
+    // 覆盖语义下即使条数相同、内容也可能变了 → 无条件失效
+    _correctCache.clear();
+    return EXTRA_CORRECT_MAP.size;
+  }
+
+  // 诊断：云端补录条目明细 + 被拒条目
+  function getCloudCorrectSites() {
+    const items = [];
+    EXTRA_CORRECT_MAP.forEach((v, k) => { items.push({ brand: k, domain: v.domain, product: v.product }); });
+    return { items: items, skipped: _correctSkipped.slice() };
   }
 
   const _officialCache = new Map();
@@ -2836,6 +3071,11 @@
     isExceptionHost,
     isBrandSelfSite,
     registerCloudOfficial,
+    // 2026-11-12：「访问正确的页面」——被拦主机名 → 正确官网
+    resolveCorrectSite,
+    resolveCorrectDomain,
+    registerCloudCorrect,
+    getCloudCorrectSites,
     registerCloudBad,
     sanitizeCloudDomains,
     isKnownBad,

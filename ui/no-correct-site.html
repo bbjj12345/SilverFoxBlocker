@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>没有已收录的正确域名 · SilverFoxBlocker</title>
+<link rel="stylesheet" href="no-correct-site.css">
+</head>
+<body>
+  <main class="wrap">
+    <div class="card">
+      <div class="icon" aria-hidden="true">
+        <svg viewBox="0 0 64 72" width="56" height="63" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M32 3 5 13v22c0 17 11.6 28.7 27 34 15.4-5.3 27-17 27-34V13L32 3Z" fill="url(#g)" stroke="rgba(255,255,255,.28)" stroke-width="2"/>
+          <path d="M21 35.5 29 44l15-16" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="g" x1="5" y1="3" x2="59" y2="69" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#3b82f6"/><stop offset="1" stop-color="#1d4ed8"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+
+      <h1>没有已收录的正确域名</h1>
+
+      <p class="lead">你访问的页面暂时没有已被收录的正确域名，或已被作者证实为应被拦截的页面。如果你认为这是一个错误，请在扩展的反馈页面向作者发送反馈。</p>
+
+      <p class="meta" id="hostLine" hidden>当前站点：<b id="hostName"></b></p>
+
+      <div class="actions">
+        <button class="btn btn-sec" id="backBtn" type="button">返回上一页</button>
+        <button class="btn btn-primary" id="fbBtn" type="button">向作者发送反馈</button>
+      </div>
+
+      <p class="foot">「访问正确的页面」依据扩展内置的品牌官网表与云端白名单的官网补录工作。<br>没有收录不等于该站安全，请勿在此页面下载或安装任何程序。</p>
+    </div>
+  </main>
+  <script src="no-correct-site.js"></script>
+</body>
+</html>

@@ -50,6 +50,14 @@
 .sf-btn-blocklist:hover { background: rgba(255,255,255,.14) !important; }
 .sf-btn-blocklist.sf-btn-done { cursor: default !important; transform: none !important; filter: none !important;
   opacity: .72 !important; background: rgba(46,158,107,.26) !important; border: 1px solid rgba(120,230,180,.5) !important; }
+/* ★ 2026-11-12：「访问正确的页面」——与「添加到自定义恶意域名黑名单」同尺寸（独占一行、11px 内边距、
+   13px 字号），放在「离开 / 继续访问」之下作为第三个出口。单独用类名而不是复用 .sf-btn-blocklist，
+   是为了让它的悬停色与「已完成」态互不干扰。 */
+.sf-actions-correct { margin-top: 10px !important; margin-bottom: 0 !important; }
+.sf-btn-correct { flex: 1 1 100% !important; padding: 11px 10px !important;
+  font-size: calc(13px * var(--sf-scale)) !important; font-weight: 600 !important;
+  background: rgba(255,255,255,.08) !important; border: 1px solid rgba(255,255,255,.30) !important; }
+.sf-btn-correct:hover { background: rgba(255,255,255,.16) !important; }
 .sf-tip,
 .sf-foot { margin: 14px 0 0 !important; font-size: calc(11.5px * var(--sf-scale)) !important; text-align: center !important; opacity: .58 !important; line-height: 1.5 !important; }
 
@@ -238,11 +246,14 @@
 .sf-intel-banner.sf-soft { background: linear-gradient(90deg, rgba(214,148,28,.97), rgba(198,132,32,.95)) !important; border-color: rgba(255,224,170,.6) !important; }
 /* VT「请提高警惕」：在默认红粉之上再加一档，用更深的警示红表达最高严重度 */
 .sf-intel-banner.sf-vt-alert { background: linear-gradient(90deg, rgba(158,12,26,.98), rgba(112,6,18,.98)) !important; border-color: rgba(255,140,140,.7) !important; }
-/* 三个本地黑名单（OpenPhish / PhishDestroy / HaGeZi TIF）统一使用同一套青蓝配色：
-   它们表达的是同一种结论「已被某名单拉黑」，无需靠颜色区分来源，文案里已写明来源名。 */
+/* 五份社区名单（OpenPhish / PhishDestroy / HaGeZi TIF / uBlock Badware / Dandelion Sprout）
+   统一使用同一套青蓝配色：它们表达的是同一种结论「该域名在本地风险名单里」，无需靠颜色区分
+   来源，文案里已写明来源名。 */
 .sf-intel-banner.sf-openphish,
 .sf-intel-banner.sf-phishdestroy,
-.sf-intel-banner.sf-hagezi { background: linear-gradient(90deg, rgba(16,104,128,.97), rgba(20,78,116,.96)) !important; border-color: rgba(168,226,255,.6) !important; }
+.sf-intel-banner.sf-hagezi,
+.sf-intel-banner.sf-ublock,
+.sf-intel-banner.sf-dsam { background: linear-gradient(90deg, rgba(16,104,128,.97), rgba(20,78,116,.96)) !important; border-color: rgba(168,226,255,.6) !important; }
 /* 抗页面样式覆盖 */
 .sf-intel-banner, .sf-intel-banner * { color: #fff !important; -webkit-text-fill-color: #fff !important; user-select: none !important; -webkit-user-select: none !important; }
 

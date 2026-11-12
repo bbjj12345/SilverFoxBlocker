@@ -2,14 +2,14 @@
 
 **SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期：2026-11-11　|　适用版本：v1.7.3（本次修订：两个情报源 API Key 均为 AES-GCM 密文存储）
+生效日期：2026-11-12　|　适用版本：v1.8.3（本次修订：两个情报源 API Key 均为 AES-GCM 密文存储）
 
 ---
 ## 一、概述
 
 本扩展的**检测、评分、名单比对与拦截全部在你的设备上完成**；不建立账号、不收集浏览历史、不向分析平台上报数据。默认开启的 RDAP / ICP 辅助核验只发送**域名**。除此之外，只有你**主动开启**的威胁情报源 / 社区名单、**主动点击**的云端名单同步、工具下载、反馈与名单上报，才会产生对应的外部请求。
 
-**请特别注意用户主动提交的数据（「名单上报」自 v1.6.1 起提供，v1.7.2 未改动其数据范围）**：点击「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」时，你填写的文字会发送到作者自建的后端并通过邮件送达作者，邮件中会包含来源 IP；不点击不会自动发送。完整的请求目标与内容见下文。
+**请特别注意用户主动提交的数据（「名单上报」自 v1.6.1 起提供，v1.8.3 未改动其数据范围）**：点击「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」时，你填写的文字会发送到作者自建的后端并通过邮件送达作者，邮件中会包含来源 IP；不点击不会自动发送。完整的请求目标与内容见下文。
 
 ---
 
@@ -55,7 +55,7 @@
 > 提示：上述服务由各自厂商运营，其数据处理受其隐私政策约束。若你极度在意 URL 外泄会导致隐私泄露，请勿开启 Google Safe Browsing，也请注意 URLhaus 会收到当前页面 URL。
 
 **社区黑名单更新（默认关闭，需先开总开关）**
-开启后，扩展会按天（或手动点击「立即更新」时）从 jsDelivr / fastly / gcore / testingcf / raw.githubusercontent.com / gh-proxy.com 等镜像**下载**公开名单文件（OpenPhish、PhishDestroy、HaGeZi's TIF）。这是单向 GET，**不上传任何内容**，也不包含你的访问记录。
+开启后，扩展会按天（或手动点击「立即更新」时）从 jsDelivr / fastly / gcore / testingcf / raw.githubusercontent.com / gh-proxy.com 等镜像**下载**公开名单文件（OpenPhish、PhishDestroy、HaGeZi's TIF、uBlock Origin - Badware risks、Dandelion Sprout's Anti-Malware List）。这是单向 GET，**不上传任何内容**，也不包含你的访问记录。
 
 ### 3.3 云端黑 / 白名单同步（默认不发请求，需你手动点击）
 
@@ -67,11 +67,17 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 ```
 
 - **发出什么**：只有查询参数 `type`、缓存规避用的时间戳，以及一个随扩展分发的只读 `X-API-Key`（用于接口鉴权，**不是你的身份标识**）。**不发送你的浏览记录、本地名单、设置、设备标识或任何个人信息**。
-- **收到什么**：作者维护的域名清单（纯数据，不含代码）。Worker 实时从作者的私有 GitHub 仓库读取后转发；GitHub 不可达时改从作者的私有 Gitee 镜像仓库读取同一份文件（此过程完全发生在服务端，你的浏览器不直接访问 Gitee）。响应经清洗校验后整体覆盖写入本机 `storage.local`，任一份失败则两份都不写入。
+- **收到什么**：作者维护的域名清单（纯数据，不含代码）。自 2026-11-12 起，白名单文件还可附带一份「品牌词 → 正确官网」映射（`correct_sites`），同样是纯数据，仅用于拦截浮层的「访问正确的页面」按钮，不参与放行 / 拦截判定。Worker 实时从作者的私有 GitHub 仓库读取后转发；GitHub 不可达时改从作者的私有 Gitee 镜像仓库读取同一份文件（此过程完全发生在服务端，你的浏览器不直接访问 Gitee）。响应经清洗校验后整体覆盖写入本机 `storage.local`，任一份失败则两份都不写入。
 - **日志**：该 Worker 开启了 Cloudflare 调用日志，因此服务端可能记录请求时间、来源 IP 与请求路径；日志中不含有你填写的内容。
 - **备用通道（仅当上述接口不通时）**：会改为从公开仓库（GitHub 的 `raw.githubusercontent.com` 及其公共反代；都失败时再改用 `gitee.com` 上的同一份文件）GET 一份**加密快照**（`Cloud/*.json.enc`），顺序上始终是「GitHub 优先、Gitee 兜底」。文件本身是密文，只有扩展用内置口令在本机解密后才能得到名单；此请求**不带 `X-API-Key`、不带任何本地数据**，但第三方反代能看到请求方 IP 与所取文件名。解密失败（口令不符 / 文件被篡改）时同步中止，不会把名单清空。
 
 早期上游版本的第三方「云端官方域名库」（`site-directory-cache.pages.dev`）已于 2026-11-01 完整移除，当前版本拉取的是作者自行维护的黑 / 白名单，不含官方站点整库。
+
+---
+
+### 3.4 「访问正确的页面」按钮（点击后也不联网）
+
+拦截浮层上的「访问正确的页面」按钮**不发起任何网络请求**：扩展在本机用「品牌词 → 官网」映射表（内置 `rules/iocs.js` 的 `CORRECT_SITE_CATALOG`，加上云端白名单同步下来的 `correct_sites`）从被拦主机名推断品牌，再让浏览器导航到该品牌官网；推断不出来时打开扩展自带的说明页。整个判断在本地完成，不向作者、也不向任何第三方发送被拦域名或其它数据——之后发生的只是你浏览一个普通网页，与直接输入网址没有区别。
 
 ---
 
@@ -137,11 +143,12 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 | 位置 | 内容 | 说明 |
 |---|---|---|
-| `chrome.storage.sync` | 开关、权重、灵敏度、自定义信任域名白名单、自定义恶意域名黑名单、自定义关键词、界面偏好、情报源配置 | 由**浏览器账号**同步机制决定是否跨设备同步，**不经过作者服务器**；卸载扩展后本机副本被清除 |
+| `chrome.storage.sync` | 开关、权重、灵敏度、自定义关键词、界面偏好、情报源配置 | 由**浏览器账号**同步机制决定是否跨设备同步，**不经过作者服务器**；卸载扩展后本机副本被清除 |
 | `chrome.storage.sync` | VirusTotal / Google Safe Browsing API Key（均为 **AES-GCM 密文**，含随机 salt 与 IV） | 明文只在后台 Service Worker 内短暂解密，内容脚本拿不到；设置页只显示圆点掩码，不回显明文或密文。v1.6.1 及更早版本明文保存的 VT Key 会在打开一次设置页时自动加密迁移（迁移前后台仍兼容明文查询）。两者都只用于向对应厂商鉴权，绝不发给作者 |
 | `chrome.storage.local` | 防护统计（拦截/告警计数、近期记录）、OpenPhish 域名数组、PhishDestroy 域名文本、社区名单元数据、自动学习的下载黑名单、连坐域名集合 | 仅本机 |
+| `chrome.storage.local` | 自定义信任域名白名单 / 自定义恶意域名黑名单（2026-11-12 起以本地为准） | `storage.sync` 单键上限 8KB（约 550 个域名），超出会**静默写入失败**，故名单改存本地；体积小于 8KB 时仍镜像一份到 sync 以保留跨设备同步，超过则只存本机 |
 | `chrome.storage.local` | `sfCloudWhite` / `sfCloudBlack`（云端名单快照）、`sfCloudListMeta`（同步时间、条数、被丢弃条目及原因）、自定义主题与背景 | 仅本机；由你手动同步产生，云端名单不含任何关于你的信息 |
-| IndexedDB（`sfLocalLists`） | HaGeZi TIF 的布隆过滤器位图（约 4.8 MB） | 仅本机；不含明文域名 |
+| IndexedDB（`sfLocalLists`） | 三份布隆过滤器位图：HaGeZi TIF（约 4.8 MB）、uBlock Badware（约 7 KB）、Dandelion Sprout（约 24 KB） | 仅本机；不含明文域名，离线无法还原名单 |
 | 剪贴板 | 点击蓝奏云更新按钮时写入提取码 `2hxh` | 由浏览器接管，扩展不回读 |
 | 内存 | 名单 Set / 位图、评分缓存、情报查询缓存（10 分钟） | 关闭浏览器或 SW 回收即消失 |
 
@@ -151,7 +158,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## 六、远程代码与服务端链路
 
-本扩展**不加载任何远程脚本**。所有检测逻辑、规则与评分引擎都随安装包发布；网络请求只用于取回**数据**（域名清单、情报查询结果、RDAP / ICP 响应），不会 `eval` 或注入远程代码。云端名单在写入前会经过格式清洗（黑白名单都允许通配、通配上限 200 条、路径条目上限 500 条），被丢弃的条目与原因在设置页可见。
+本扩展**不加载任何远程脚本**。所有检测逻辑、规则与评分引擎都随安装包发布；网络请求只用于取回**数据**（域名清单、情报查询结果、RDAP / ICP 响应），不会 `eval` 或注入远程代码。云端名单在写入前会经过格式清洗（黑白名单都允许通配，但 `*` 不跨标签、TLD 位禁通配；通配与路径条目均不设条数上限），被丢弃的条目与原因在设置页可见。
 
 `manifest.json` 的 CSP 为 `script-src 'self'; object-src 'self'; connect-src 'self' https:; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'`。**需要如实说明**：`connect-src` 允许连接任意 HTTPS 主机，并**没有**做域名级白名单；实际请求目标由代码内的固定清单决定，且默认关闭的项在未开启前不会请求。
 
@@ -193,8 +200,8 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 | 权限 | 用来做什么 | 为什么必须 | 不授予会怎样 |
 |---|---|---|---|
-| `storage` | `storage.sync`：设置、权重、自定义黑白名单、两个情报源 API Key（**AES-GCM 密文**）；`storage.local`：防护统计、云端名单快照、社区名单、下载黑名单；`storage.session`：本会话内危险标签页与已放行域名 | MV3 的 Service Worker 空闲 30 秒即被回收，所有状态必须落到 storage；否则「记住你的每一次开关」无从实现 | 重启即恢复默认，名单与统计全部丢失 |
-| `unlimitedStorage` | 云端名单镜像、社区名单（PhishDestroy 约 14 万条、HaGeZi TIF 布隆位图约 4.8 MB）、自定义背景 | 这些数据超过扩展默认配额；超限时 `storage.local.set` 会**静默失败**，用户会看到「同步成功但名单没变」 | 开启社区名单后可能写盘失败 |
+| `storage` | `storage.sync`：设置、权重、自定义关键词、两个情报源 API Key（**AES-GCM 密文**）；`storage.local`：自定义黑白名单（默认本地，小体积镜像回 sync）、防护统计、云端名单快照、社区名单、下载黑名单；`storage.session`：本会话内危险标签页与已放行域名 | MV3 的 Service Worker 空闲 30 秒即被回收，所有状态必须落到 storage；否则「记住你的每一次开关」无从实现 | 重启即恢复默认，名单与统计全部丢失 |
+| `unlimitedStorage` | 云端名单镜像、社区名单（PhishDestroy 域名表、HaGeZi 布隆位图、uBlock / Dandelion 位图）、自定义背景 | 这些数据超过扩展默认配额；超限时 `storage.local.set` 会**静默失败**，用户会看到「同步成功但名单没变」 | 开启社区名单后可能写盘失败 |
 | `downloads` | ① 命中黑名单 / 载荷特征时 `chrome.downloads.cancel` 真正阻断下载；② 「银狐急救」中你点击工具时发起下载并指定文件名 | 仅靠页面提示拦不住已经开始的高危下载；急救工具也需要可信下载入口 | 只能提示、不能阻断；急救工具需自行去官网找 |
 | `webNavigation` | 只在顶层框架 `onCommitted` 记录时序：页面开始加载即进入「检测中」，并把「危险页 → 新域名」串成跳转链 | 银狐常见「落地页再跳一次才自动下载」，只有导航事件能追上；等到 DOM 就绪已经晚了 | 瞬间自动下载漏拦、跳转链断裂 |
 | `notifications` | 高风险网站 / 下载被拦时发系统原生通知 | 页面被立刻关闭、或命中发生在后台标签页时，页面内横幅看不到 | 只在页面内提示 |
@@ -274,7 +281,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 **Automatic requests (on by default, disableable):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`); limited reads of resources already referenced by the page you are visiting for download discovery. Any list hit short-circuits these lookups.
 
-**Optional requests (off by default):** VirusTotal receives base64url domain/URL IDs; Google Safe Browsing receives the **full page URL** (v4 Lookup). Both use your own API key, stored **only as AES-GCM ciphertext** (`v1.salt.iv.ciphertext`); plaintext exists only briefly inside the background service worker, never in storage or page scripts. URLhaus receives domain + page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF) are downloaded as one-way GETs from jsDelivr/GitHub mirrors. VT keys saved as plaintext by older versions are automatically re-encrypted once you open the options page; until then the background still accepts them.
+**Optional requests (off by default):** VirusTotal receives base64url domain/URL IDs; Google Safe Browsing receives the **full page URL** (v4 Lookup). Both use your own API key, stored **only as AES-GCM ciphertext** (`v1.salt.iv.ciphertext`); plaintext exists only briefly inside the background service worker, never in storage or page scripts. URLhaus receives domain + page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF, uBlock Origin Badware risks, Dandelion Sprout Anti-Malware) are downloaded as one-way GETs from jsDelivr/GitHub mirrors; the two AdBlock-format lists are reduced to `||domain^` host rules only — IPs, paths, regexes, cosmetic and exception rules are discarded and never executed. VT keys saved as plaintext by older versions are automatically re-encrypted once you open the options page; until then the background still accepts them.
 
 **Author-maintained cloud allow/block lists (v1.7.2, manual sync only):** no automatic sync. Only when you click "从云端更新名单" are two GETs sent to our Cloudflare Worker (`api.silverfoxblocker.dpdns.org/list?type=white|black`) with a bundled read-only `X-API-Key`. Nothing about you or your device is uploaded. The Worker reads `whitelist.json` / `blacklist.json` from a private GitHub repository (falling back to a private Gitee mirror if GitHub is unreachable, server-side only) and returns plain domain strings, which are validated and stored locally in `chrome.storage.local` (`sfCloudWhite`, `sfCloudBlack`, `sfCloudListMeta`).
 
@@ -282,7 +289,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 **Other user-initiated requests:** the version-row "检查更新" button reads only the public latest tag — first from `github.com/…/releases/latest` (via the post-redirect URL), then `api.github.com`, then the `gh-proxy.com` mirror — and compares it locally; nothing is uploaded and no installer is downloaded. Also rescue-tool downloads from 360 / Huorong / Kaspersky (KVRT) / Malwarebytes (AdwCleaner) official hosts, plus ordinary external links (Lanzou update mirror with a clipboard-copied extraction code, SoftcnKiller share page, 123pan, GitHub, GitHub Issues, Afdian) opened in new tabs without injected parameters.
 
-**Local storage:** settings and custom lists in `chrome.storage.sync` (browser-account sync only, never via our servers), including the two API keys as AES-GCM ciphertext; statistics, downloaded lists, cloud-list snapshot and metadata in `chrome.storage.local`; HaGeZi's Bloom-filter bitmap (~4.8 MB) in IndexedDB. No remote code is loaded; the MV3 CSP is `script-src 'self'; object-src 'self'; connect-src 'self' https:` — note that `connect-src` **allows any HTTPS host** rather than a domain allowlist, so actual destinations are governed by the fixed list in code.
+**Local storage:** settings and custom lists in `chrome.storage.sync` (browser-account sync only, never via our servers), including the two API keys as AES-GCM ciphertext; statistics, downloaded lists, cloud-list snapshot and metadata in `chrome.storage.local`; HaGeZi's Bloom-filter bitmap (~4.8 MB) plus two much smaller bitmaps for the uBlock and Dandelion lists in IndexedDB. No remote code is loaded; the MV3 CSP is `script-src 'self'; object-src 'self'; connect-src 'self' https:` — note that `connect-src` **allows any HTTPS host** rather than a domain allowlist, so actual destinations are governed by the fixed list in code.
 
 **Permissions.** The extension requests only `storage`, `unlimitedStorage`, `downloads`, `webNavigation`, `notifications`, `alarms`, and `<all_urls>` — nothing else (no `cookies`, `history`, `tabs`, `bookmarks`, `webRequest`/`declarativeNetRequest`, `scripting`, `nativeMessaging`). Each permission maps to a user-visible feature: persisting settings and lists; storing blocklists that exceed the default quota; cancelling malicious downloads; reading top-level navigation timing; showing a native warning; scheduling daily community-list refreshes; and injecting the detection content script into any http(s) page (required because phishing domains are rotated daily). A ready-to-paste justification for every permission is in section 8.5 above.
 
