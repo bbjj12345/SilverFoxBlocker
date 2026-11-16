@@ -604,7 +604,7 @@
       try { NATIVE.setAttribute.call(btn, 'data-sf-act', 'leave'); } catch (e) {}
       try { NATIVE.setAttribute.call(btn, 'data-sf-fb', '1'); } catch (e) {}
       span.className = 'sf-fb-text';
-      span.textContent = '🛡 SilverFoxBlocker：检测到高风险网站';
+      span.textContent = '🛡 SilverFoxBlocker：检测到高风险站点';
       NATIVE.put(bar, span);
       NATIVE.put(bar, btn);
       NATIVE.put(root, bar);
@@ -1334,7 +1334,7 @@
               return;
             }
             // ★ 2026-11-11 修复既有误报：原实现只按 URL 特征拦、不看判定结果，
-            //   会把「已判安全页面」的 fetch→a.click() 下载也弹成「该站点被判定为银狐木马风险网站」。
+            //   会把「已判安全页面」的 fetch→a.click() 下载也弹成「该站点被判定为高风险站点」。
             //   现在 safe/warn 且非 danger 时放行，交给浏览器与后台闸门正常处理。
           }
           return _click.call(a);
@@ -1670,7 +1670,7 @@
       if (!card) throw new Error('createElement failed');
       card.className = 'sf-card';
     } catch (e) {
-      try { showToast('⚠️ SilverFoxBlocker：检测到高风险网站（弹窗渲染异常，请离开该网站）'); } catch (e2) {}
+      try { showToast('⚠️ SilverFoxBlocker：检测到高风险站点（弹窗渲染异常，请离开该网站）'); } catch (e2) {}
       return;
     }
     const mounted = sfMountOverlay({
@@ -1711,7 +1711,7 @@
 
     card.innerHTML =
       SHIELD_SVG +
-      '<h2 class="sf-title">检测到银狐木马风险网站</h2>' +
+      '<h2 class="sf-title">检测到高风险站点</h2>' +
       '<p class="sf-sub">' + subText + '</p>' +
       '<ul class="sf-reasons">' + reasonsHtml + '</ul>' +
       '<div class="sf-actions sf-actions-stack">' +
@@ -1732,7 +1732,7 @@
       '<div class="sf-actions sf-actions-correct">' +
       '<button class="sf-btn sf-btn-correct" id="sf-correct-site" data-sf-act="open-correct" type="button">访问正确的页面</button>' +
       '</div>' +
-      '<p class="sf-foot">银狐（游蛇）木马常通过仿冒官网投递带毒安装包，请勿轻易放行下载。<br>若已安装 IDM 等第三方下载器，请临时关闭其「浏览器接管」，以免其从链接直接抓取下载。</p>';
+      '<p class="sf-foot">银狐木马常通过仿冒官网投递带毒安装包，请勿轻易放行下载。<br>若已安装 IDM 等第三方下载器，请临时关闭其「浏览器接管」，以免其从链接直接抓取下载。</p>';
 
     // 若该域名已在自定义恶意域名黑名单中，按钮直接显示「✓ 已在自定义恶意域名黑名单」并禁用
     syncBlacklistButton(card);
@@ -1744,7 +1744,7 @@
     card.innerHTML =
       SHIELD_SVG +
       '<h2 class="sf-title">二次确认</h2>' +
-      '<p class="sf-sub">你确定要访问 <b>' + escapeHtml(location.hostname) + '</b> 吗？<br>该站点已被判定为银狐木马风险网站。关闭警告后我们仍会拦截下载，但页面本身可能包含钓鱼表单或恶意脚本。</p>' +
+      '<p class="sf-sub">你确定要访问 <b>' + escapeHtml(location.hostname) + '</b> 吗？<br>该站点已被判定为高风险站点。关闭警告后我们仍会拦截下载，但页面本身可能包含钓鱼表单或恶意脚本。</p>' +
       '<div class="sf-actions">' +
       '<button class="sf-btn sf-btn-leave" id="sf-cc-back" data-sf-act="cc-back" type="button">返回</button>' +
       '<button class="sf-btn sf-btn-continue" id="sf-cc-go" data-sf-act="cc-go" type="button">仍然继续</button>' +
@@ -1858,7 +1858,7 @@
   //   showWarning() 是"只弹不收"的 —— 第 750 行 `if (NATIVE.byId('sf-overlay')) return;`
   //   一旦弹出就不会自动消失。而云端库查询是**异步**的（要发消息给后台），
   //   在它返回之前，页面可能已经因滚动/懒加载触发重判并弹了 danger 卡。
-  //   ⇒ 一旦命中官方域名，那张写着「检测到银狐木马风险网站」的卡片必须撤掉，
+  //   ⇒ 一旦命中官方域名，那张写着「检测到高风险站点」的卡片必须撤掉，
   //      否则用户已经读到了误报文案，体验上等于没修。
   //
   //  ★ 与 doRelease() 的区别（别复用它）：
@@ -1961,7 +1961,7 @@
     const html =
       '<div class="sf-card">' + SHIELD_SVG +
       '<h2 class="sf-title">下载已被拦截</h2>' +
-      '<p class="sf-sub">SilverFoxBlocker 已阻止来自 <b>' + escapeHtml(host) + '</b> 的可疑下载文件。该站点被判定为银狐木马风险网站，下载可能植入木马。</p>' +
+      '<p class="sf-sub">SilverFoxBlocker 已阻止来自 <b>' + escapeHtml(host) + '</b> 的可疑下载文件。该站点被判定为高风险站点，下载可能植入木马。</p>' +
       '<div class="sf-actions">' +
       '<button class="sf-btn sf-btn-leave" id="sf-dl-keep" data-sf-act="dl-keep" type="button">保持拦截</button>' +
       '<button class="sf-btn sf-btn-continue" id="sf-dl-allow" data-sf-act="dl-allow" type="button">仍要下载</button>' +
@@ -2076,8 +2076,8 @@
       const host = (location && location.hostname) || '';
       const msg = {
         type: 'sf-notify',
-        title: '⚠️ SilverFoxBlocker：发现高风险网站',
-        message: '检测到 ' + host + ' 疑似银狐(游蛇)木马投递站，已弹出页面警告并禁用下载/跳转链接。'
+        title: '⚠️ SilverFoxBlocker：发现高风险站点',
+        message: '检测到 ' + host + ' 为高风险站点，疑似银狐木马投递站点，已弹出页面警告并禁用下载/跳转链接。'
       };
       if (chrome.runtime && chrome.runtime.sendMessage) chrome.runtime.sendMessage(msg);
     } catch (e) {}
@@ -3032,7 +3032,7 @@
               return;
             }
             // ★ 2026-11-11 修复既有误报：原实现只按 URL 特征拦、不看判定结果，
-            //   会把「已判安全页面」的 fetch→a.click() 下载也弹成「该站点被判定为银狐木马风险网站」。
+            //   会把「已判安全页面」的 fetch→a.click() 下载也弹成「该站点被判定为高风险站点」。
             //   现在 safe/warn 且非 danger 时放行，交给浏览器与后台闸门正常处理。
           }
           return _click.call(a);

@@ -2916,7 +2916,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           type: 'basic',
           iconUrl: chrome.runtime.getURL('icons/icon128.png'),
           title: (msg.title || '⚠️ SilverFoxBlocker 提醒'),
-          message: (msg.message || '发现高风险网站'),
+          message: (msg.message || '发现高风险站点'),
           priority: 1,
           requireInteraction: false
         }, function () {});
@@ -3235,8 +3235,18 @@ if (chrome.downloads && chrome.downloads.onCreated) {
     // 本次下载用户已明确「仍要下载」→ 直接放行（避免重复拦截）
     if (isAllowedDownload(item.url)) return;
   // ★ 由扩展发起（byExtensionId）的下载：仅「本扩展自身」（静默重下/保存）直接放行；
-  //   其它扩展（迅雷/IDM/下载器接管类）发起的下载落入后续风险判定——它们必须先经
-  //   downloads API 才能转交外部下载器，在这里掐断即可阻止其绕过浏览器的下载。
+  //   其它扩展（迅雷/下载器接管类）发起的下载落入后续风险判定——凡是走 downloads API
+  //   才能转交外部下载器的，在这里掐断即可阻止其绕过浏览器的下载。
+  //   ⚠️ 2026-11-13 实测：**IDM 不受这条约束**。IDM Integration Module（6.43.x）的路径是
+  //   「document_start 内容脚本在 window 捕获阶段监听 mousedown/mouseup 抢走 URL →
+  //   runtime.connectNative('com.tonec.idm') → IDMMsgHost.exe / IDM.exe 自己发 HTTP 请求」，
+  //   真正的下载字节根本不经过浏览器下载栈，chrome.downloads.onCreated 要么不触发、
+  //   要么触发时 IDM 自己的 onCreated(cancel) 监听器已把 URL 交给原生进程了。
+  //   我们的页面级守卫挂 document（捕获）比 IDM 的 window（捕获）晚一拍，抢不过它；
+  //   MV3 又拿不到 webRequestBlocking，无法在网络层取消它的请求。
+  //   ⇒ 结论：**本扩展无法可靠拦截 IDM / 迅雷这类原生下载器**，只能在判定为高风险时
+  //   尽量移除 href / 置 pointer-events:none 并提示用户临时关闭「浏览器接管」。
+  //   这段逻辑保留，是为了兜住「用 downloads API 转交」的那类下载器，别当成 IDM 防线。
   if (item.byExtensionId && item.byExtensionId === chrome.runtime.id) return;
   // ★ 来源标签页已被「完全放行」(releasedHosts) 或处于「仍要下载」临时放行窗口 → 直接放过本次下载，
   //   让没有 IDM 的用户也能通过浏览器自身完成下载（含自动学习的下载黑名单域）。

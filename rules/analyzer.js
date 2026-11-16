@@ -2249,7 +2249,7 @@
   function detDomainAge(data) {
     if (typeof data.domainAgeDays !== 'number') return mk(false, 0, '域名年龄', '');
     const days = data.domainAgeDays;
-    if (days < 30) return mk(true, 60, '新注册域名', `域名注册时间不足 30 天（${days} 天），新注册域名是银狐/钓鱼站高频特征`);
+    if (days < 30) return mk(true, 60, '新注册域名', `域名注册时间不足 30 天（${days} 天），新注册域名是银狐/钓鱼网站的高频特征`);
     if (days > 180) return mk(true, -20, '老域名减分', `域名已注册 ${days} 天，风险下调`);
     return mk(false, 0, '域名年龄', '');
   }
@@ -2745,7 +2745,7 @@
       }
       for (const p of (IOCS.SUSPICIOUS_DOWNLOAD_NAME_PATTERNS || [])) {
         if (p.test(name)) {
-          return mk(true, 25, '可疑安装包文件名', `下载链接文件名「${name}」符合银狐木马化安装包命名规律（仿冒 VPN/加速器 安装包）`);
+          return mk(true, 25, '可疑安装包文件名', `下载链接文件名「${name}」符合银狐木马化安装包命名规律（如 仿冒VPN/加速器安装包） 等`);
         }
       }
     }
@@ -2798,7 +2798,7 @@
     });
     if (!hasArchive) return mk(false, 0, '密码压缩包', '');
     if (/解压密码|提取密码|压缩包密码|解压码|解压口令|密码[:：]?\s*[一-龥a-z0-9]{4,}|password\s*[:：]/i.test(lowerHtml)) {
-      return mk(true, 26, '带密码压缩包分发', '压缩包/网盘分发并附「解压密码」，银狐常用密码包规避杀软查杀');
+      return mk(true, 26, '带密码的压缩包分发', '压缩包/网盘分发并附「解压密码」，银狐常用加密压缩包规避杀软查杀');
     }
     return mk(false, 0, '密码压缩包', '');
   }
