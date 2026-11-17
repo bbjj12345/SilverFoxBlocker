@@ -24,6 +24,12 @@ id = "112de06669d341c5acad07e950411df3"
 [vars]
 GITEE_OWNER = "bbjj12345"
 GITEE_REPO = "silver-fox-blocker-cloud"
+# 巡检结果邮件的收件人（可选）。
+# 默认发到 feedback@silverfoxblocker.dpdns.org，再由 Cloudflare Email Routing 转发到
+# 你真正的邮箱 —— 私人地址不必写进代码或仓库，换邮箱只改面板里的路由规则。
+# 想和用户反馈分箱：在 Email Routing 里新建 health@silverfoxblocker.dpdns.org 的转发规则，
+# 然后取消下面这行注释（不改代码，重新部署一次即可）。
+# HEALTH_MAIL_TO = "health@silverfoxblocker.dpdns.org"
 # CORS 白名单：Worker 代码里已内置「Edge 商店版 ID」+「本地加载已解压实例 ID」两个值，
 # 正常情况下这一行保持注释即可。只有换了解压路径（本地实例 ID 随之变化）或新增测试机时，
 # 才取消注释并填新的 Origin —— 形如 chrome-extension://<32位ID>，多个用英文逗号分隔。

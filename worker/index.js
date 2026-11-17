@@ -183,7 +183,10 @@ async function readFromGitee(env, file, deadline) {
 //     没有这条记录」，最常见的两个原因恰恰是：① 查的是子域名（www.xxx.com、es.xxx.com），
 //     而注册局只认可注册主域（eTLD+1）；② 域名在册但注册局尚未回填 RDAP 记录。
 //     于是 cchytech.com / wlygrowth.com 这类活得好好的站点被判死。
-//   · 只读 IANA 引导表 → .cn 没有分配 RDAP 根，整片 .cn 落进 unknown（其实 CNNIC 有服务）。
+//   · 只读 IANA 引导表 → .cn 没有分配 RDAP 根，整片 .cn 落进 unknown。
+//     （曾尝试补 CNNIC 端点，但 rdap.cnnic.cn 这个域名**根本不存在**（DNS ENOTFOUND），
+//      CNNIC 只提供 whois.cnnic.cn:43 的 WHOIS，不做 RDAP。所以 .cn 干脆不查注册局：
+//      它对 .cn 的判断已经由 HTTP + DoH 两步给足了，注册局只是「DoH 也失灵时」的兜底。）
 //
 // 现在的判定链（越靠前越硬）：
 //   1) HTTP 探测：带桌面浏览器 UA 的 GET，跟随重定向，先 https 再 http。
@@ -193,13 +196,11 @@ async function readFromGitee(env, file, deadline) {
 //      浏览器必然打不开 → dead。这条比 RDAP 硬得多，且不需要碰目标站点。
 //   3) DoH 说「有记录」→ 域名还活着，站点只是不响应：归 unreachable（不判死）。
 //      出口在境外时，国内站点被墙 / 被地域屏蔽 / 临时故障都会长这样。
-//   4) DoH 也查不出来 → 才请注册局作证（IANA 引导表 + CNNIC 兜底，查**可注册主域**）：
+//   4) DoH 也查不出来 → 才请注册局作证（IANA 引导表，查**可注册主域**）：
 //      明确「无记录 / pendingDelete / redemptionPeriod」→ dead；说在册 → unreachable。
 //      RDAP 只在这一步出现，且永远不作为唯一证据。
-//
-// 为什么还要 CNNIC：
-//   .cn / .com.cn / .org.cn / .中国 的注册局是 CNNIC，IANA 引导表里没有它，
-//   只能写死端点（https://rdap.cnnic.cn/domain/<域名>）。连不上就当查不到，不判死。
+//      查不到 RDAP 的 TLD（.cn 全系、部分小国后缀）就老实写「注册状态未能确认」——
+//      一律归 unreachable，不猜、不判死。
 //
 // 必须知道的代价：
 //   · HTTP 探测会**真的访问**被拉黑站点，Cloudflare 的出口 IP 会暴露给对方。
@@ -219,8 +220,6 @@ var RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json";
 var RDAP_BOOTSTRAP_KEY = "rdap:bootstrap:v1";
 var RDAP_BOOTSTRAP_TTL = 7 * 24 * 3600;   // 引导表变动极少，一周一刷足够
 var RDAP_TIMEOUT_MS = 4000;
-var CNNIC_RDAP = "https://rdap.cnnic.cn"; // .cn 系的注册局 RDAP（IANA 表里没有）
-var CN_TLDS = ["cn", "xn--fiqs8s"];       // .cn / .中国
 
 var HEALTH_BUDGET_MS = 25000;             // 单次总预算，必须远小于 Worker 的墙钟上限
 var PROBE_MAX_PER_RUN = 10;               // 每条最坏 4 个子请求（https/http/DoH/RDAP），10 条留足余量
@@ -277,6 +276,7 @@ function probeHostOf(entry) {
   if (at !== -1) s = s.slice(at + 1);                               // 去掉 userinfo
   s = s.replace(/:\d+$/, "").replace(/\.$/, "").toLowerCase();
   if (!s || s.indexOf(".") === -1) return "";
+  if (!/^[a-z0-9._-]+$/.test(s)) return "";                         // 含空格/尖括号等：不是主机名
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return "";                 // 裸 IP 没有注册记录
   return s;
 }
@@ -453,29 +453,17 @@ async function loadRdapBootstrap(env) {
   return { map: map, cached: false };
 }
 
-// 依次问注册局：IANA 引导表给的端点 → .cn 系补 CNNIC。任何一路给出确定答案就停。
+// 问注册局：只有 IANA 引导表里登记过的 TLD 才有 RDAP。
+// .cn 全系（含 com.cn / org.cn / .中国）没有 RDAP 服务，CNNIC 只做 WHOIS，
+// 这里就老实返回「没有服务」，由调用方归 unreachable —— 不猜、不判死。
+// 2026-11-17 撤销了上一版写死的 CNNIC 端点：rdap.cnnic.cn 这个域名不存在（DNS ENOTFOUND）。
 async function probeRegistry(reg, bootstrapMap) {
   var tld = reg.split(".").pop();
-  var bases = [];
-  if (bootstrapMap && bootstrapMap[tld]) bases.push(bootstrapMap[tld]);
-  if (CN_TLDS.indexOf(tld) !== -1) bases.push(CNNIC_RDAP);
-  // 去重（.cn 若哪天进了 IANA 表，也不会问两遍同一个地址）
-  var uniq = [];
-  for (var i = 0; i < bases.length; i++) {
-    var b = String(bases[i]).replace(/\/+$/, "");
-    if (uniq.indexOf(b) === -1) uniq.push(b);
-  }
-  if (!uniq.length) return { state: "unknown", reason: "该后缀没有已知的 RDAP 服务（." + tld + "）", tried: [] };
-  var tried = [];
-  for (var n = 0; n < uniq.length; n++) {
-    var r = await queryRegistry(uniq[n], reg);
-    if (r.state === "unregistered" || r.state === "doomed" || r.state === "registered") {
-      r.tried = tried;
-      return r;
-    }
-    tried.push(uniq[n] + "（" + (r.reason || "未知") + "）");
-  }
-  return { state: "unknown", reason: tried.join("；"), tried: tried };
+  var base = (bootstrapMap && bootstrapMap[tld]) ? String(bootstrapMap[tld]).replace(/\/+$/, "") : "";
+  if (!base) return { state: "unknown", reason: "该后缀没有 RDAP 服务（." + tld + "），无法核实注册状态", tried: [] };
+  var r = await queryRegistry(base, reg);
+  if (r.state === "unknown") return { state: "unknown", reason: r.reason || "注册局未给出结论", tried: [base] };
+  return r;
 }
 
 // 探测单个主机：先看能不能打开，再说域名还在不在，最后才请注册局作证
@@ -563,8 +551,7 @@ async function runHealthCheck(env, opts) {
   var slice = [];
   for (var i = 0; i < take; i++) slice.push(hosts[(cursor + i) % hosts.length]);
 
-  // 3) 引导表（1 个子请求，缓存 7 天）。拉不到不致命：.cn 还能走 CNNIC，
-  //    其它后缀会落进 unreachable，不会被误删。
+  // 3) 引导表（1 个子请求，缓存 7 天）。拉不到不致命：会退化成 unreachable，不会误删。
   var bs = await loadRdapBootstrap(env);
   if (!bs.map) console.warn("[health] RDAP 引导表不可用（仅影响佐证）：" + (bs.error || "未知原因"));
 
@@ -633,6 +620,207 @@ async function runHealthCheck(env, opts) {
   }
 
   return summary;
+}
+
+// ============================================================================
+// 巡检结果邮件（2026-11-17）
+//
+// 「通过路由转发」是怎么走的：
+//   Worker ──Brevo API──▶ feedback@silverfoxblocker.dpdns.org（本域名邮箱）
+//                              │
+//                              └── Cloudflare Email Routing 的既有规则 ──▶ 你的私人邮箱
+//
+// 这样做的意义：**私人邮箱地址不进代码、不进仓库**。以后换邮箱只在 Cloudflare
+// 面板改一条路由规则即可，不用重新部署、不用改 Git 历史。
+//
+//   · 收件人默认就是这个域名邮箱；想分箱可新建 health@… 并加一条路由规则，
+//     再把环境变量 HEALTH_MAIL_TO 指过去（无需改代码）。
+//   · 没配 BREVO_API_KEY 时静默跳过，只在日志里说明——巡检本身照常完成。
+//   · 发信失败**不影响**巡检结果落 KV：邮件只是通知渠道，不是数据本身。
+// ============================================================================
+var HEALTH_MAIL_FROM = "feedback@silverfoxblocker.dpdns.org";
+var HEALTH_MAIL_TO_DEFAULT = "feedback@silverfoxblocker.dpdns.org";
+var HEALTH_MAIL_TIMEOUT_MS = 8000;
+
+function escMail(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+
+// 邮件里统一用北京时间：cron 是 UTC 03:00，直接显示会被误读成凌晨
+function bjTime(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso || "");
+  return new Date(d.getTime() + 8 * 3600 * 1000).toISOString().replace("T", " ").slice(0, 16) + "（北京时间）";
+}
+
+function healthMailSubject(s) {
+  if (!s || !s.ok) return "【SilverFoxBlocker】名单巡检失败：" + ((s && s.error) || "未知原因");
+  var tail = [];
+  if (s.dead) tail.push(s.dead + " 条建议删除");
+  if (s.unreachable) tail.push(s.unreachable + " 条待确认");
+  if (!tail.length) tail.push("全部正常");
+  var day = bjTime(s.at).slice(5, 10);
+  return "【SilverFoxBlocker】名单巡检 " + day + "：" + tail.join("，");
+}
+
+function healthMailText(s) {
+  var L = [];
+  if (!s || !s.ok) {
+    L.push("巡检没有跑完：" + ((s && s.error) || "未知原因"));
+    return L.join("\n");
+  }
+  L.push("时间：" + bjTime(s.at));
+  L.push("来源：" + (s.source || "-") + (s.path ? " / " + s.path : "") + "，耗时 " + s.elapsedMs + " ms");
+  L.push("名单共 " + s.total + " 条；本次探测 " + s.probed + " 个主机（通配条目跳过 " + (s.skipped || []).length + " 条）");
+  L.push("存活 " + s.alive + " ｜ 建议删除 " + s.dead + " ｜ 打不开但域名在 " + s.unreachable);
+  L.push("");
+  L.push("== 建议删除（HTTP 打不开，且 DNS 不存在 / 注册局已注销）==");
+  if (!s.deadDetail || !s.deadDetail.length) L.push("（无）");
+  (s.deadDetail || []).forEach(function (d, i) {
+    L.push((i + 1) + ". " + d.host + (d.reg && d.reg !== d.host ? "（主域 " + d.reg + "）" : "") + " —— " + d.reason);
+  });
+  L.push("");
+  L.push("== 打不开但域名还在（不要直接删，请在国内网络点一遍）==");
+  if (!s.unreachableDetail || !s.unreachableDetail.length) L.push("（无）");
+  (s.unreachableDetail || []).forEach(function (d, i) {
+    L.push((i + 1) + ". " + d.host + " —— " + d.reason);
+  });
+  if ((s.skipped || []).length) {
+    L.push("");
+    L.push("== 本次跳过 ==");
+    s.skipped.forEach(function (x) { L.push("· " + x.entry + "（" + x.why + "）"); });
+  }
+  if (s.note) { L.push(""); L.push("备注：" + s.note); }
+  L.push("");
+  L.push("说明：Worker 只给建议，不会自动改名单。要在 blacklist.json 里手动删掉上面「建议删除」的条目。");
+  return L.join("\n");
+}
+
+function healthMailHtml(s) {
+  var css = "font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#1f2328;";
+  var card = "border:1px solid #e5e7eb;border-radius:10px;padding:16px 18px;margin:0 0 14px;";
+  var th = "text-align:left;font-size:12px;color:#6b7280;font-weight:600;padding:6px 10px 6px 0;border-bottom:1px solid #eee;";
+  var td = "padding:7px 10px 7px 0;border-bottom:1px solid #f3f4f6;vertical-align:top;word-break:break-all;";
+  var mono = "font-family:ui-monospace,Consolas,monospace;font-size:13px;";
+
+  if (!s || !s.ok) {
+    return '<div style="' + css + '"><div style="' + card + '">' +
+      '<h2 style="margin:0 0 8px;font-size:18px;color:#b91c1c;">巡检没有跑完</h2>' +
+      '<p style="margin:0;">' + escMail((s && s.error) || "未知原因") + '</p>' +
+      '<p style="margin:8px 0 0;color:#6b7280;font-size:13px;">时间：' + escMail(bjTime(s && s.at)) + '</p>' +
+      '</div></div>';
+  }
+
+  var hl = [];
+  hl.push('<div style="' + css + '">');
+  hl.push('<div style="' + card + '">');
+  hl.push('<h2 style="margin:0 0 4px;font-size:18px;">名单巡检 ' + escMail(bjTime(s.at).slice(0, 10)) + '</h2>');
+  hl.push('<p style="margin:0;color:#6b7280;font-size:13px;">' + escMail(bjTime(s.at)) +
+    ' ｜ 来源 ' + escMail(s.source || "-") + (s.path ? ' / ' + escMail(s.path) : "") +
+    ' ｜ 耗时 ' + escMail(s.elapsedMs) + ' ms</p>');
+  hl.push('<table style="border-collapse:collapse;margin-top:12px;width:100%;">');
+  var nums = [
+    ["名单条目", s.total, "#111827"],
+    ["本次探测", s.probed, "#111827"],
+    ["存活", s.alive, "#15803d"],
+    ["建议删除", s.dead, s.dead ? "#b91c1c" : "#6b7280"],
+    ["打不开但域名在", s.unreachable, s.unreachable ? "#b45309" : "#6b7280"],
+    ["跳过（通配）", (s.skipped || []).length, "#6b7280"]
+  ];
+  hl.push('<tr>');
+  nums.forEach(function (x) {
+    hl.push('<td style="text-align:center;padding:10px 6px;border:1px solid #eee;border-radius:6px;">' +
+      '<div style="font-size:20px;font-weight:700;color:' + x[2] + ';">' + escMail(x[1]) + '</div>' +
+      '<div style="font-size:12px;color:#6b7280;">' + escMail(x[0]) + '</div></td>');
+  });
+  hl.push('</tr></table>');
+  hl.push('</div>');
+
+  // 建议删除
+  hl.push('<div style="' + card + '">');
+  hl.push('<h3 style="margin:0 0 10px;font-size:15px;color:#b91c1c;">建议删除（' + (s.dead || 0) + '）</h3>');
+  if (!s.deadDetail || !s.deadDetail.length) {
+    hl.push('<p style="margin:0;color:#15803d;">本次没有发现失效条目。</p>');
+  } else {
+    hl.push('<table style="border-collapse:collapse;width:100%;"><tr>' +
+      '<th style="' + th + '">主机</th><th style="' + th + '">主域</th><th style="' + th + '">依据</th></tr>');
+    s.deadDetail.forEach(function (d) {
+      hl.push('<tr><td style="' + td + mono + '">' + escMail(d.host) + '</td>' +
+        '<td style="' + td + mono + 'color:#6b7280;">' + escMail(d.reg || "-") + '</td>' +
+        '<td style="' + td + 'font-size:13px;">' + escMail(d.reason) + '</td></tr>');
+    });
+    hl.push('</table>');
+  }
+  hl.push('</div>');
+
+  // 待确认
+  hl.push('<div style="' + card + '">');
+  hl.push('<h3 style="margin:0 0 10px;font-size:15px;color:#b45309;">打不开但域名还在（' + (s.unreachable || 0) + '）</h3>');
+  if (!s.unreachableDetail || !s.unreachableDetail.length) {
+    hl.push('<p style="margin:0;color:#6b7280;">（无）</p>');
+  } else {
+    hl.push('<p style="margin:0 0 10px;color:#6b7280;font-size:13px;">' +
+      'Cloudflare 出口在境外，国内站点可能只是被墙 / 被地域屏蔽。这些 <strong>不要</strong> 直接删，请在国内网络点一遍。</p>');
+    hl.push('<table style="border-collapse:collapse;width:100%;"><tr>' +
+      '<th style="' + th + '">主机</th><th style="' + th + '">依据</th></tr>');
+    s.unreachableDetail.forEach(function (d) {
+      hl.push('<tr><td style="' + td + mono + '">' + escMail(d.host) + '</td>' +
+        '<td style="' + td + 'font-size:13px;">' + escMail(d.reason) + '</td></tr>');
+    });
+    hl.push('</table>');
+  }
+  hl.push('</div>');
+
+  // 跳过
+  if ((s.skipped || []).length) {
+    hl.push('<div style="' + card + '">');
+    hl.push('<h3 style="margin:0 0 8px;font-size:15px;">本次跳过（' + s.skipped.length + '）</h3>');
+    hl.push('<p style="margin:0;color:#6b7280;font-size:13px;">通配条目没有确定主机名，无法探测。</p>');
+    hl.push('<ul style="margin:8px 0 0;padding-left:20px;' + mono + '">');
+    s.skipped.forEach(function (x) {
+      hl.push('<li>' + escMail(x.entry) + ' <span style="color:#9ca3af;">（' + escMail(x.why) + '）</span></li>');
+    });
+    hl.push('</ul></div>');
+  }
+
+  if (s.note) {
+    hl.push('<div style="' + card + '">');
+    hl.push('<p style="margin:0;color:#6b7280;font-size:13px;">备注：' + escMail(s.note) + '</p>');
+    hl.push('</div>');
+  }
+
+  hl.push('<p style="color:#9ca3af;font-size:12px;margin:0;">' +
+    'Worker 只给建议，不会自动改名单 —— 请在 blacklist.json 里手动删掉「建议删除」的条目。<br>' +
+    '判据：' + escMail(s.verdict && s.verdict.dead) + '<br>' + escMail(s.verdict && s.verdict.unreachable) + '</p>');
+  hl.push('</div>');
+  return hl.join("");
+}
+
+// 发一封巡检结果邮件。返回 { ok, to, id } 或 { ok:false, skipped|error }
+async function sendHealthMail(env, summary) {
+  if (!env || !env.BREVO_API_KEY) return { ok: false, skipped: "未配置 BREVO_API_KEY" };
+  var to = String(env.HEALTH_MAIL_TO || HEALTH_MAIL_TO_DEFAULT).trim();
+  if (!to) return { ok: false, skipped: "收件人为空" };
+
+  var payload = {
+    sender: { name: "SilverFoxBlocker 巡检", email: HEALTH_MAIL_FROM },
+    to: [{ email: to }],
+    subject: healthMailSubject(summary),
+    htmlContent: healthMailHtml(summary),
+    textContent: healthMailText(summary)
+  };
+  // 只在真有失效条目时才抄送一份到回复地址？不需要——保持单一收件人，避免被当成垃圾邮件。
+
+  var r = await getText("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: { "api-key": env.BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify(payload)
+  }, HEALTH_MAIL_TIMEOUT_MS);
+
+  if (!r.ok) return { ok: false, to: to, error: "Brevo HTTP " + r.status + " " + String(r.text || r.error || "").slice(0, 200) };
+  return { ok: true, to: to };
 }
 
 var index_default = {
@@ -756,6 +944,8 @@ var index_default = {
     // 功能 C: 名单存活巡检（HTTP 探测为主，DNS / RDAP 佐证）
     //   GET /health                → 最近一次巡检的摘要（读 KV）
     //   GET /health?run=1          → 立刻跑一次（最慢约 25s，受 HEALTH_BUDGET_MS 约束）
+    //   GET /health?run=1&mail=1   → 跑一次并把结果发到邮箱（用来验证转发链路通不通）
+    //   GET /health?mail=1         → 把 KV 里那份结果再发一次（不重跑探测）
     //   GET /health?dead=1         → text/plain，一行一个「建议删除」的域名
     //   GET /health?unreachable=1  → text/plain，一行一个「打不开但域名还在」的域名（需人工确认）
     //   与 /list 共用 LIST_API_KEY；不带 Origin 的 curl 调用照常可用（便于维护者自查）。
@@ -770,6 +960,7 @@ var index_default = {
       }
       const kv = healthKv(env);
       let summary = null;
+      let mail = null;
       if (url.searchParams.get("run") === "1") {
         summary = await runHealthCheck(env);
       } else if (kv) {
@@ -777,6 +968,9 @@ var index_default = {
           const s = await kv.get(HEALTH_SUMMARY_KEY);
           if (s) summary = JSON.parse(s);
         } catch (e) { /* 读不出来就当没有历史结果 */ }
+      }
+      if (url.searchParams.get("mail") === "1") {
+        mail = summary ? await sendHealthMail(env, summary) : { ok: false, skipped: "没有可发的巡检结果" };
       }
       const fmt = String(url.searchParams.get("list") || "").toLowerCase();
       const wantDead = url.searchParams.get("dead") === "1";
@@ -798,6 +992,7 @@ var index_default = {
         ok: !!summary,
         kvBound: !!kv,
         note: kv ? null : "未绑定 HEALTH KV：巡检结果只在 cron 日志里。新建命名空间后把 id 填进 wrangler.toml 再部署。",
+        mail: mail,   // 只有带 &mail=1 时非 null
         summary: summary
       }, null, 2), {
         status: 200,
@@ -886,13 +1081,24 @@ var index_default = {
     // ctx.waitUntil 不是可选项：fetch/scheduled 返回后 Worker 立刻被回收，
     //   不挂在这里的 Promise 会被中途掐断，巡检做一半、KV 留下半份状态。
     ctx.waitUntil(runHealthCheck(env).then(function (s) {
-      if (!s.ok) { console.error("[cron] 巡检未完成：" + (s.error || "未知原因")); return; }
+      if (!s.ok) {
+        console.error("[cron] 巡检未完成：" + (s.error || "未知原因"));
+        return sendHealthMail(env, s).then(function (m) {
+          // 巡检失败也要通知到人，否则「没收到邮件」和「没跑」分不清
+          if (!m.ok) console.warn("[cron] 失败通知未发出：" + (m.skipped || m.error));
+        });
+      }
       console.log("[cron] 巡检完成 " + JSON.stringify({
         source: s.source, total: s.total, probed: s.probed,
-        alive: s.alive, dead: s.dead, unknown: s.unknown, elapsedMs: s.elapsedMs
+        alive: s.alive, dead: s.dead, unreachable: s.unreachable, elapsedMs: s.elapsedMs
       }));
       if (s.deadList && s.deadList.length) console.warn("[cron] 疑似失效（需人工确认后再删）: " + s.deadList.join(", "));
       if (s.note) console.warn("[cron] " + s.note);
+      // 邮件失败不影响巡检结果（已写进 KV），这里只记日志
+      return sendHealthMail(env, s).then(function (m) {
+        if (m.ok) console.log("[cron] 巡检结果已发往 " + m.to + "（由 Email Routing 转发到私人邮箱）");
+        else console.warn("[cron] 巡检邮件未发出：" + (m.skipped || m.error));
+      });
     }).catch(function (e) {
       console.error("[cron] 巡检异常：" + ((e && e.stack) || e));
     }));
