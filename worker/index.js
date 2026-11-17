@@ -222,11 +222,21 @@ var RDAP_BOOTSTRAP_TTL = 7 * 24 * 3600;   // 引导表变动极少，一周一�
 var RDAP_TIMEOUT_MS = 4000;
 
 var HEALTH_BUDGET_MS = 25000;             // 单次总预算，必须远小于 Worker 的墙钟上限
-var PROBE_MAX_PER_RUN = 10;               // 每条最坏 4 个子请求（https/http/DoH/RDAP），10 条留足余量
+// 单次最多探几条。名单不超过这个数时，一轮就能全覆盖、游标归 0。
+// 原来写 10，导致 11 条名单卡在界外一格：每轮只前进 1 条、9 条重复探测，
+// 11 轮才转完一圈（环形窗口一直「倒退 1」）。2026-11-17 抬到 25。
+var PROBE_MAX_PER_RUN = 25;
+// 真正决定「能不能跑完」的不是条数，而是这次到底发了多少次 fetch：
+// 免费版每个请求 50 个子请求，每条最坏 4 次（https+http+DoH+RDAP），25 条最坏 100 次。
+// 所以按**真实用量**设硬护栏，而不是按条数猜。超了就停、游标只前进到做完的那条，
+// 剩下的下一轮接着来——宁可少探，也不能整轮撞上限失败。
+// 36 是「本模块自己发的 fetch」上限，另留约 6 次给名单读取（GitHub/Gitee 2）、
+// 引导表（1）、KV 写（summary + cursor + 主机状态共 3）。
+var SUBREQ_BUDGET = 36;
 var PROBE_CONCURRENCY = 4;                // 并发 4：对目标站点友好，也不至于把预算耗在等超时
 var HEALTH_CURSOR_KEY = "health:cursor";
 var HEALTH_SUMMARY_KEY = "health:summary";
-var HEALTH_HOST_PREFIX = "health:host:";
+var HEALTH_HOSTS_KEY = "health:hosts";    // 全部主机状态的合并快照（一次 put，省子请求）
 var HEALTH_HOST_TTL = 90 * 24 * 3600;
 // 注册局侧「这个域名已经废了」的状态。
 // 注意**不要**收录 clientDeleteProhibited / clientTransferProhibited 这类保护锁，
@@ -264,6 +274,20 @@ var MULTI_SUFFIX = Object.create(null);
 })();
 
 function healthKv(env) { return (env && env.HEALTH) || null; }
+
+// 子请求预算：每次真正要发 fetch 之前先来领一张票。
+// 不用「还剩几条」估算，是因为同一条域名在不同状态下消耗 1~4 次不等
+// （https 一打就通只花 1 次，全挂才走到 DoH + RDAP）。
+function takeSub(budget, n) {
+  if (!budget) return true;
+  var need = n || 1;
+  if (budget.used + need > budget.max) return false;
+  budget.used += need;
+  return true;
+}
+function budgetLeft(budget) {
+  return budget ? budget.max - budget.used : 999;
+}
 
 // 从一条名单条目里取出可探测的主机名；取不到返回 ''
 function probeHostOf(entry) {
@@ -313,7 +337,8 @@ function registrableOf(host) {
 }
 
 // Cloudflare DoH（JSON 口径）。Status 3 = NXDOMAIN：域名在 DNS 里不存在。
-async function dohLookup(host) {
+async function dohLookup(host, budget) {
+  if (!takeSub(budget)) return { ok: false, exhausted: true, error: "子请求预算用尽" };
   var url = DOH_URL + "?name=" + encodeURIComponent(host) + "&type=A";
   var ctrl = new AbortController();
   var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, DOH_TIMEOUT_MS);
@@ -349,10 +374,12 @@ function httpErrKind(msg) {
 // HTTP 探测：只要服务器回了响应就算「能打开」，不管状态码是多少。
 // 先 https 再 http：自签证书会让 https 直接 reject，但 http 往往还能给个 301/200，
 // 而浏览器此时也只是弹个警告页、点「继续访问」照样进得去。
-async function probeHttp(host) {
+async function probeHttp(host, budget) {
   var schemes = ["https", "http"];
   var last = null;
   for (var i = 0; i < schemes.length; i++) {
+    // https 失败后还想试 http，得再领一张票；领不到就带着已得的错误返回
+    if (!takeSub(budget)) return { ok: false, kind: (last && last.kind) || "超时", msg: "子请求预算用尽", via: (last && last.via) || "", exhausted: true };
     var ctrl = new AbortController();
     var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, HTTP_TIMEOUT_MS);
     try {
@@ -386,7 +413,8 @@ async function probeHttp(host) {
 }
 
 // 问一个注册局端点：只回 unregistered / doomed / registered / unknown
-async function queryRegistry(base, reg) {
+async function queryRegistry(base, reg, budget) {
+  if (!takeSub(budget)) return { state: "unknown", base: base, exhausted: true, reason: "子请求预算用尽" };
   var url = String(base).replace(/\/+$/, "") + "/domain/" + encodeURIComponent(reg);
   var ctrl = new AbortController();
   var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, RDAP_TIMEOUT_MS);
@@ -457,19 +485,24 @@ async function loadRdapBootstrap(env) {
 // .cn 全系（含 com.cn / org.cn / .中国）没有 RDAP 服务，CNNIC 只做 WHOIS，
 // 这里就老实返回「没有服务」，由调用方归 unreachable —— 不猜、不判死。
 // 2026-11-17 撤销了上一版写死的 CNNIC 端点：rdap.cnnic.cn 这个域名不存在（DNS ENOTFOUND）。
-async function probeRegistry(reg, bootstrapMap) {
+async function probeRegistry(reg, bootstrapMap, budget) {
   var tld = reg.split(".").pop();
   var base = (bootstrapMap && bootstrapMap[tld]) ? String(bootstrapMap[tld]).replace(/\/+$/, "") : "";
   if (!base) return { state: "unknown", reason: "该后缀没有 RDAP 服务（." + tld + "），无法核实注册状态", tried: [] };
-  var r = await queryRegistry(base, reg);
+  var r = await queryRegistry(base, reg, budget);
+  if (r.exhausted) return { state: "unknown", exhausted: true, reason: r.reason, tried: [base] };
   if (r.state === "unknown") return { state: "unknown", reason: r.reason || "注册局未给出结论", tried: [base] };
   return r;
 }
 
 // 探测单个主机：先看能不能打开，再说域名还在不在，最后才请注册局作证
-async function probeOne(host, bootstrapMap) {
+// budget 用尽时返回 state:"deferred" —— 这条**没得出结论**，不能被算成
+// alive/dead/unreachable 中的任何一个（否则邮件会把"没查"写成"打不开"）。
+async function probeOne(host, bootstrapMap, budget) {
   var reg = registrableOf(host);
-  var http = await probeHttp(host);
+  var defer = { host: host, reg: reg, state: "deferred", reason: "子请求预算用尽，本轮未探完" };
+
+  var http = await probeHttp(host, budget);
   if (http.ok) {
     return {
       host: host, reg: reg, state: "alive",
@@ -477,9 +510,11 @@ async function probeOne(host, bootstrapMap) {
       http: http.status, via: http.via, finalUrl: http.finalUrl
     };
   }
+  if (http.exhausted && !http.via) return defer;   // 一次都没发出去：原样留给下一轮
 
   // 打不开 → DNS 确认域名还在不在（这一步不需要碰目标站点）
-  var dns = await dohLookup(host);
+  var dns = await dohLookup(host, budget);
+  if (dns.exhausted) return defer;
   if (dns.ok && dns.nx) {
     return { host: host, reg: reg, state: "dead", httpErr: http.kind, reason: "DNS 中不存在（NXDOMAIN），浏览器必然打不开" };
   }
@@ -491,7 +526,8 @@ async function probeOne(host, bootstrapMap) {
   }
 
   // DoH 也查不出来 → 才请注册局
-  var rd = await probeRegistry(reg, bootstrapMap);
+  var rd = await probeRegistry(reg, bootstrapMap, budget);
+  if (rd.exhausted) return defer;
   if (rd.state === "unregistered") {
     return { host: host, reg: reg, state: "dead", httpErr: http.kind, registry: rd.base, reason: "连不上，且注册局无 " + reg + " 的记录" };
   }
@@ -555,20 +591,31 @@ async function runHealthCheck(env, opts) {
   var bs = await loadRdapBootstrap(env);
   if (!bs.map) console.warn("[health] RDAP 引导表不可用（仅影响佐证）：" + (bs.error || "未知原因"));
 
-  // 4) 分批探测：并发 4，超预算就停（剩下的下一轮继续）
+  // 4) 分批探测：并发 4；时间预算或子请求预算任一用尽就停（剩下的下一轮继续）
   var results = [];
   var stopped = "";
+  var budget = { used: 0, max: SUBREQ_BUDGET };
   for (var n = 0; n < slice.length; n += PROBE_CONCURRENCY) {
-    if (Date.now() > deadline) { stopped = "总预算用尽，剩余条目下一轮继续"; break; }
+    if (Date.now() > deadline) { stopped = "时间预算用尽（" + Math.round(HEALTH_BUDGET_MS / 1000) + "s），剩余条目下一轮继续"; break; }
+    if (budgetLeft(budget) <= 0) { stopped = "子请求预算用尽（上限 " + SUBREQ_BUDGET + " 次），剩余条目下一轮继续"; break; }
     var batch = slice.slice(n, n + PROBE_CONCURRENCY);
-    var rs = await Promise.all(batch.map(function (h) { return probeOne(h, bs.map || {}); }));
+    var rs = await Promise.all(batch.map(function (h) { return probeOne(h, bs.map || {}, budget); }));
     for (var b = 0; b < rs.length; b++) results.push(rs[b]);
   }
+  // 预算用尽后 probeOne 立刻返回 deferred。并发交错时 deferred 可能夹在中间，
+  // 所以只承认「从头开始连续完成」的那一段：游标前进 advance 条，
+  // 夹在中间的那些下轮会重探（多花一两次，但绝不会漏）。
+  var advance = 0;
+  while (advance < results.length && results[advance].state !== "deferred") advance++;
+  var deferredCount = 0;
+  for (var d = 0; d < results.length; d++) if (results[d].state === "deferred") deferredCount++;
+  var done = results.filter(function (x) { return x.state !== "deferred"; });
+  if (deferredCount && !stopped) stopped = "子请求预算用尽（上限 " + SUBREQ_BUDGET + " 次），剩余条目下一轮继续";
 
   // 5) 汇总
   var alive = [], dead = [], unreachable = [], deadList = [], unreachableList = [];
-  for (var r = 0; r < results.length; r++) {
-    var it = results[r];
+  for (var r = 0; r < done.length; r++) {
+    var it = done[r];
     if (it.state === "dead") { dead.push(it); deadList.push(it.host); }
     else if (it.state === "unreachable") { unreachable.push(it); unreachableList.push(it.host); }
     else alive.push(it);
@@ -582,11 +629,14 @@ async function runHealthCheck(env, opts) {
     path: src.path || "",
     elapsedMs: Date.now() - t0,
     total: Array.isArray(list.domains) ? list.domains.length : 0,
-    probed: results.length,
+    probeable: hosts.length,
+    probed: done.length,
     alive: alive.length,
     dead: dead.length,
     unreachable: unreachable.length,
     unknown: 0,
+    subrequests: budget.used,
+    subreqBudget: SUBREQ_BUDGET,
     deadList: deadList,
     unreachableList: unreachableList,
     // 只留前 20 条明细，避免摘要随名单增长而膨胀
@@ -599,19 +649,23 @@ async function runHealthCheck(env, opts) {
       dead: "HTTP 不可达 且（DNS 不存在 或 注册局明确无记录/已废弃）→ 可以删",
       unreachable: "HTTP 不可达但域名仍在（或无法确认）→ 不要自动删，请在国内网络点一遍"
     },
-    cursorNext: hosts.length > take ? (cursor + results.length) % hosts.length : 0
+    // 一轮就探完（名单没超过单次上限）→ 归零重新开始；
+    // 否则前进「连续完成」的条数，中途被预算截断的那些下轮重探
+    cursorNext: hosts.length <= take ? 0 : (cursor + advance) % hosts.length
   };
 
-  // 6) 落盘：逐主机状态（带 TTL）+ 摘要 + 游标
+  // 6) 落盘：主机状态 / 摘要 / 游标
+  //    主机状态合成一个 key 存：KV 的每次 put 都算一个子请求，
+  //    25 条逐条 put 就是 25 次，正好把免费版 50 次的额度吃掉一半。
+  //    这里只有一个消费者（人看），不需要单条读，合并成一次写更划算。
   if (kv) {
     try {
-      for (var w = 0; w < results.length; w++) {
-        var x = results[w];
-        await kv.put(HEALTH_HOST_PREFIX + x.host, JSON.stringify({
-          state: x.state, reason: x.reason, reg: x.reg || "",
-          expires: x.expires || "", at: summary.at
-        }), { expirationTtl: HEALTH_HOST_TTL });
+      var hostMap = {};
+      for (var w = 0; w < done.length; w++) {
+        var x = done[w];
+        hostMap[x.host] = { state: x.state, reason: x.reason, reg: x.reg || "", expires: x.expires || "" };
       }
+      await kv.put(HEALTH_HOSTS_KEY, JSON.stringify({ at: summary.at, items: hostMap }), { expirationTtl: HEALTH_HOST_TTL });
       await kv.put(HEALTH_SUMMARY_KEY, JSON.stringify(summary));
       await kv.put(HEALTH_CURSOR_KEY, String(summary.cursorNext));
     } catch (e) {
@@ -674,6 +728,10 @@ function healthMailText(s) {
   L.push("时间：" + bjTime(s.at));
   L.push("来源：" + (s.source || "-") + (s.path ? " / " + s.path : "") + "，耗时 " + s.elapsedMs + " ms");
   L.push("名单共 " + s.total + " 条；本次探测 " + s.probed + " 个主机（通配条目跳过 " + (s.skipped || []).length + " 条）");
+  if (s.probeable && s.probed < s.probeable) {
+    L.push("可探主机共 " + s.probeable + " 个，剩余 " + (s.probeable - s.probed) + " 个下一轮继续" +
+      (s.subrequests ? "（本次发出 " + s.subrequests + " 次请求，预算 " + s.subreqBudget + "）" : ""));
+  }
   L.push("存活 " + s.alive + " ｜ 建议删除 " + s.dead + " ｜ 打不开但域名在 " + s.unreachable);
   L.push("");
   L.push("== 建议删除（HTTP 打不开，且 DNS 不存在 / 注册局已注销）==");
@@ -723,7 +781,8 @@ function healthMailHtml(s) {
   hl.push('<table style="border-collapse:collapse;margin-top:12px;width:100%;">');
   var nums = [
     ["名单条目", s.total, "#111827"],
-    ["本次探测", s.probed, "#111827"],
+    // 没探完时显示「已探 / 可探」，避免把「只探了 12 个」误读成「名单只有 12 个可探」
+    ["本次探测", (s.probeable && s.probed < s.probeable) ? (s.probed + "/" + s.probeable) : s.probed, "#111827"],
     ["存活", s.alive, "#15803d"],
     ["建议删除", s.dead, s.dead ? "#b91c1c" : "#6b7280"],
     ["打不开但域名在", s.unreachable, s.unreachable ? "#b45309" : "#6b7280"],
@@ -1089,8 +1148,9 @@ var index_default = {
         });
       }
       console.log("[cron] 巡检完成 " + JSON.stringify({
-        source: s.source, total: s.total, probed: s.probed,
-        alive: s.alive, dead: s.dead, unreachable: s.unreachable, elapsedMs: s.elapsedMs
+        source: s.source, total: s.total, probeable: s.probeable, probed: s.probed,
+        alive: s.alive, dead: s.dead, unreachable: s.unreachable,
+        subrequests: s.subrequests, elapsedMs: s.elapsedMs
       }));
       if (s.deadList && s.deadList.length) console.warn("[cron] 疑似失效（需人工确认后再删）: " + s.deadList.join(", "));
       if (s.note) console.warn("[cron] " + s.note);
