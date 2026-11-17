@@ -221,7 +221,18 @@ var RDAP_BOOTSTRAP_KEY = "rdap:bootstrap:v1";
 var RDAP_BOOTSTRAP_TTL = 7 * 24 * 3600;   // 引导表变动极少，一周一刷足够
 var RDAP_TIMEOUT_MS = 4000;
 
-var HEALTH_BUDGET_MS = 25000;             // 单次总预算，必须远小于 Worker 的墙钟上限
+// 单次总预算与墙钟护栏。
+//   HEALTH_BUDGET_MS：计划预算，跑到这儿就收手（软上限）。
+//   HEALTH_HARD_MS  ：真正不能越过的墙钟线。Cloudflare 官方对 duration 没有硬性上限，
+//                     但 event.waitUntil() 只保证「额外 30 秒」不被取消，所以按 30 秒设计。
+//   PROBE_WORST_CASE_MS：一条域名最坏要花多久（https 失败 5s + http 失败 5s + DoH 4s + RDAP 4s）。
+//                     由下面几个超时常量算出来，改超时不用再改这里。
+// 原来只在「批次开始前」看有没超过 25 秒，结果 24.9 秒仍会放行一批，
+// 这批最坏再跑 18 秒 → 实际最坏 43 秒，越过 30 秒线。现在改成预留：
+// 启动新批次前先算「这一批跑完会不会越线」，会就越线前停手，剩下的下一轮继续。
+var HEALTH_BUDGET_MS = 25000;
+var HEALTH_HARD_MS = 30000;
+var PROBE_WORST_CASE_MS = HTTP_TIMEOUT_MS * 2 + DOH_TIMEOUT_MS + RDAP_TIMEOUT_MS;   // 18000
 // 单次最多探几条。名单不超过这个数时，一轮就能全覆盖、游标归 0。
 // 原来写 10，导致 11 条名单卡在界外一格：每轮只前进 1 条、9 条重复探测，
 // 11 轮才转完一圈（环形窗口一直「倒退 1」）。2026-11-17 抬到 25。
@@ -230,9 +241,11 @@ var PROBE_MAX_PER_RUN = 25;
 // 免费版每个请求 50 个子请求，每条最坏 4 次（https+http+DoH+RDAP），25 条最坏 100 次。
 // 所以按**真实用量**设硬护栏，而不是按条数猜。超了就停、游标只前进到做完的那条，
 // 剩下的下一轮接着来——宁可少探，也不能整轮撞上限失败。
-// 36 是「本模块自己发的 fetch」上限，另留约 6 次给名单读取（GitHub/Gitee 2）、
-// 引导表（1）、KV 写（summary + cursor + 主机状态共 3）。
-var SUBREQ_BUDGET = 36;
+// 30 是「本模块自己发的 fetch」上限，另留余量给：名单读取（GitHub/Gitee 2 次）、
+// 引导表（1 次）、KV 写（summary + cursor + 主机状态 3 次），以及**重定向**——
+// fetch 用 redirect:"follow"，每一跳在 Worker 内部都算一次子请求，而这里只按 1 次记账，
+// 所以刻意比 50 留出更大的缺口（2026-11-17 从 36 降到 30）。
+var SUBREQ_BUDGET = 30;
 var PROBE_CONCURRENCY = 4;                // 并发 4：对目标站点友好，也不至于把预算耗在等超时
 var HEALTH_CURSOR_KEY = "health:cursor";
 var HEALTH_SUMMARY_KEY = "health:summary";
@@ -577,26 +590,37 @@ async function runHealthCheck(env, opts) {
     };
   }
 
-  // 2) 游标：名单比单次上限长时，每天接着上次的位置探，几天覆盖一轮
+  // 2) 游标：名单比单次上限长时，每天接着上次的位置探，几天覆盖一轮。
+  //    取数**不环绕**：走到名单尾部就停，下一轮从头开始。
+  //    旧写法是环形取满 take 条（hosts[(cursor+i) % len]），后果是「本轮刚探过的尾巴
+  //    又被下一轮当成新条目再探一遍」——11 条名单、每轮只能跑 8 条时，第 2 轮里有 5 条
+  //    是上一轮刚探完的，白花子请求也白等超时。
   var cursor = 0;
   if (kv) {
     try { cursor = parseInt(await kv.get(HEALTH_CURSOR_KEY), 10) || 0; } catch (e) { cursor = 0; }
   }
   if (cursor < 0 || cursor >= hosts.length) cursor = 0;
-  var take = Math.min(PROBE_MAX_PER_RUN, hosts.length);
+  var take = Math.min(PROBE_MAX_PER_RUN, hosts.length - cursor);
   var slice = [];
-  for (var i = 0; i < take; i++) slice.push(hosts[(cursor + i) % hosts.length]);
+  for (var i = 0; i < take; i++) slice.push(hosts[cursor + i]);
 
   // 3) 引导表（1 个子请求，缓存 7 天）。拉不到不致命：会退化成 unreachable，不会误删。
   var bs = await loadRdapBootstrap(env);
   if (!bs.map) console.warn("[health] RDAP 引导表不可用（仅影响佐证）：" + (bs.error || "未知原因"));
 
-  // 4) 分批探测：并发 4；时间预算或子请求预算任一用尽就停（剩下的下一轮继续）
+  // 4) 分批探测：并发 4；三种预算任一不够就停（剩下的下一轮继续）
   var results = [];
   var stopped = "";
   var budget = { used: 0, max: SUBREQ_BUDGET };
+  var hardLine = t0 + HEALTH_HARD_MS;
   for (var n = 0; n < slice.length; n += PROBE_CONCURRENCY) {
     if (Date.now() > deadline) { stopped = "时间预算用尽（" + Math.round(HEALTH_BUDGET_MS / 1000) + "s），剩余条目下一轮继续"; break; }
+    // 不能只看「现在超没超」：24.9 秒时放行一批，这批最坏还要 18 秒，总时长就冲到 43 秒。
+    // 所以问的是「这一批跑完会不会越线」，会就越线前停手。
+    if (Date.now() + PROBE_WORST_CASE_MS > hardLine) {
+      stopped = "为不超过 " + Math.round(HEALTH_HARD_MS / 1000) + "s 墙钟，剩余条目下一轮继续";
+      break;
+    }
     if (budgetLeft(budget) <= 0) { stopped = "子请求预算用尽（上限 " + SUBREQ_BUDGET + " 次），剩余条目下一轮继续"; break; }
     var batch = slice.slice(n, n + PROBE_CONCURRENCY);
     var rs = await Promise.all(batch.map(function (h) { return probeOne(h, bs.map || {}, budget); }));
@@ -649,9 +673,9 @@ async function runHealthCheck(env, opts) {
       dead: "HTTP 不可达 且（DNS 不存在 或 注册局明确无记录/已废弃）→ 可以删",
       unreachable: "HTTP 不可达但域名仍在（或无法确认）→ 不要自动删，请在国内网络点一遍"
     },
-    // 一轮就探完（名单没超过单次上限）→ 归零重新开始；
-    // 否则前进「连续完成」的条数，中途被预算截断的那些下轮重探
-    cursorNext: hosts.length <= take ? 0 : (cursor + advance) % hosts.length
+    // 游标走到名单尾部就归 0，下一轮从头开始（取数不环绕，所以不会有重复条目）；
+    // 中途被预算截断时只前进「连续完成」的条数，剩下的下轮接着来
+    cursorNext: (cursor + advance >= hosts.length) ? 0 : (cursor + advance)
   };
 
   // 6) 落盘：主机状态 / 摘要 / 游标
@@ -660,12 +684,38 @@ async function runHealthCheck(env, opts) {
   //    这里只有一个消费者（人看），不需要单条读，合并成一次写更划算。
   if (kv) {
     try {
+      // 先读旧快照再合并：一轮可能只探了名单的一段，整份覆盖会把没轮到的条目抹掉。
+      // 代价是多 1 次 KV 读（预算里没算，但 SUBREQ_BUDGET 已留出余量）。
       var hostMap = {};
+      try {
+        var prevRaw = await kv.get(HEALTH_HOSTS_KEY);
+        if (prevRaw) {
+          var pj = JSON.parse(prevRaw);
+          if (pj && pj.items && typeof pj.items === "object") hostMap = pj.items;
+        }
+      } catch (e) { hostMap = {}; }   // 旧值坏了就当没有，别拖累本轮写入
+
       for (var w = 0; w < done.length; w++) {
         var x = done[w];
-        hostMap[x.host] = { state: x.state, reason: x.reason, reg: x.reg || "", expires: x.expires || "" };
+        hostMap[x.host] = {
+          state: x.state, reason: x.reason, reg: x.reg || "",
+          expires: x.expires || "", at: summary.at   // at 既是「何时探的」，也是过期清理的依据
+        };
       }
-      await kv.put(HEALTH_HOSTS_KEY, JSON.stringify({ at: summary.at, items: hostMap }), { expirationTtl: HEALTH_HOST_TTL });
+
+      // 清掉过期的残留：名单里删掉的域名不会自己消失。
+      // 没有 at 的是上一版写入的旧格式，顺手一并清掉。
+      var cutoff = Date.now() - HEALTH_HOST_TTL * 1000;
+      var tracked = 0;
+      for (var hk in hostMap) {
+        if (!Object.prototype.hasOwnProperty.call(hostMap, hk)) continue;
+        var it = hostMap[hk];
+        var ts = it && it.at ? Date.parse(it.at) : NaN;
+        if (!(ts >= cutoff)) { delete hostMap[hk]; continue; }
+        tracked++;
+      }
+
+      await kv.put(HEALTH_HOSTS_KEY, JSON.stringify({ at: summary.at, tracked: tracked, items: hostMap }), { expirationTtl: HEALTH_HOST_TTL });
       await kv.put(HEALTH_SUMMARY_KEY, JSON.stringify(summary));
       await kv.put(HEALTH_CURSOR_KEY, String(summary.cursorNext));
     } catch (e) {

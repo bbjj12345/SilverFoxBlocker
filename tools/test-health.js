@@ -461,9 +461,10 @@ async function run(routes) {
     ];
 
     // 11 条 ≤ 上限 → 一轮全覆盖，游标归零（这正是原来卡住的 11 条名单）
+    // 用「每条只花 1 次」的路由，验证的是「条数上限」，不是预算
     {
       const store = {};
-      const j = await runWith(mkList(11), deadRoutes(), store);
+      const j = await runWith(mkList(11), aliveRoutes(), store);
       ok('11 条一轮全探（不再只探 10 条）', j.summary.probed === 11, JSON.stringify(j.summary));
       ok('11 条时游标归 0（下轮重头开始）', j.summary.cursorNext === 0 && store['health:cursor'] === '0');
       ok('probeable 如实报 11', j.summary.probeable === 11);
@@ -483,20 +484,99 @@ async function run(routes) {
       ok('游标前进到 25', j.summary.cursorNext === 25, String(j.summary.cursorNext));
     }
 
-    // 预算护栏：40 条 × 每条 3 次 fetch，36 次的预算只够 12 条
+    // 预算护栏：40 条 × 每条 3 次 fetch，30 次预算只够 8~10 条
+    // （并发 4 时领票会交错，最后一批可能只领到一半就集体退场，
+    //   所以不断言精确条数，只断言「不超预算、不漏、不伪造结论」这三条硬约束）
     {
       const store = {};
       const j = await runWith(mkList(40), deadRoutes(), store);
-      ok('子请求预算用尽就停（36 / 3 = 12 条）', j.summary.probed === 12, JSON.stringify({
+      ok('预算会挡住长名单（探不完 40 条）', j.summary.probed > 0 && j.summary.probed < 40, JSON.stringify({
         probed: j.summary.probed, sub: j.summary.subrequests
       }));
       ok('实际子请求数没超预算', j.summary.subrequests <= j.summary.subreqBudget, String(j.summary.subrequests));
       ok('note 说明是被预算截断', /子请求预算用尽/.test(j.summary.note || ''), j.summary.note);
-      ok('游标只前进到连续完成的那 12 条', j.summary.cursorNext === 12, String(j.summary.cursorNext));
+      ok('游标只前进到连续完成的条数', j.summary.cursorNext === j.summary.probed, String(j.summary.cursorNext));
       // 关键：没探完的绝不能被当成结论写下来
       const items = JSON.parse(store['health:hosts']).items;
-      ok('KV 里没有「未探完」的条目', Object.keys(items).length === 12, String(Object.keys(items).length));
-      ok('全部落成 unreachable，没有伪造 dead', j.summary.dead === 0 && j.summary.unreachable === 12);
+      ok('KV 里没有「未探完」的条目', Object.keys(items).length === j.summary.probed, String(Object.keys(items).length));
+      ok('全部落成 unreachable，没有伪造 dead', j.summary.dead === 0 && j.summary.unreachable === j.summary.probed);
+    }
+
+    // 墙钟护栏是「启动前预留」而不是「跑完再看」——这两句是它的骨架，
+    // 用源码断言防手滑删除（真跑 18 秒的用例会让测试慢到不可用）
+    ok('批次启动前预留单条最坏耗时', /Date\.now\(\) \+ PROBE_WORST_CASE_MS > hardLine/.test(src));
+    ok('最坏耗时由各阶段超时算出，不写死', /PROBE_WORST_CASE_MS\s*=\s*HTTP_TIMEOUT_MS \* 2 \+ DOH_TIMEOUT_MS \+ RDAP_TIMEOUT_MS/.test(src));
+    ok('墙钟硬线是 30s', /HEALTH_HARD_MS\s*=\s*30000/.test(src));
+  }
+
+  // =========================================================================
+  console.log('\n[17] 取数不环绕 + health:hosts 合并保留');
+  {
+    const mkList = n => JSON.stringify({
+      domains: Array.from({ length: n }, (_, i) => `s${i}.example.com`)
+    });
+    const aliveRoutes = () => [
+      { match: u => /s\d+\.example\.com|old\.example\.com/.test(u), reply: () => mkRes({ status: 200 }) }
+    ];
+
+    async function runWith(listBody, routes, store) {
+      const ENV2 = Object.assign({}, ENV, {
+        HEALTH: {
+          async get(k) { return store[k] === undefined ? null : store[k]; },
+          async put(k, v) { store[k] = v; }
+        }
+      });
+      global.fetch = makeFetch([
+        { match: u => u.includes('api.github.com'), body: listBody },
+        { match: u => u.includes('data.iana.org'), body: JSON.stringify({ services: [] }) }
+      ].concat(routes), []);
+      const req = new Request('https://w.dev/health?run=1', { headers: { 'X-API-Key': 'K1' } });
+      return (await (await worker.fetch(req, ENV2, { waitUntil() {} })).json()).summary;
+    }
+
+    // 游标停在 8：只探 8/9/10 三条，探到尾部就归 0，绝不绕回 s0
+    {
+      const store = { 'health:cursor': '8' };
+      const s = await runWith(mkList(11), aliveRoutes(), store);
+      ok('从游标 8 只探尾部 3 条', s.probed === 3, String(s.probed));
+      ok('探到尾部后游标归 0', s.cursorNext === 0 && store['health:cursor'] === '0');
+      const items = JSON.parse(store['health:hosts']).items;
+      ok('探的就是 s8/s9/s10，没有绕回 s0',
+        Object.keys(items).sort().join(',') === 's10.example.com,s8.example.com,s9.example.com',
+        Object.keys(items).join(','));
+    }
+
+    // 只探了名单的一段 → 旧快照里没轮到的条目必须留着
+    {
+      const now = new Date().toISOString();
+      const store = {
+        'health:hosts': JSON.stringify({ at: now, items: { 'old.example.com': { state: 'alive', reason: 'x', at: now } } })
+      };
+      await runWith(mkList(2), aliveRoutes(), store);
+      const snap = JSON.parse(store['health:hosts']);
+      ok('没轮到探的旧条目被保留', !!snap.items['old.example.com'], JSON.stringify(Object.keys(snap.items)));
+      ok('本轮条目也写进去了', !!snap.items['s0.example.com'] && !!snap.items['s1.example.com']);
+      ok('tracked 计数对得上', snap.tracked === 3, String(snap.tracked));
+    }
+
+    // 过期的、以及上一版没写 at 的旧格式，都在合并时清掉
+    {
+      const oldIso = new Date(Date.now() - 120 * 86400 * 1000).toISOString();
+      const fresh = new Date().toISOString();
+      const store = {
+        'health:hosts': JSON.stringify({
+          items: {
+            'stale.example.com': { state: 'alive', at: oldIso },
+            'noat.example.com': { state: 'alive' },
+            'fresh.example.com': { state: 'alive', at: fresh }
+          }
+        })
+      };
+      await runWith(mkList(1), aliveRoutes(), store);
+      const items = JSON.parse(store['health:hosts']).items;
+      ok('超过 90 天的条目被清掉', !items['stale.example.com']);
+      ok('没有 at 的旧格式被清掉', !items['noat.example.com']);
+      ok('新鲜的条目留着', !!items['fresh.example.com']);
     }
   }
 
