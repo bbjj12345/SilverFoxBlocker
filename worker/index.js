@@ -172,39 +172,59 @@ async function readFromGitee(env, file, deadline) {
   return { ok: false, tries: tries };
 }
 // ============================================================================
-// 名单存活巡检（RDAP）—— 2026-11-17
+// 名单存活巡检（HTTP 探测为主；DNS / RDAP 只做佐证）—— 2026-11-17 第二版
 //
-// 目标：定期确认 blacklist.json 里的条目「是否还注册着」，给作者一份可核对的死链清单。
-//   只做探测与记录，**不自动改名单**：名单的真相在私有仓库里，Worker 没有写权限，
-//   擅自过滤会出现「服务端说 15 条、客户端拿到 14 条」这种更难排查的偏差。
+// 目标只有一个：找出「用户浏览器打不开」的条目，列成清单给作者人工确认。
+//   只探测与记录，**不自动改名单**：名单的真相在私有仓库里，Worker 没有写权限，
+//   擅自过滤会出现「服务端 15 条、客户端 14 条」这种更难排查的偏差。
 //
-// 为什么用 RDAP 而不是 HTTP：
-//   · HTTP 会被三类噪声淹没——钓鱼站按 IP/地区/UA 屏蔽、自签证书让 fetch 直接 reject、
-//     「302 到正常站洗白」。这三件事都无法区分「站在不在」。
-//   · RDAP 问的是**注册局**：域名在不在册、有没有进 pendingDelete / redemptionPeriod。
-//     这是注册状态，不依赖目标站点是否愿意回应你，也不会替你访问恶意站点。
+// 第一版错在哪（务必别再走回头路）：
+//   · 把 RDAP 的 404 直接当「域名已删除」。可 RDAP 的 404 只代表「这个注册局的库里
+//     没有这条记录」，最常见的两个原因恰恰是：① 查的是子域名（www.xxx.com、es.xxx.com），
+//     而注册局只认可注册主域（eTLD+1）；② 域名在册但注册局尚未回填 RDAP 记录。
+//     于是 cchytech.com / wlygrowth.com 这类活得好好的站点被判死。
+//   · 只读 IANA 引导表 → .cn 没有分配 RDAP 根，整片 .cn 落进 unknown（其实 CNNIC 有服务）。
 //
-// 三条判定纪律：
-//   1) 只有「注册局明确说没有」才算 dead（404 / 废弃状态）；超时、429、5xx、
-//      该后缀根本没有 RDAP 服务，一律 unknown —— 宁可漏报，不可误删。
-//   2) 通配条目跳过：`*.*deepseek-*.*` 没有确定主机名，探测它等于探测一个正则。
-//   3) 路径条目只探主机部分（`host/path` 的 host），路径本身不参与存活判断。
+// 现在的判定链（越靠前越硬）：
+//   1) HTTP 探测：带桌面浏览器 UA 的 GET，跟随重定向，先 https 再 http。
+//      拿到**任何** HTTP 响应（200 / 403 / 404 / 500 都算）→ 服务器在应答 → alive。
+//      这一步直接对应「浏览器能不能打开」，也是本次唯一能判死的依据。
+//   2) 全部连不上 → DoH 查一次 DNS：NXDOMAIN 说明域名在 DNS 里根本不存在，
+//      浏览器必然打不开 → dead。这条比 RDAP 硬得多，且不需要碰目标站点。
+//   3) DoH 说「有记录」→ 域名还活着，站点只是不响应：归 unreachable（不判死）。
+//      出口在境外时，国内站点被墙 / 被地域屏蔽 / 临时故障都会长这样。
+//   4) DoH 也查不出来 → 才请注册局作证（IANA 引导表 + CNNIC 兜底，查**可注册主域**）：
+//      明确「无记录 / pendingDelete / redemptionPeriod」→ dead；说在册 → unreachable。
+//      RDAP 只在这一步出现，且永远不作为唯一证据。
 //
-// 与 KV 的关系（回答「FEEDBACK 能不能这么用」）：
-//   · FEEDBACK 是反馈/限流的命名空间，生命周期是「一天」；巡检结果是「长期状态」。
-//     混在一起会导致：想清限流就得小心别删巡检数据，想换 KV 又得动反馈链路。
-//     所以新建独立绑定 HEALTH。
-//   · 名单正文**不**进 KV —— 它已经在私有仓库里，KV 再存一份就有了两个真相。
-//     这里只存：每条主机的巡检状态、轮转游标、IANA RDAP 引导表缓存。
-//   · 没有绑定 HEALTH 也能跑：结果只写日志，功能降级但不报错（方便先部署再建 KV）。
+// 为什么还要 CNNIC：
+//   .cn / .com.cn / .org.cn / .中国 的注册局是 CNNIC，IANA 引导表里没有它，
+//   只能写死端点（https://rdap.cnnic.cn/domain/<域名>）。连不上就当查不到，不判死。
+//
+// 必须知道的代价：
+//   · HTTP 探测会**真的访问**被拉黑站点，Cloudflare 的出口 IP 会暴露给对方。
+//     这是「判断打不开」绕不开的取舍——RDAP 方案不碰站点，但也答不了这个问题。
+//   · 出口在境外：国内小站可能一律超时，从而大量落进 unreachable。
+//     所以 unreachable 永远不自动删除，只列出来让人在国内网络点一遍。
 // ============================================================================
+var HTTP_TIMEOUT_MS = 5000;               // 单个 scheme 的超时；两条 scheme 各算一次
+var HTTP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+var HTTP_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
+
+var DOH_URL = "https://cloudflare-dns.com/dns-query";
+var DOH_TIMEOUT_MS = 4000;
+
 var RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json";
 var RDAP_BOOTSTRAP_KEY = "rdap:bootstrap:v1";
 var RDAP_BOOTSTRAP_TTL = 7 * 24 * 3600;   // 引导表变动极少，一周一刷足够
 var RDAP_TIMEOUT_MS = 4000;
-var RDAP_BUDGET_MS = 25000;               // 单次总预算，远小于 Worker 的 CPU 上限
-var PROBE_MAX_PER_RUN = 30;               // 免费版每次调用 50 个子请求，留足余量给引导表与名单
-var PROBE_CONCURRENCY = 3;                // 并发 3：对注册局友好，也不至于把预算耗在等超时上
+var CNNIC_RDAP = "https://rdap.cnnic.cn"; // .cn 系的注册局 RDAP（IANA 表里没有）
+var CN_TLDS = ["cn", "xn--fiqs8s"];       // .cn / .中国
+
+var HEALTH_BUDGET_MS = 25000;             // 单次总预算，必须远小于 Worker 的墙钟上限
+var PROBE_MAX_PER_RUN = 10;               // 每条最坏 4 个子请求（https/http/DoH/RDAP），10 条留足余量
+var PROBE_CONCURRENCY = 4;                // 并发 4：对目标站点友好，也不至于把预算耗在等超时
 var HEALTH_CURSOR_KEY = "health:cursor";
 var HEALTH_SUMMARY_KEY = "health:summary";
 var HEALTH_HOST_PREFIX = "health:host:";
@@ -214,9 +234,39 @@ var HEALTH_HOST_TTL = 90 * 24 * 3600;
 // 它们是正常域名常开的锁，不是废弃信号。
 var RDAP_DEAD_STATUS = ["pendingDelete", "redemptionPeriod", "clientHold", "serverHold", "inactive"];
 
+// 常见多级公共后缀：算 eTLD+1 时必须知道「最后两段是不是一个可注册域」。
+// 只要覆盖会出现在名单里的实用集合即可，不追求 PSL 全量（PSL 有上万条，Worker 里塞不下）。
+var MULTI_SUFFIX = Object.create(null);
+(function () {
+  var s = "com.cn net.cn org.cn gov.cn edu.cn ac.cn mil.cn " +
+    "com.hk org.hk net.hk edu.hk gov.hk idv.hk " +
+    "com.tw org.tw net.tw edu.tw gov.tw idv.tw " +
+    "com.mo org.mo net.mo edu.mo gov.mo " +
+    "co.uk org.uk me.uk net.uk ac.uk gov.uk ltd.uk plc.uk " +
+    "com.au net.au org.au edu.au gov.au id.au asn.au " +
+    "co.jp ne.jp or.jp ac.jp go.jp gr.jp ed.jp " +
+    "co.kr or.kr ne.kr go.kr re.kr " +
+    "com.sg net.sg org.sg edu.sg gov.sg " +
+    "com.my net.my org.my edu.my gov.my " +
+    "co.nz net.nz org.nz govt.nz ac.nz " +
+    "com.br net.br org.br gov.br edu.br " +
+    "com.mx org.mx net.mx gob.mx edu.mx " +
+    "co.in net.in org.in gen.in firm.in ind.in " +
+    "com.tr net.tr org.tr gov.tr edu.tr " +
+    "co.za org.za net.za gov.za ac.za " +
+    "com.ar org.ar net.ar gob.ar " +
+    "com.ua net.ua org.ua gov.ua " +
+    "co.id or.id web.id ac.id go.id " +
+    "com.vn net.vn org.vn gov.vn edu.vn " +
+    "co.th in.th or.th ac.th go.th " +
+    "com.eg com.sa com.pk com.bd com.ng com.ph com.co com.pe com.ve com.ru";
+  var a = s.split(" ");
+  for (var i = 0; i < a.length; i++) MULTI_SUFFIX[a[i]] = 1;
+})();
+
 function healthKv(env) { return (env && env.HEALTH) || null; }
 
-// 从一条名单条目里取出可探测的主机名；取不到返回 ''（调用方据此跳过）
+// 从一条名单条目里取出可探测的主机名；取不到返回 ''
 function probeHostOf(entry) {
   var s = String(entry == null ? "" : entry).trim();
   if (!s) return "";
@@ -227,7 +277,7 @@ function probeHostOf(entry) {
   if (at !== -1) s = s.slice(at + 1);                               // 去掉 userinfo
   s = s.replace(/:\d+$/, "").replace(/\.$/, "").toLowerCase();
   if (!s || s.indexOf(".") === -1) return "";
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return "";                 // 裸 IP 没有 RDAP 记录
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return "";                 // 裸 IP 没有注册记录
   return s;
 }
 
@@ -252,9 +302,126 @@ function selectProbeTargets(domains) {
   return { hosts: hosts, skipped: skipped };
 }
 
-// IANA RDAP 引导表：TLD → 该注册局的 RDAP 根地址。
-// 不走 rdap.org 中转：它是社区服务、按 IP 限流，且对不支持的后缀也会回 404，
-// 用它判「域名已删除」会假阳性。直接问注册局才拿得到确定结论。
+// 主机名 → 可注册主域（eTLD+1）。RDAP 只能查这个层级：
+// 拿 www.xxx.com 去问注册局必然 404，这正是第一版假阳性的来源。
+function registrableOf(host) {
+  var labels = String(host || "").toLowerCase().replace(/\.$/, "").split(".");
+  if (labels.length <= 2) return labels.join(".");
+  var last2 = labels.slice(-2).join(".");
+  if (MULTI_SUFFIX[last2] && labels.length >= 3) return labels.slice(-3).join(".");
+  return last2;
+}
+
+// Cloudflare DoH（JSON 口径）。Status 3 = NXDOMAIN：域名在 DNS 里不存在。
+async function dohLookup(host) {
+  var url = DOH_URL + "?name=" + encodeURIComponent(host) + "&type=A";
+  var ctrl = new AbortController();
+  var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, DOH_TIMEOUT_MS);
+  try {
+    var res = await fetch(url, {
+      headers: { "Accept": "application/dns-json", "User-Agent": UA },
+      signal: ctrl.signal
+    });
+    if (!res.ok) return { ok: false, error: "DoH HTTP " + res.status };
+    var j = await res.json();
+    var st = (j && typeof j.Status === "number") ? j.Status : -1;
+    var ans = (j && Array.isArray(j.Answer)) ? j.Answer : [];
+    return { ok: true, nx: st === 3, status: st, answers: ans.length };
+  } catch (err) {
+    var msg = (err && err.message) || String(err);
+    return { ok: false, error: /abort/i.test(msg) ? "DoH 超时" : ("DoH 失败：" + msg) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 把 fetch 的报错归类，好在清单里写清楚「为什么打不开」
+function httpErrKind(msg) {
+  var s = String(msg || "");
+  if (/abort|timed? ?out|timeout/i.test(s)) return "超时";
+  if (/ENOTFOUND|getaddrinfo|NXDOMAIN|could not resolve|resolve/i.test(s)) return "域名解析失败";
+  if (/certificate|tls|ssl|handshake|self.signed|CERT_/i.test(s)) return "证书错误";
+  if (/ECONNREFUSED|connection refused/i.test(s)) return "拒绝连接";
+  if (/ECONNRESET|reset/i.test(s)) return "连接被重置";
+  return "网络错误";
+}
+
+// HTTP 探测：只要服务器回了响应就算「能打开」，不管状态码是多少。
+// 先 https 再 http：自签证书会让 https 直接 reject，但 http 往往还能给个 301/200，
+// 而浏览器此时也只是弹个警告页、点「继续访问」照样进得去。
+async function probeHttp(host) {
+  var schemes = ["https", "http"];
+  var last = null;
+  for (var i = 0; i < schemes.length; i++) {
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, HTTP_TIMEOUT_MS);
+    try {
+      var res = await fetch(schemes[i] + "://" + host + "/", {
+        method: "GET",
+        headers: {
+          "User-Agent": HTTP_UA,
+          "Accept": HTTP_ACCEPT,
+          "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+          "Cache-Control": "no-cache"
+        },
+        redirect: "follow",
+        signal: ctrl.signal
+      });
+      var status = res.status;
+      var finalUrl = res.url || "";
+      // 不读正文，立刻放开连接；cancel 是异步的，吞掉可能的 rejection
+      try {
+        var cp = res.body && res.body.cancel();
+        if (cp && typeof cp.catch === "function") cp.catch(function () {});
+      } catch (e) {}
+      return { ok: true, status: status, via: schemes[i], finalUrl: finalUrl };
+    } catch (err) {
+      var msg = (err && err.message) || String(err);
+      last = { kind: httpErrKind(msg), msg: msg, via: schemes[i] };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { ok: false, kind: (last && last.kind) || "网络错误", msg: (last && last.msg) || "", via: (last && last.via) || "" };
+}
+
+// 问一个注册局端点：只回 unregistered / doomed / registered / unknown
+async function queryRegistry(base, reg) {
+  var url = String(base).replace(/\/+$/, "") + "/domain/" + encodeURIComponent(reg);
+  var ctrl = new AbortController();
+  var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, RDAP_TIMEOUT_MS);
+  try {
+    var res = await fetch(url, {
+      headers: { "Accept": "application/rdap+json", "User-Agent": UA },
+      signal: ctrl.signal,
+      redirect: "follow"
+    });
+    // 404 只在「DoH 也查不出来」时才会被采信（见 probeOne），所以这里的弱证据不会单独判死
+    if (res.status === 404) return { state: "unregistered", base: base };
+    if (!res.ok) return { state: "unknown", base: base, reason: "HTTP " + res.status };
+    var data;
+    try { data = await res.json(); } catch (e) { return { state: "unknown", base: base, reason: "响应不是 JSON" }; }
+    var st = (data && Array.isArray(data.status)) ? data.status : [];
+    var bad = [];
+    for (var i = 0; i < st.length; i++) { if (RDAP_DEAD_STATUS.indexOf(st[i]) !== -1) bad.push(st[i]); }
+    if (bad.length) return { state: "doomed", base: base, status: bad.join(",") };
+    // 到期时间顺带记下来：接近到期的条目下个月很可能变成 dead，提前看得到
+    var exp = "";
+    var evts = (data && data.events) || [];
+    for (var e = 0; e < evts.length; e++) {
+      if (evts[e] && evts[e].eventAction === "expiration") { exp = evts[e].eventDate || ""; break; }
+    }
+    return { state: "registered", base: base, status: st.join(","), expires: exp };
+  } catch (err) {
+    var msg = (err && err.message) || String(err);
+    return { state: "unknown", base: base, reason: /abort/i.test(msg) ? "RDAP 超时" : ("网络错误：" + msg) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// IANA RDAP 引导表：TLD → 该注册局的 RDAP 根地址（KV 缓存 7 天）。
+// 不走 rdap.org 中转：它是社区服务、按 IP 限流，对不支持的后缀也会回 404，用它判死会假阳性。
 async function loadRdapBootstrap(env) {
   var kv = healthKv(env);
   if (kv) {
@@ -286,55 +453,79 @@ async function loadRdapBootstrap(env) {
   return { map: map, cached: false };
 }
 
-// 探测单个主机：只回三种状态，unknown 永远不参与「剔除」判断
-async function probeRdapHost(host, bootstrapMap) {
-  var labels = host.split(".");
-  var tld = labels[labels.length - 1] || "";
-  var base = (bootstrapMap && bootstrapMap[tld]) || "";
-  if (!base) return { host: host, state: "unknown", reason: "该后缀没有 RDAP 服务（." + tld + "）" };
-
-  var url = base.replace(/\/+$/, "") + "/domain/" + host;
-  var ctrl = new AbortController();
-  var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, RDAP_TIMEOUT_MS);
-  try {
-    var res = await fetch(url, {
-      headers: { "Accept": "application/rdap+json", "User-Agent": UA },
-      signal: ctrl.signal,
-      redirect: "follow"
-    });
-    if (res.status === 404) return { host: host, state: "dead", reason: "注册局返回 404（不在册或已删除）" };
-    if (!res.ok) return { host: host, state: "unknown", reason: "RDAP HTTP " + res.status };
-    var data;
-    try { data = await res.json(); } catch (e) { return { host: host, state: "unknown", reason: "RDAP 响应不是 JSON" }; }
-    var st = (data && Array.isArray(data.status)) ? data.status : [];
-    var bad = [];
-    for (var i = 0; i < st.length; i++) { if (RDAP_DEAD_STATUS.indexOf(st[i]) !== -1) bad.push(st[i]); }
-    if (bad.length) return { host: host, state: "dead", reason: "注册局状态 " + bad.join(",") };
-
-    // 到期时间顺带记下来：接近到期的条目下个月很可能变成 dead，提前看得到
-    var exp = "";
-    var evts = (data && data.events) || [];
-    for (var e = 0; e < evts.length; e++) {
-      if (evts[e] && evts[e].eventAction === "expiration") { exp = evts[e].eventDate || ""; break; }
-    }
-    return {
-      host: host,
-      state: "alive",
-      reason: st.length ? ("注册局状态 " + st.join(",")) : "正常在册",
-      expires: exp
-    };
-  } catch (err) {
-    var msg = (err && err.message) || String(err);
-    return { host: host, state: "unknown", reason: /abort/i.test(msg) ? "RDAP 超时" : ("网络错误：" + msg) };
-  } finally {
-    clearTimeout(timer);
+// 依次问注册局：IANA 引导表给的端点 → .cn 系补 CNNIC。任何一路给出确定答案就停。
+async function probeRegistry(reg, bootstrapMap) {
+  var tld = reg.split(".").pop();
+  var bases = [];
+  if (bootstrapMap && bootstrapMap[tld]) bases.push(bootstrapMap[tld]);
+  if (CN_TLDS.indexOf(tld) !== -1) bases.push(CNNIC_RDAP);
+  // 去重（.cn 若哪天进了 IANA 表，也不会问两遍同一个地址）
+  var uniq = [];
+  for (var i = 0; i < bases.length; i++) {
+    var b = String(bases[i]).replace(/\/+$/, "");
+    if (uniq.indexOf(b) === -1) uniq.push(b);
   }
+  if (!uniq.length) return { state: "unknown", reason: "该后缀没有已知的 RDAP 服务（." + tld + "）", tried: [] };
+  var tried = [];
+  for (var n = 0; n < uniq.length; n++) {
+    var r = await queryRegistry(uniq[n], reg);
+    if (r.state === "unregistered" || r.state === "doomed" || r.state === "registered") {
+      r.tried = tried;
+      return r;
+    }
+    tried.push(uniq[n] + "（" + (r.reason || "未知") + "）");
+  }
+  return { state: "unknown", reason: tried.join("；"), tried: tried };
 }
 
-// 巡检主流程：读名单 → 挑目标 → 分批评测 → 汇总写 KV / 日志
+// 探测单个主机：先看能不能打开，再说域名还在不在，最后才请注册局作证
+async function probeOne(host, bootstrapMap) {
+  var reg = registrableOf(host);
+  var http = await probeHttp(host);
+  if (http.ok) {
+    return {
+      host: host, reg: reg, state: "alive",
+      reason: "HTTP " + http.status + "（" + http.via + "）",
+      http: http.status, via: http.via, finalUrl: http.finalUrl
+    };
+  }
+
+  // 打不开 → DNS 确认域名还在不在（这一步不需要碰目标站点）
+  var dns = await dohLookup(host);
+  if (dns.ok && dns.nx) {
+    return { host: host, reg: reg, state: "dead", httpErr: http.kind, reason: "DNS 中不存在（NXDOMAIN），浏览器必然打不开" };
+  }
+  if (dns.ok) {
+    return {
+      host: host, reg: reg, state: "unreachable", httpErr: http.kind, dns: "ok",
+      reason: "站点不响应（" + http.kind + "），但域名解析正常——可能被墙 / 地域屏蔽 / 临时故障，请人工确认"
+    };
+  }
+
+  // DoH 也查不出来 → 才请注册局
+  var rd = await probeRegistry(reg, bootstrapMap);
+  if (rd.state === "unregistered") {
+    return { host: host, reg: reg, state: "dead", httpErr: http.kind, registry: rd.base, reason: "连不上，且注册局无 " + reg + " 的记录" };
+  }
+  if (rd.state === "doomed") {
+    return { host: host, reg: reg, state: "dead", httpErr: http.kind, registry: rd.base, reason: "连不上，注册局状态 " + rd.status };
+  }
+  if (rd.state === "registered") {
+    return {
+      host: host, reg: reg, state: "unreachable", httpErr: http.kind, registry: rd.base, expires: rd.expires || "",
+      reason: "站点不响应（" + http.kind + "），但域名在册" + (rd.expires ? "（到期 " + rd.expires + "）" : "") + "，请人工确认"
+    };
+  }
+  return {
+    host: host, reg: reg, state: "unreachable", httpErr: http.kind,
+    reason: "连不上，DNS 查询失败，注册状态未能确认（" + (rd.reason || "未知") + "）"
+  };
+}
+
+// 巡检主流程：读名单 → 挑目标 → 分批探测 → 汇总写 KV / 日志
 async function runHealthCheck(env, opts) {
   var t0 = Date.now();
-  var deadline = t0 + RDAP_BUDGET_MS;
+  var deadline = t0 + HEALTH_BUDGET_MS;
   var kv = healthKv(env);
   var verbose = !!(opts && opts.verbose);
 
@@ -356,7 +547,10 @@ async function runHealthCheck(env, opts) {
   var sel = selectProbeTargets(list.domains);
   var hosts = sel.hosts;
   if (!hosts.length) {
-    return { ok: true, at: new Date().toISOString(), source: src.source, total: 0, probed: 0, alive: 0, dead: 0, unknown: 0, deadList: [], skipped: sel.skipped };
+    return {
+      ok: true, at: new Date().toISOString(), source: src.source, total: 0, probed: 0,
+      alive: 0, dead: 0, unreachable: 0, unknown: 0, deadList: [], unreachableList: [], skipped: sel.skipped
+    };
   }
 
   // 2) 游标：名单比单次上限长时，每天接着上次的位置探，几天覆盖一轮
@@ -369,29 +563,28 @@ async function runHealthCheck(env, opts) {
   var slice = [];
   for (var i = 0; i < take; i++) slice.push(hosts[(cursor + i) % hosts.length]);
 
-  // 3) 引导表（1 个子请求，缓存 7 天）
+  // 3) 引导表（1 个子请求，缓存 7 天）。拉不到不致命：.cn 还能走 CNNIC，
+  //    其它后缀会落进 unreachable，不会被误删。
   var bs = await loadRdapBootstrap(env);
-  if (!bs.map) {
-    return { ok: false, at: new Date().toISOString(), error: "RDAP 引导表不可用：" + (bs.error || "未知原因") };
-  }
+  if (!bs.map) console.warn("[health] RDAP 引导表不可用（仅影响佐证）：" + (bs.error || "未知原因"));
 
-  // 4) 分批探测：并发 3，超预算就停（剩下的下一轮继续）
+  // 4) 分批探测：并发 4，超预算就停（剩下的下一轮继续）
   var results = [];
   var stopped = "";
   for (var n = 0; n < slice.length; n += PROBE_CONCURRENCY) {
     if (Date.now() > deadline) { stopped = "总预算用尽，剩余条目下一轮继续"; break; }
     var batch = slice.slice(n, n + PROBE_CONCURRENCY);
-    var rs = await Promise.all(batch.map(function (h) { return probeRdapHost(h, bs.map); }));
+    var rs = await Promise.all(batch.map(function (h) { return probeOne(h, bs.map || {}); }));
     for (var b = 0; b < rs.length; b++) results.push(rs[b]);
   }
 
   // 5) 汇总
-  var alive = [], dead = [], unknown = [], deadList = [];
+  var alive = [], dead = [], unreachable = [], deadList = [], unreachableList = [];
   for (var r = 0; r < results.length; r++) {
     var it = results[r];
     if (it.state === "dead") { dead.push(it); deadList.push(it.host); }
-    else if (it.state === "alive") alive.push(it);
-    else unknown.push(it);
+    else if (it.state === "unreachable") { unreachable.push(it); unreachableList.push(it.host); }
+    else alive.push(it);
     if (verbose) console.log("[health] " + it.state + " " + it.host + "  " + it.reason);
   }
 
@@ -405,13 +598,20 @@ async function runHealthCheck(env, opts) {
     probed: results.length,
     alive: alive.length,
     dead: dead.length,
-    unknown: unknown.length,
+    unreachable: unreachable.length,
+    unknown: 0,
     deadList: deadList,
-    // 只留前 20 条明细，避免摘要随名单增长而膨胀（KV 单值上限很大，但摘要没必要那么大）
+    unreachableList: unreachableList,
+    // 只留前 20 条明细，避免摘要随名单增长而膨胀
     deadDetail: dead.slice(0, 20),
-    unknownDetail: unknown.slice(0, 20),
+    unreachableDetail: unreachable.slice(0, 20),
     skipped: sel.skipped,
     note: stopped || "",
+    // 把判据写进结果本身：以后看历史记录也知道这一版是怎么判的
+    verdict: {
+      dead: "HTTP 不可达 且（DNS 不存在 或 注册局明确无记录/已废弃）→ 可以删",
+      unreachable: "HTTP 不可达但域名仍在（或无法确认）→ 不要自动删，请在国内网络点一遍"
+    },
     cursorNext: hosts.length > take ? (cursor + results.length) % hosts.length : 0
   };
 
@@ -421,7 +621,8 @@ async function runHealthCheck(env, opts) {
       for (var w = 0; w < results.length; w++) {
         var x = results[w];
         await kv.put(HEALTH_HOST_PREFIX + x.host, JSON.stringify({
-          state: x.state, reason: x.reason, expires: x.expires || "", at: summary.at
+          state: x.state, reason: x.reason, reg: x.reg || "",
+          expires: x.expires || "", at: summary.at
         }), { expirationTtl: HEALTH_HOST_TTL });
       }
       await kv.put(HEALTH_SUMMARY_KEY, JSON.stringify(summary));
@@ -552,10 +753,11 @@ var index_default = {
     }
 
     // ==========================================
-    // 功能 C: 名单存活巡检（RDAP）
-    //   GET /health         → 最近一次巡检的摘要（读 KV）
-    //   GET /health?run=1   → 立刻跑一次（最慢约 25s，受 RDAP_BUDGET_MS 约束）
-    //   GET /health?dead=1  → text/plain，一行一个疑似失效域名，便于直接粘回 blacklist.json
+    // 功能 C: 名单存活巡检（HTTP 探测为主，DNS / RDAP 佐证）
+    //   GET /health                → 最近一次巡检的摘要（读 KV）
+    //   GET /health?run=1          → 立刻跑一次（最慢约 25s，受 HEALTH_BUDGET_MS 约束）
+    //   GET /health?dead=1         → text/plain，一行一个「建议删除」的域名
+    //   GET /health?unreachable=1  → text/plain，一行一个「打不开但域名还在」的域名（需人工确认）
     //   与 /list 共用 LIST_API_KEY；不带 Origin 的 curl 调用照常可用（便于维护者自查）。
     // ==========================================
     if (request.method === "GET" && url.pathname === "/health") {
@@ -576,14 +778,18 @@ var index_default = {
           if (s) summary = JSON.parse(s);
         } catch (e) { /* 读不出来就当没有历史结果 */ }
       }
-      if (url.searchParams.get("dead") === "1") {
-        const list = (summary && summary.deadList) || [];
+      const fmt = String(url.searchParams.get("list") || "").toLowerCase();
+      const wantDead = url.searchParams.get("dead") === "1";
+      const wantUnreach = url.searchParams.get("unreachable") === "1";
+      if (wantDead || wantUnreach || fmt === "dead" || fmt === "unreachable") {
+        const pick = (wantDead || fmt === "dead") ? "deadList" : "unreachableList";
+        const list = (summary && summary[pick]) || [];
         return new Response(list.join("\n") + (list.length ? "\n" : ""), {
           status: 200,
           headers: {
             "Content-Type": "text/plain; charset=utf-8",
             "Cache-Control": "no-store",
-            "X-Data-Source": "rdap",
+            "X-Data-Source": "http-probe",
             ...cors.headers
           }
         });
