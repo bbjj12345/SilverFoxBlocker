@@ -10,6 +10,17 @@ id = "6d141838347d4cfc86083a479231bf02"
 binding = "FEEDBACK"
 id = "98ac1246bc7746368baf6a071f9fed9f"
 
+# 名单存活巡检（RDAP）的结果存储 —— 与 FEEDBACK 分开：
+#   FEEDBACK 存「用户反馈/按天限流」，生命周期一天；这里存「域名注册状态/游标/引导表缓存」，
+#   生命周期以月计。混在同一个命名空间里，清理限流数据时容易连带清掉巡检游标。
+#
+# 启用步骤（不建也能跑，只是结果只进日志）：
+#   npx wrangler kv namespace create HEALTH
+#   → 把输出的 id 填到下面，取消这两行注释，再 npx wrangler deploy
+[[kv_namespaces]]
+binding = "HEALTH"
+id = "112de06669d341c5acad07e950411df3"
+
 [vars]
 GITEE_OWNER = "bbjj12345"
 GITEE_REPO = "silver-fox-blocker-cloud"
@@ -22,3 +33,8 @@ GITEE_REPO = "silver-fox-blocker-cloud"
 [observability.logs]
 enabled = true
 invocation_logs = true
+
+[triggers]
+# 每天 03:00 UTC（北京时间 11:00）跑一次名单存活巡检。
+# 注意 Cron 用 UTC：写成 "0 3 * * *" 就是北京时间 11:00，不是凌晨 3 点。
+crons = ["0 3 * * *"]
