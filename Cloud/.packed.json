@@ -1,0 +1,14 @@
+{
+  "blacklist.json": {
+    "sha256": "d2c47f85a32d72800285148909ef24c87e1e92bbccdf41acad8dcae192bdea9e",
+    "count": 18,
+    "at": "2026-11-21T13:14:36.764Z",
+    "bytes": 5887
+  },
+  "whitelist.json": {
+    "sha256": "5ad49fb9bec9cbeebb7bdffe56ce1e44e9a1760a32fe3ab4aab3f61c1e4974a8",
+    "count": 1,
+    "at": "2026-11-21T13:14:36.790Z",
+    "bytes": 10767
+  }
+}

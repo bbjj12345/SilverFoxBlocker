@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>官方页面 · SilverFoxBlocker</title>
+<link rel="stylesheet" href="no-correct-site.css">
+</head>
+<body>
+  <main class="wrap">
+    <div class="card">
+      <div class="icon" aria-hidden="true">
+        <svg viewBox="0 0 64 72" width="56" height="63" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M32 3 5 13v22c0 17 11.6 28.7 27 34 15.4-5.3 27-17 27-34V13L32 3Z" fill="url(#g)" stroke="rgba(255,255,255,.28)" stroke-width="2"/>
+          <path d="M21 35.5 29 44l15-16" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="g" x1="5" y1="3" x2="59" y2="69" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#3b82f6"/><stop offset="1" stop-color="#1d4ed8"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+
+      <!-- 旧（2026-11-12）：固定文案，只有一个「没有收录」状态。保留备查。
+      <h1>没有已收录的正确域名</h1>
+      <p class="lead">你访问的页面暂时没有已被收录的正确域名，或已被作者证实为应被拦截的页面。如果你认为这是一个错误，请在扩展的反馈页面向作者发送反馈。</p>
+      -->
+      <!-- 新（2026-11-18）：标题与说明由 no-correct-site.js 按「有没有收录官网」动态改写。
+           这两行的初始文案就是「一条都没收录」的原文 —— 即使脚本异常，页面仍然读得懂。 -->
+      <h1 id="title">没有已收录的正确域名</h1>
+      <p class="lead" id="lead">你访问的页面暂时没有已被收录的正确域名，或已被作者证实为应被拦截的页面。如果你认为这是一个错误，请在扩展的反馈页面向作者发送反馈。</p>
+
+      <p class="meta" id="hostLine" hidden>当前站点：<b id="hostName"></b></p>
+
+      <!-- ★ 2026-11-18：已收录的官网列表（支持多官网 / 链接级页面）。
+           内容一律用 DOM 构建、不用 innerHTML —— 文案与地址都来自数据文件，统一按文本节点落地。 -->
+      <ul class="sites" id="siteList" hidden></ul>
+      <p class="hint" id="siteHint" hidden>以上地址来自扩展内置表与云端补录。点开前请再核对一次地址栏的域名，与这里完全一致才是官方站点。</p>
+      <p class="note" id="verdictNote" hidden></p>
+
+      <div class="actions">
+        <button class="btn btn-sec" id="backBtn" type="button">返回上一页</button>
+        <button class="btn btn-primary" id="fbBtn" type="button">向作者发送反馈</button>
+      </div>
+
+      <!-- 旧（2026-11-12）：页脚固定说「没有收录」；现在有官网时这句话是错的，改由脚本按状态改写。
+      <p class="foot">「访问正确的页面」依据扩展内置的品牌官网表与云端白名单的官网补录工作。<br>没有收录不等于该站安全，请勿在此页面下载或安装任何程序。</p>
+      -->
+      <p class="foot" id="foot">「访问正确的页面」依据扩展内置的品牌官网表与云端白名单的官网补录工作。<br>没有收录不等于该站安全，请勿在此页面下载或安装任何程序。</p>
+    </div>
+  </main>
+  <!-- 说明页自己做解析：需要内置官网表 + 解析器（两者都是扩展内部脚本，CSP 允许 'self'） -->
+  <script src="../rules/iocs.js"></script>
+  <script src="../rules/analyzer.js"></script>
+  <script src="no-correct-site.js"></script>
+</body>
+</html>

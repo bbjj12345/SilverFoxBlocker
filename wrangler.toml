@@ -1,0 +1,46 @@
+name = "silverfoxblocker"
+main = "worker/index.js"
+compatibility_date = "2026-11-02"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "6d141838347d4cfc86083a479231bf02"
+
+[[kv_namespaces]]
+binding = "FEEDBACK"
+id = "98ac1246bc7746368baf6a071f9fed9f"
+
+# 名单存活巡检（HTTP 探测 + DNS / 注册局佐证）的结果存储 —— 与 FEEDBACK 分开：
+#   FEEDBACK 存「用户反馈/按天限流」，生命周期一天；这里存「域名存活状态/游标/引导表缓存」，
+#   生命周期以月计。混在同一个命名空间里，清理限流数据时容易连带清掉巡检游标。
+#
+# 启用步骤（不建也能跑，只是结果只进日志）：
+#   npx wrangler kv namespace create HEALTH
+#   → 把输出的 id 填到下面，取消这两行注释，再 npx wrangler deploy
+[[kv_namespaces]]
+binding = "HEALTH"
+id = "112de06669d341c5acad07e950411df3"
+
+[vars]
+GITEE_OWNER = "bbjj12345"
+GITEE_REPO = "silver-fox-blocker-cloud"
+# 巡检结果邮件的收件人（可选）。
+# 默认发到 feedback@silverfoxblocker.dpdns.org，再由 Cloudflare Email Routing 转发到
+# 你真正的邮箱 —— 私人地址不必写进代码或仓库，换邮箱只改面板里的路由规则。
+# 想和用户反馈分箱：在 Email Routing 里新建 health@silverfoxblocker.dpdns.org 的转发规则，
+# 然后取消下面这行注释（不改代码，重新部署一次即可）。
+# HEALTH_MAIL_TO = "health@silverfoxblocker.dpdns.org"
+# CORS 白名单：Worker 代码里已内置「Edge 商店版 ID」+「本地加载已解压实例 ID」两个值，
+# 正常情况下这一行保持注释即可。只有换了解压路径（本地实例 ID 随之变化）或新增测试机时，
+# 才取消注释并填新的 Origin —— 形如 chrome-extension://<32位ID>，多个用英文逗号分隔。
+# ⚠️ 只能写在当前这个 [vars] 段里：TOML 不允许出现第二个 [vars] 表，重复会直接部署失败。
+# ALLOWED_ORIGINS = "chrome-extension://xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[triggers]
+# 每天 03:00 UTC（北京时间 11:00）跑一次名单存活巡检。
+# 注意 Cron 用 UTC：写成 "0 3 * * *" 就是北京时间 11:00，不是凌晨 3 点。
+crons = ["0 3 * * *"]

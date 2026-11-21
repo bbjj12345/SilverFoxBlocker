@@ -1,0 +1,219 @@
+/* no-correct-site.css —— 「访问正确的页面」说明页样式
+ * 独立页面自有样式，不依赖 options.css（那边有大量设置页专用布局与主题变量）。
+ * 主题跟随系统 prefers-color-scheme，与设置页的深色/浅色观感保持一致。 */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --text: #1a1c20;
+  --muted: #61666e;
+  --line: #e3e6ea;
+  --primary: #1d4ed8;
+  --primary-hover: #1a45bd;
+  --sec-bg: #eef0f3;
+  --sec-hover: #e3e6eb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --card: #1e2126;
+    --text: #e9ebee;
+    --muted: #9aa1ab;
+    --line: #2d3138;
+    --primary: #3b6fe0;
+    --primary-hover: #4a7cea;
+    --sec-bg: #272b31;
+    --sec-hover: #30353c;
+  }
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+}
+
+.card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 34px 30px 26px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .08);
+  text-align: center;
+}
+
+.icon { display: flex; justify-content: center; margin-bottom: 14px; }
+
+h1 {
+  margin: 0 0 14px;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: .2px;
+}
+
+.lead {
+  margin: 0 0 14px;
+  font-size: 14px;
+  color: var(--text);
+  text-align: left;
+  text-indent: 0;
+}
+
+.meta {
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--sec-bg);
+  font-size: 13px;
+  color: var(--muted);
+  text-align: left;
+  word-break: break-all;
+}
+.meta b { color: var(--text); font-weight: 600; }
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+
+.btn {
+  flex: 1 1 0;
+  padding: 11px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-primary:hover { background: var(--primary-hover); }
+
+.btn-sec {
+  background: var(--sec-bg);
+  color: var(--text);
+  border-color: var(--line);
+}
+.btn-sec:hover { background: var(--sec-hover); }
+
+.foot {
+  margin: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+@media (max-width: 420px) {
+  .card { padding: 26px 18px 20px; }
+  .actions { flex-direction: column; }
+}
+
+/* ==========================================================================
+   官方页面列表（2026-11-18 新增）
+   一个品牌可能有多个官网，也可能只有一个「发布页」链接，所以列表要能容纳
+   一行行「文案 + 完整地址」，并允许地址折行（GitHub Releases 那种很长）。
+   配色沿用上面的变量，浅色 / 深色主题都自动跟随。
+   ========================================================================== */
+.sites {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  text-align: left;
+}
+
+.site {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--sec-bg);
+}
+.site + .site { margin-top: 8px; }
+
+.site-label {
+  flex: 0 0 auto;
+  min-width: 62px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.site-url {
+  flex: 1 1 auto;
+  font-size: 13.5px;
+  color: var(--primary);
+  text-decoration: none;
+  word-break: break-all;
+  /* 等宽字体的地址更好逐个字符核对，正是这一页要用户做的事 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+}
+.site-url:hover { text-decoration: underline; }
+.site-url:visited { color: var(--primary); }
+.site-url:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.hint,
+.note {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: left;
+  color: var(--muted);
+}
+
+/* 推断类命中（拼写相近 / 主干同名）需要更醒目的提示，用琥珀色而不是红色：
+   它只是「疑似」，用户仍可能是在访问同名的另一家公司。 */
+.note {
+  padding: 9px 12px;
+  border: 1px solid #e8c98a;
+  border-radius: 9px;
+  background: #fdf6e6;
+  color: #7a5b13;
+}
+@media (prefers-color-scheme: dark) {
+  .note {
+    border-color: #6b5426;
+    background: #2b2415;
+    color: #e6c877;
+  }
+}
+
+@media (max-width: 420px) {
+  .site { flex-direction: column; gap: 2px; }
+  .site-label { min-width: 0; }
+}
+
