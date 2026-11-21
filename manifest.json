@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extensionName__",
-  "version": "1.8.4",
+  "version": "1.8.5",
   "default_locale": "zh_CN",
   "description": "__MSG_extensionDescription__",
   "homepage_url": "https://github.com/bbjj12345/SilverFoxBlocker",
@@ -11,7 +11,8 @@
     "downloads",
     "webNavigation",
     "notifications",
-    "alarms"
+    "alarms",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"

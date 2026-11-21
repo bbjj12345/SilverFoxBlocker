@@ -33,6 +33,13 @@
 .sf-dot { flex: 0 0 auto !important; width: 7px !important; height: 7px !important; margin-top: 6px !important; border-radius: 50% !important;
   background: linear-gradient(135deg, #ff7a7a, #ffb86e) !important; box-shadow: 0 0 8px rgba(255,120,120,.8) !important; }
 .sf-btnrow { display: flex !important; gap: 12px !important; }
+/* ★ 2026-11-19：拉黑确认页 —— 第三方下载域名的勾选列表（与 .sf-reasons 同一套玻璃质感） */
+.sf-bl-list { margin: 0 0 16px !important; padding: 8px 12px !important; max-height: 210px !important; overflow-y: auto !important;
+  border-radius: 14px !important; background: rgba(255,255,255,.06) !important; border: 1px solid rgba(255,255,255,.10) !important; }
+.sf-bl-row { display: flex !important; align-items: center !important; gap: 9px !important; padding: 7px 0 !important;
+  font-size: calc(12.5px * var(--sf-scale)) !important; cursor: pointer !important; user-select: none !important; }
+.sf-bl-row input { flex: 0 0 auto !important; width: 15px !important; height: 15px !important; margin: 0 !important; accent-color: #7db4ff !important; cursor: pointer !important; }
+.sf-bl-row span { word-break: break-all !important; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace !important; opacity: .9 !important; }
 .sf-btn { flex: 1 !important; cursor: pointer !important; border: none !important; border-radius: 14px !important; padding: 14px 10px !important;
   font-size: calc(14.5px * var(--sf-scale)) !important; font-weight: 700 !important; font-family: inherit !important; transition: transform .15s ease, filter .15s ease, box-shadow .15s ease !important; }
 .sf-btn:hover { transform: translateY(-2px) !important; filter: brightness(1.06) !important; }

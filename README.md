@@ -1,8 +1,8 @@
 # SilverFoxBlocker
 
-Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.8.4**），用于检测并拦截「银狐木马（Silver Fox / 游蛇）」相关的钓鱼站、仿冒官网与恶意下载入口。
+Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.8.5**），用于检测并拦截「银狐木马（Silver Fox / 游蛇）」相关的钓鱼站、仿冒官网与恶意下载入口。
 
-**检测、评分、名单比对与拦截全部在本地完成**，不依赖在线服务即可工作。默认开启的 RDAP / ICP 辅助核验会发送**域名**；云端黑 / 白名单、威胁情报 API、社区黑名单都是**需要你主动开启或点击**的增强项。当前版本包含 29 维加权检测引擎、六类名单（云端 / 内置 / 自定义 × 黑白）、下载与自动下载拦截、云端名单手动同步（Worker 侧 GitHub 优先、Gitee 回落）、可选四家威胁情报与三份社区黑名单、五款急救工具下载引导，以及 GitHub / Gitee / 蓝奏云三个更新入口。
+**检测、评分、名单比对与拦截全部在本地完成**，不依赖在线服务即可工作。默认开启的 RDAP / ICP 辅助核验会发送**域名**；云端黑 / 白名单、威胁情报 API、社区黑名单都是**需要你主动开启或点击**的增强项。当前版本包含 29 维加权检测引擎、六类名单（云端 / 内置 / 自定义 × 黑白）、下载与自动下载拦截、云端名单手动同步（Worker 侧 GitHub 优先、Gitee 回落）、可选四家威胁情报与五份社区黑名单、五款急救工具下载引导，以及 GitHub / Gitee / 蓝奏云三个更新入口。
 
 **无需账号、无遥测、无广告**：不收集浏览历史，不注入参数，不加载任何远程代码。
 
@@ -28,7 +28,7 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.8.4**），用�
 | **分析闸门（判定前默认拒绝）** | 页面加载完成但判定尚未出来时，本页下载与下载跳转**先被阻止**（页面顶部常驻一条提示横幅），已进入浏览器的下载先挂起；判定安全则自动解除并静默重下，判定危险则保持拦截。**不依赖「自动拦截下载」开关**。SPA（`pushState` 换路由）也会重新起闸并重判，旧路由的迟到结论按代数丢弃 | 开启 | 否 |
 | **六类名单比对** | 云端 / 内置 / 自定义，各有黑、白两份；**任意黑名单 > 任意白名单**；支持域名级、`*` `?` 同级别通配、以及「域名/路径」条目 | 内置名单开启 | 否（查表在本地） |
 | **云端黑 / 白名单** | 「关于 → 从云端更新名单」手动同步作者维护的名单；Worker 优先读 GitHub、失败回落 Gitee，扩展侧再按 GitHub raw → 6 个公共反代 → Gitee raw 逐级兜底 | 无数据，需手动点击 | 是（仅点击时） |
-| **威胁情报（可选）** | VirusTotal、URLhaus、NetAPI、Google Safe Browsing 四项，命中后横幅显示依据；VT 可展开逐引擎检出 | 关闭 | 是（开启后） |
+| **威胁情报（可选）** | VirusTotal、URLhaus、NetAPI、Google Safe Browsing 四项，命中后横幅显示依据；VT 可展开逐引擎检出。另有 FoxAPI（银狐防护云端名单）：不显示横幅，仅作评分判据（未收录 +45 分） | 关闭 | 是（开启后） |
 | **社区黑名单（可选）** | OpenPhish、PhishDestroy、HaGeZi TIF、uBlock Origin - Badware risks、Dandelion Sprout 五份，每日自动更新，本地比对；后三份用布隆过滤器位图 | 关闭 | 是（开启后） |
 | **银狐急救** | 360 急救箱 / 火绒专杀 / KVRT / AdwCleaner / SoftcnKiller 的官方下载与查杀顺序引导；hosts 修复、关闭内存完整性等分步说明 | 可用 | 是（点击时） |
 | **统计与界面** | 拦截/告警计数、近期记录、逐站评分；深 / 浅主题 + 5 套配色（classic / gold / neon / mist / space，另有隐藏彩蛋）+ 自定义主题导入、自定义背景、字号缩放；规则与名单可导出为 JSON 或导入他人分享的配置 | 开启 | 否 |
@@ -48,6 +48,7 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.8.4**），用�
 - **自动下载竞速兜底**：`<meta refresh>`、服务端强制下载（`Content-Disposition: attachment`）等「自动下载」场景也能拦截。
 - **跳转链污染追踪**：危险站跳转到新域名后，仍能识别并拦截下游下载。
 - **下载发现层**：递归解析内联脚本里的直链、`.txt` 里藏的真实地址、meta refresh 目标、iframe 嵌套资源，弥补「只有指定 URL 才拦得住」的短板。
+- **解析器跟随（「运行时取链」，2026-11-20）**：对**已判危且下载入口已被禁用**的页面，用一个**不激活的后台标签页**重跑它自己的「同源跳转端点」（`/go/`、`download.php?id=…` 这类把真载荷藏在 302 里的地址），把最终落点的载荷域写进本机自动学习黑名单。每页最多 2 个、5 秒超时、同一地址 1 分钟去重；只读请求 URL，不阻断也不改写（`webRequest` 的非阻塞用法），不新增任何第三方请求。
 - **智能免误拦**：官方 / 搜索引擎 / 可信分发（GitHub、网盘等）白名单；`file://`、浏览器内部页、localhost 自动跳过。
 
 ### 二、作者维护的云端黑 / 白名单（手动同步，默认无数据）
@@ -59,7 +60,9 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.8.4**），用�
 - **落盘方式**：两份名单并行拉取、清洗校验后**整体覆盖**写入 `chrome.storage.local`（`sfCloudWhite` / `sfCloudBlack` / `sfCloudListMeta`）；后台收到 `storage.onChanged` 立即重新注入，内容脚本在下一次页面加载时读取。是「镜像覆盖」不是「合并追加」，所以云端删掉的误报条目会真正失效；任一份拉取失败则**两份都不写入**，不会出现半新半旧。空响应或全部条目非法时同样中止，不会把本地名单清空。
 - **生效规则**：黑、白名单**都支持** `*` / `?` 同级别通配（`*` 不跨标签、`*.foo.com` 归一为后缀、TLD 位禁通配）；两份名单都支持路径条目。**2026-11-12 起前导 `*.` 可与其它通配混用**：`*.ab?.foo.com` 表示「`ab?` 的任意子域」（命中 `ab1.foo.com` 与 `x.ab1.foo.com`，但不再像过去那样整条作废）；危险写法（`*.*`、`*.com`、`foo.*`、没有品牌锚点的 `*a*.*`）仍会被丢弃并给出原因码。**通配与路径条目都不限条数**（2026-11-12 取消上限；通配按尾部标签分桶查找，条数只影响内存，不影响单页耗时）。被丢弃的条目及原因会在「关于 → 未生效条目」里列出，不会静默失效。
 - **与内置名单的关系**：云端名单、`rules/iocs.js` 内置名单、你手写的名单始终是三份独立数据，互不覆盖；判定时由评分引擎做集合查找（内置 ∪ 云端）。
-- **「访问正确的页面」官网映射（2026-11-12 起）**：拦截浮层的第三个出口。被拦的通常是仿冒域（`huorongsafe.com.cn`），它永远不会出现在白名单里，所以**不能靠白名单反查官网**；改为「品牌词 → 官网」映射：从被拦主机名里认出品牌，再打开该品牌的真实官网。数据以内置表 `rules/iocs.js` 的 `CORRECT_SITE_CATALOG` 为准（随发版，目前 **20 个大类 968 行映射 / 1052 个品牌词**，覆盖安全软件、浏览器、IM 与社交、输入法、办公与文档、影音娱乐、云盘与存储、AI 大模型、下载与压缩、系统工具、电商与支付、地图与出行、开发者与云服务、游戏与加速器、新闻与搜索、教育与考试、金融、企业机构、平台与生态、用户反馈与个人站点）；云端白名单的 `correct_sites` **只作补充**，仅收录「内置白名单未覆盖、官网确实存在」的品牌（当前 5 条：腾讯会议 / Chromium / 讯飞开放平台 / 金山词霸 / 火绒论坛），可热更新、不必发版。两级合并后按**最长品牌词**命中，同词**内置优先**；字面全都查不到时，再用检测链路的**编辑距离结论**兜底（2026-11-12 新增）：仿冒检测本来就会算出「`huorlong` 与品牌词 `huorong` 编辑距离 1」，把认出的品牌再查一次官网表，于是 `huorlong.cn` 这类错拼站也能跳到 `huorong.cn`；返回结果带 `confidence: typo` 标记，按钮提示语相应写成「已按「火绒安全软件」官网打开（当前域名拼写疑似有误）」。同一次改造还接上了仿冒检测的**另一种结论 `branddomain`**（同日）：对 `todesk.com.cn` 这类「注册域主干恰好等于品牌词、但后缀换了注册局」的站点，检测链路本来就会判定为「跨注册局抢注品牌名」；按钮侧现在也会读这个结论 —— 官网表里有的品牌直接给官网（`todesk.com.cn` → `todesk.com`），表里没有的品牌则按「主干同名」到官方域名表反查主站（`huawei.com.cn` → `huawei.com`，只收裸域或 `www.` 开头、且限 `.com`/`.net`/`.org`/通用 gTLD，避免把 `panda.tv`、`haozip.2345.cc` 这类同名子站或已停运站点当成官网），提示语写成「当前域名与品牌同名、但分属其它注册局，疑为仿冒站」；反查不到仍走说明页。这一步同样不联网、不引入任何模型（品牌词是有限闭集，编辑距离 + 首尾公共子串护栏足够，且结论必须可解释、可复现）；仍然认不出来就打开说明页 `ui/no-correct-site.html`（说明「暂未收录正确域名，或该页应被拦截」，并给出反馈入口）。**这张表不参与任何放行 / 拦截判定**，只决定一个按钮跳去哪儿，也不发起网络请求。
+- **「访问正确的页面」官网映射（2026-11-12 起）**：拦截浮层的第三个出口。被拦的通常是仿冒域（`huorongsafe.com.cn`），它永远不会出现在白名单里，所以**不能靠白名单反查官网**；改为「品牌词 → 官网」映射：从被拦主机名里认出品牌，再打开该品牌的真实官网。数据以内置表 `rules/iocs.js` 的 `CORRECT_SITE_CATALOG` 为准（随发版，目前 **20 个大类 969 行映射 / 1066 个品牌词**，覆盖安全软件、浏览器、IM 与社交、输入法、办公与文档、影音娱乐、云盘与存储、AI 大模型、下载与压缩、系统工具、电商与支付、地图与出行、开发者与云服务、游戏与加速器、新闻与搜索、教育与考试、金融、企业机构、平台与生态、用户反馈与个人站点）；云端白名单的 `correct_sites` **只作补充**，仅收录「内置白名单未覆盖、官网确实存在」的品牌（当前 5 条：腾讯会议 / Chromium / 讯飞开放平台 / 金山词霸 / 火绒论坛），可热更新、不必发版。两级合并后按**最长品牌词**命中，同词**内置优先**；字面全都查不到时，再用检测链路的**编辑距离结论**兜底（2026-11-12 新增）：仿冒检测本来就会算出「`huorlong` 与品牌词 `huorong` 编辑距离 1」，把认出的品牌再查一次官网表，于是 `huorlong.cn` 这类错拼站也能跳到 `huorong.cn`；返回结果带 `confidence: typo` 标记，按钮提示语相应写成「已按「火绒安全软件」官网打开（当前域名拼写疑似有误）」。同一次改造还接上了仿冒检测的**另一种结论 `branddomain`**（同日）：对 `todesk.com.cn` 这类「注册域主干恰好等于品牌词、但后缀换了注册局」的站点，检测链路本来就会判定为「跨注册局抢注品牌名」；按钮侧现在也会读这个结论 —— 官网表里有的品牌直接给官网（`todesk.com.cn` → `todesk.com`），表里没有的品牌则按「主干同名」到官方域名表反查主站（`huawei.com.cn` → `huawei.com`，只收裸域或 `www.` 开头、且限 `.com`/`.net`/`.org`/通用 gTLD，避免把 `panda.tv`、`haozip.2345.cc` 这类同名子站或已停运站点当成官网），提示语写成「当前域名与品牌同名、但分属其它注册局，疑为仿冒站」；反查不到仍走说明页。这一步同样不联网、不引入任何模型（品牌词是有限闭集，编辑距离 + 首尾公共子串护栏足够，且结论必须可解释、可复现）；仍然认不出来就打开说明页 `ui/no-correct-site.html`（说明「暂未收录正确域名，或该页应被拦截」，并给出反馈入口）。**这张表不参与任何放行 / 拦截判定**，只决定一个按钮跳去哪儿，也不发起网络请求。
+- **「访问正确的页面」改为先进说明页（2026-11-18）**：按钮不再直接跳官网，而是**无条件**打开 `ui/no-correct-site.html?host=…`，由说明页自行解析并列出该品牌**全部已收录的官方入口**；一条都没收录时才显示「暂未收录」与原反馈入口。改为这样是因为旧实现「替用户挑一个官网直接跳」有三个硬伤：一个品牌常有多个官网（WorkBuddy 有 `www.workbuddy.cn` 与 `www.codebuddy.cn/work/`），挑一个等于把另一个入口藏起来；有些软件根本没有主机名意义上的官网（qBittorrent Enhanced Edition 只发 GitHub Releases，「主机名」模型表达不了）；而且直接跳转会立刻离开扩展能解释的上下文，用户看不到「为什么把你送到这里」。数据结构同步升级：`CORRECT_SITE_CATALOG` 第三个字段可写**站点数组**，元素是字符串（`'win-rar.com'` 或带路径的 `'https://github.com/…/releases'`，带路径即「链接级」）或对象（`{url, label}`，`label` 为显示文案，如「中国官网」）；不写 `label` 时说明页自动编号为「官网1 / 官网2」。云端 `correct_sites` 同样支持 `sites` 字段（与 `domain` 二选一，同时存在以 `sites` 为准）。站点顺序即展示顺序，单条最多 8 个、重复地址自动去重，只接受 http(s) 且必须有 `.` 分隔的域名。WinRAR 是第一个样例：`https://www.win-rar.com` / `https://www.rarlab.com` / `中国官网：http://www.winrar.com.cn`。
+- **白名单与官网表合并（2026-11-21）**：内置白名单（`WHITELIST_CATALOG`，决定「谁不用检测」）与「访问正确的页面」官网表（`CORRECT_SITE_CATALOG`，决定「被拦后去哪儿」）此前长期各自维护，官网表有 1115 个主机名级站点、白名单只覆盖其中一部分，于是出现「官网表认定是官网、白名单却当陌生站检测」的自相矛盾。本轮做**单向合并**：官网表里有、白名单里没有的主机名级站点，按同名大类补进白名单，每个大类末尾新增一行 `['官网表补录', …]`，共 18 个大类 **138 个主机名**（白名单主机名 1347 → 1485）；补录全部写成去 `www.` 的主机名（`www.temu.com` → `temu.com`），并跳过已被现有条目覆盖的域名，避免「域名重复归类、后出现的静默失效」。**链接级官网一律不复制**：白名单是主机名粒度的「整站免检」，表达不了 `https://github.com/pbatard/rufus/releases` 这种路径条目；把它降级成 `github.com` 塞进白名单，等于放行 GitHub 上任何人的仓库与用户页，正是钓鱼站最爱蹭的托管域。本轮 13 条链接级站点里，7 条的主机名本来就在白名单（`github.com` / `google.com` / `apple.com` / `browser.360.cn` / `cloud.tencent.com` …），另外 4 条（`broadcom.com`、`git.hiwiki.org`、`chiark.greenend.org.uk`、`codebuddy.cn`）**故意不加**，只通过按钮跳到具体页面，手动访问主站时照常检测。副作用（预期收益）：白名单域名会自动派生仿冒词（取紧邻 TLD 的标签、长度 ≥4 且非通用词），因此 `temu` / `grok` / `suno` / `mega` / `dropbox` 等新词从此参与仿冒检测，`temu-shop.top` 这类域名能被「域名段精确匹配品牌词」命中；不足 4 字符的短标签（`x.ai` 的 `x`、`pg.com.cn` 的 `pg`）不会进词库。两表是否又走散，跑 `node tools/check-site-merge.js` 就知道（有缺失时退出码 1，并列出「哪个大类的哪个产品」）。
 - **- **白名单域名按备注校正**：备注与域名严重不匹配时直接改域名（这是改判定，只在有确凿新域名、或“留着等于放行一个无关站点”时才做）。2026-11-12 处理了 8 处：`furmark.com`→`geek3d.com`（前者是皮草行业站）、`panda.com`→`pandasecurity.com`（前者是待售停放页）、`gdata.com`→`gdata-software.com`、补 `yhd.jd.com`（1 号店已并入京东）；移除 `safari.com`、`peerless.com`（美国嵌入式系统公司）、`returnbuy.com`（已挂出售页）、`zhangyu.com`（掌阅是 zhangyue.com）。其余只改备注文字的（如 `office.qq.com` 实为 TIM、`xinshuru.com` 是手心输入法、文心一言已更名「文心助手」、通义已统一称「千问」），域名均未动。没把握的映射不写进任何表，记在本地笔记 `rules/.README.md`（`.gitignore` 挡在仓库外），确认后再补。
 - **通配护栏是可配置的（2026-11-12 起）**：六份名单（云端黑/白、内置黑/白、自定义黑/白）共用同一套编译器，但「哪些写法合法」由 `rules/analyzer.js` 的 `WILD_POLICY` 逐份持有（`LIST_WILD_POLICY`，每份一份浅拷贝）。当前 **#1 已对六份名单全部放开**（`*.ab?.foo.com` 编译为「ab? 的任意子域」）；**#3 TLD 位通配只对云端黑名单放开**（`cloudBlack: Object.assign({}, WILD_POLICY, { tldWildcard: true, tldMultilevel: true })`，配套护栏 `minAnchorLen: 4` 要求「除 TLD 外至少一个标签保留 4 个字面字符」，所以 `*.*` / `*a*.*` / `foo.*` 依旧被丢弃）；其中 `tldMultilevel` 让 TLD 位的**裸 `*`** 同时匹配多级后缀（`com.cn` / `co.uk` / `com.hk`），否则 `app.vip-deepseek-offical.com.cn` 这类 4 级域名只能按后缀逐个列举；其它位置的 `*` 仍然不跨 `.`；**#9 `*` 跨标签**六份全关。改某一份只需改 `LIST_WILD_POLICY` 一行，编译器与六个调用点都不用动；`node tools/test-wildcard.js` 会核对「`cloudBlack` 只差 tldWildcard 一项、其余五份与默认策略逐位相同、把开关改回去立刻恢复旧行为、危险写法仍被拦」。设置页的「当前生效策略」文案也是从同一份策略生成的，不会出现「页面说不能写、其实能写」。
 - **自定义名单同样支持通配**：「规则与名单」里的自定义信任白名单 / 自定义恶意黑名单都是「一行一个主机名」，现在也接受 `*` / `?`（如 `cdn*.example.com`、`*bot.qpefh.com`），语义与内置、云端完全一致（同一套编译器与护栏）；只匹配主机名，要按链接级生效请用云端名单的 `主机名/路径` 写法。**不限条数**：名单改存 `storage.local`（`storage.sync` 单键只有 8KB，约 550 条，超出会静默失败），小体积时仍镜像一份到 sync 保留跨设备同步。
@@ -79,8 +82,9 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.8.4**），用�
 | URLhaus (abuse.ch) | 不需要 | 域名、当前页面 URL | 仅「活跃」证据才判危；只剩历史记录时降级为「曾被标记」 |
 | NetAPI | 不需要 | 域名 | 仅「当前在列（24h 内）」判危，历史记录只提示 |
 | Google Safe Browsing (v4 Lookup) | 需要（自有 Key，**AES-GCM 密文**存储） | **完整页面 URL** | 命中即「疑似」，措辞带限定并附 Google 免责说明 |
+| 银狐防护云端名单（FoxAPI） | 需要（自有 Key，**AES-GCM 密文**存储） | 域名 | **不显示横幅**。合作者维护的云端官网/信任名单：返回 `official:false` → 本地评分 +45 分，并记一条「合作者黑名单」判据；返回 `official:true` → 不影响本地判断（本地判 warn / danger 仍以本地为准）。扩展侧限流为每秒最多 1 次查询，单域名结果缓存 10 分钟 |
 
-> 两个 Key 都只以 AES-GCM 密文保存在浏览器自身的存储中，不会发给作者；`storage.sync` 是否跨设备同步由你的浏览器账号决定，与作者无关。明文只在后台 Service Worker 内短暂解密，内容脚本拿不到；设置页只显示圆点掩码，绝不回显明文或密文。旧版本明文保存的 VT Key 会在你打开一次设置页时自动加密迁移，无需重新粘贴，迁移前后台也照常兼容明文查询。
+> 三个 Key 都只以 AES-GCM 密文保存在浏览器自身的存储中，不会发给作者；`storage.sync` 是否跨设备同步由你的浏览器账号决定，与作者无关。明文只在后台 Service Worker 内短暂解密，内容脚本拿不到；设置页只显示圆点掩码，绝不回显明文或密文。旧版本明文保存的 VT Key 会在你打开一次设置页时自动加密迁移，无需重新粘贴，迁移前后台也照常兼容明文查询。
 
 ### 五、社区维护的本地黑名单（可选，默认关闭）
 
@@ -163,7 +167,7 @@ SilverFoxBlocker/
 │   ├── options.html/.js/.css  # 设置页：检测维度、拦截行为、规则与名单（含名单上报）、
 │   │                          #   工具中心/急救、统计、关于（云端名单、蓝奏云更新、反馈）
 │   └── feedback-config.js     # 反馈 Worker 端点（字符码存储，避免明文域名）
-├── crypto-helper.js           # VT / GSB API Key 的 AES-GCM 加密 / 解密
+├── crypto-helper.js           # VT / GSB / FoxAPI API Key 的 AES-GCM 加密 / 解密
 ├── worker/index.js            # Cloudflare Worker：GET /list 转发云端名单（GitHub → Gitee 双源）+ POST 反馈/名单上报
 │                              #   另有 GET /health（存活巡检，cron 每日一次；HTTP 探测为主，
 │                              #   DNS / 注册局只做佐证；会真实访问被拉黑站点，结果邮件经
@@ -171,6 +175,10 @@ SilverFoxBlocker/
 ├── wrangler.toml              # Worker 部署配置（KV 绑定、日志开关），不随扩展运行
 ├── tools/rescue-scripts/      # 急救工具直链的本地更新脚本（开发用，不参与打包运行）
 ├── tools/encrypt_cloud.js     # 把私有仓库的明文名单打包成公开仓库用的加密快照（方案 C，需 Node）
+├── tools/test-correct-site.js # 官网映射表自测（品牌词命中、多站点、链接级去重）
+├── tools/check-site-merge.js  # 两表同步体检：WHITELIST_CATALOG 与 CORRECT_SITE_CATALOG 走散时报出来
+├── tools/test-wildcard.js     # 六份名单的通配策略自测（含「放开前后行为不变」核对）
+├── tools/test-health.js       # Worker 存活巡检的离线测试（fetch / RDAP / DoH 全部打桩）
 ├── tools/pack-snapshot.html   # 同上，但零安装：双击用浏览器打包（加密逻辑内联，不依赖外部 js）
 ├── Cloud/*.json.enc           # 云端名单的加密快照（备用通道取它；内容不可直接阅读）
 ├── icons/                     # 扩展图标 16 / 48 / 128
@@ -185,21 +193,22 @@ SilverFoxBlocker/
 
 ## 🔑 权限说明
 
-`manifest.json` 只申请 **6 项 API 权限 + 1 项主机权限**，每一条都对应一个你能直接看到的动作，没有「先申请着、以后可能用」的权限。
+`manifest.json` 只申请 **7 项 API 权限 + 1 项主机权限**，每一条都对应一个你能直接看到的动作，没有「先申请着、以后可能用」的权限。
 
 | 权限 | 具体用在哪 | 申请理由 | 不授予的后果 | 外发数据 |
 |---|---|---|---|---|
-| `storage` | `storage.sync` 存设置 / 权重 / 自定义名单 / 两个 API Key（AES-GCM 密文）；`storage.local` 存统计、云端名单快照、社区名单、下载黑名单；`storage.session` 存本会话的危险标签页 | MV3 的 Service Worker 空闲 30 秒即被回收，设置与状态只能放 storage；不存就无法「记住你调过的每一个开关」 | 每次重启恢复默认，名单与统计全丢 | 否（除非你开了浏览器账号同步，那是浏览器厂商的行为） |
+| `storage` | `storage.sync` 存设置 / 权重 / 自定义名单 / 三个 API Key（VirusTotal / GSB / FoxAPI，AES-GCM 密文）；`storage.local` 存统计、云端名单快照、社区名单、下载黑名单；`storage.session` 存本会话的危险标签页 | MV3 的 Service Worker 空闲 30 秒即被回收，设置与状态只能放 storage；不存就无法「记住你调过的每一个开关」 | 每次重启恢复默认，名单与统计全丢 | 否（除非你开了浏览器账号同步，那是浏览器厂商的行为） |
 | `unlimitedStorage` | 云端名单镜像、社区名单（PhishDestroy 域名表、HaGeZi 布隆位图、uBlock / Dandelion 的小位图）、自定义背景 | 这些体积超过扩展默认配额；超限时 `storage.local.set` 会**静默失败**，表现成「提示同步成功、名单却没变」 | 开启社区名单后可能写盘失败 | 否 |
 | `downloads` | ① 命中黑名单 / 载荷特征时 `chrome.downloads.cancel` 真正阻断下载；② 「银狐急救」里你点工具时发起下载并指定文件名 | 只靠页面提示拦不住已经开始的下载；急救工具也需要一个可信的下载入口 | 只能弹提示，高危文件照样落地 | 否（只从官方域名下载，且必须你点击） |
 | `webNavigation` | 顶层框架 `onCommitted`：页面开始加载即进入「检测中」，并把「危险页 → 新域名」串成跳转链 | 银狐常见「落地页再跳一次才下载」，只有导航时序能追上；DOM 就绪后才判会漏掉瞬间自动下载 | 快速自动下载漏拦、跳转链断裂 | 否（只读导航事件时序） |
 | `notifications` | 高风险站点 / 下载被拦时发系统原生通知 | 页面被立刻关掉、或命中发生在后台标签页时，页面内横幅你看不到 | 只在页面里提示 | 否（内容本机生成） |
-| `alarms` | 五份社区名单的每日更新 + 「立即更新」一次性任务 | MV3 不允许常驻定时器，`setInterval` 在 SW 回收后失效；**云端名单不使用 alarms，完全手动** | 社区名单无法自动更新 | 否 |
+| `alarms` | 四组每日更新任务（OpenPhish / PhishDestroy / HaGeZi / 两份 AdBlock 格式名单共用一组），覆盖 **5 份**社区名单；另有「立即更新」一次性任务 | MV3 不允许常驻定时器，`setInterval` 在 SW 回收后失效；**云端名单不使用 alarms，完全手动** | 社区名单无法自动更新 | 否 |
+| `webRequest` | **只读、非阻塞**监听本扩展自己开的「取链探测」后台标签页（`onBeforeRequest` 观察），看同源跳转端点最终落到哪个域名；**不阻断、不改写、不注入请求头**，因此不需要 `webRequestBlocking` | `webNavigation` 只给顶层导航，拿不到解析器自己发出的 XHR / fetch；同源端点后面的载荷域只能靠请求本身看见 | 「运行时取链」维度失效 | 否（不发往任何第三方，探测的是该页自己的地址） |
 | `host_permissions: <all_urls>` | ① 内容脚本在 `document_start` 注入所有 http(s) 页面做实时检测与下载拦截；② 后台请求 RDAP / ICP / 情报源 / 名单 CDN / 工具官网；③ 扩展页面直接读名单镜像（Gitee raw 不带 CORS 头也能读） | 投放站每天换域名，无法预先枚举主机；要把「任意站点」都纳入检测，只能申请全站主机权限 | 只能对固定站点生效，等于没有防护 | 请求目标由代码里的固定清单决定（见下一节），该权限本身不产生任何请求 |
 | `web_accessible_resources` | 页面内浮层加载打包字体 `fonts/SmileySans-Oblique.woff2`；「关于」页读 `sponsors.json` | 浮层渲染在第三方页面里，字体文件必须允许该页面请求 | 浮层回退系统字体，功能不受影响 | 否（只是把打包内静态文件暴露给页面，不含用户数据） |
 | `content_security_policy` | `script-src 'self'`、`object-src 'self'`；`connect-src 'self' https:` | 前者保证「不执行远程代码」由浏览器强制；后者是连接 HTTPS 接口所必需，**没有做域名白名单**，实际目标仍由代码固定清单决定 | —— | 否 |
 
-**未申请的敏感权限**：`tabs`（`tabs.create` / `tabs.sendMessage` 不需要它，读标签 URL 由主机权限覆盖）、`cookies`、`history`、`bookmarks`、`webRequest` / `declarativeNetRequest`（不做全量网络拦截，改用 `webNavigation` + 内容脚本）、`scripting`（内容脚本走 manifest 静态声明）、`nativeMessaging`、`identity`、`management`、`clipboardRead`、`geolocation`。
+**未申请的敏感权限**：`tabs`（`tabs.create` / `tabs.sendMessage` 不需要它，读标签 URL 由主机权限覆盖）、`cookies`、`history`、`bookmarks`、`declarativeNetRequest` / `webRequestBlocking`（不做全量网络拦截、不阻断也不改写任何请求；`webRequest` 只作非阻塞观察）、`scripting`（内容脚本走 manifest 静态声明）、`nativeMessaging`、`identity`、`management`、`clipboardRead` / `clipboardWrite`（复制提取码用 `navigator.clipboard.writeText`，扩展页面本身就有该能力）、`geolocation`。
 
 > 审核备注：全部权限均可用「关于」页与工具栏弹窗里的功能逐条复现；把任一权限移除，上表「不授予的后果」一栏描述的功能就会消失。完整的逐项理由（含可直接粘贴到商店表单的版本）见 [PRIVACY.md § 八](./PRIVACY.md)。
 
@@ -210,22 +219,24 @@ SilverFoxBlocker/
 1. **打包**：只压缩**运行时**文件（`manifest.json` 必须在压缩包根目录，不能再套一层文件夹）。下列目录是开发/后端产物，**不要**打进包：`tools/`（Node 打包脚本、网页加密工具）、`Cloud/`（密文快照与打包记录）、`worker/` + `wrangler.toml`（Cloudflare Worker 后端，跑在服务端、与扩展无关）、`.bak_*` 备份目录。
    ```bash
    # macOS / Linux / Git Bash
-   zip -r SilverFoxBlocker-1.7.2.zip \
+   zip -r SilverFoxBlocker-1.8.5.zip \
      manifest.json background.js crypto-helper.js sponsors.json \
      content rules ui icons fonts _locales \
      LICENSE README.md PRIVACY.md
    ```
    打包后核对：压缩包根目录第一层应只有上面这些条目；这些文件合计约 **2.3 MB**（字体占一半以上），压成 zip 约 1.5 MB。
-   > Windows 若没有 `zip` 命令，可用资源管理器全选上述条目 → 右键「压缩为 ZIP 文件」，或在 PowerShell 里用 `Compress-Archive -Path <这些条目> -DestinationPath SilverFoxBlocker-1.7.2.zip`。
+   > Windows 若没有 `zip` 命令，可用资源管理器全选上述条目 → 右键「压缩为 ZIP 文件」，或在 PowerShell 里用 `Compress-Archive -Path <这些条目> -DestinationPath SilverFoxBlocker-1.8.5.zip`。
 2. **商店表单**：
    - 隐私政策 URL：`https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md`（Gitee 镜像：`https://gitee.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md`）。
    - 「权限理由」逐项粘贴 [PRIVACY.md § 8.5](./PRIVACY.md) 的表格内容。
-   - 「是否收集用户数据」：全部选「否」，仅「用户主动提交的反馈文本」按实际情况勾选（可留空不填联系方式）。
+   - 「是否收集用户数据」：勾选 **Web 历史记录** 与 **网站内容**（内容脚本确实会读当前页的 URL 与 DOM，如实声明访问范围；隐私政策 §8.4 已按此口径写明「仅本机处理、不上传、不落盘」），其余全部不勾。**不要**因为「反正是本地处理」就全选「否」——审核看到 `<all_urls>` + 全站内容脚本却声明「不访问任何数据」，反而容易被判隐私声明不准确。
+   - 「你正在使用远程代码吗」选 **否**，「理由」建议填：不加载任何远程脚本，CSP 强制 `script-src self`；云端 / 社区名单只是域名字符串数据，取回后经清洗才参与本地查表，不 `eval`、不 `new Function`。
 3. **版本号**：商店要求每次上传的 `version` 严格递增，下次改动记得同步 `README.md` 顶部与「关于」页显示（版本号由 `manifest.json` 读取，无需改代码）。
-4. **审核可能追问的三点**（答案都已写在 `PRIVACY.md` 与本文件中）：
+4. **审核可能追问的四点**（答案都已写在 `PRIVACY.md` 与本文件中）：
    - 为什么需要 `<all_urls>` —— 任意站点实时检测，见上表；
    - `connect-src https:` 为何不写死域名 —— 情报源/镜像可切换，实际目标由代码固定清单决定；
-   - 为什么带 `web_accessible_resources` —— 页面内浮层字体与「关于」页鸣谢名单。
+   - 为什么带 `web_accessible_resources` —— 页面内浮层字体与「关于」页鸣谢名单；
+   - 为什么新增 `webRequest` —— 只在已判危页面上以**非阻塞**方式观察扩展自己开的取链探测标签页，**没有** `webRequestBlocking`，不阻断、不改写、不新增第三方请求（表单「权限理由」里的 `webRequest` 一栏直接粘贴 [PRIVACY.md § 8.5](./PRIVACY.md) 对应行）。
 
 ---
 
@@ -240,6 +251,7 @@ SilverFoxBlocker/
 | 1 | `rdap.org` 及各注册局 RDAP | 页面未命中名单、进入评分流程时（用于域名年龄加分） | 注册域名（如 `example.com`，不含路径/参数） |
 | 2 | `uapis.cn` / `cn.apihz.cn`（ICP 备案查询） | 未命中名单，且：页面出现备案号需验真伪 / `.cn` 域名未找到备案号 / 已检出域名仿冒 | 域名；可在设置 → 检测维度关闭 |
 | 3 | 当前页面已引用的资源 | 下载发现层解析脚本跳转、`.txt` 藏链、meta refresh、iframe 时 | 无（只在页面上下文内按需读取，不发往作者服务器、不带跨域凭据） |
+| 3b | 该**已判危**页面自己的同源跳转端点（以及它 302 到的新域名） | 页面判危、下载入口被禁用后自动触发；每页 ≤2 个、5 秒超时、1 分钟去重 | 无新增第三方：等价于你自己点一下那个链接；不附带参数、标识或本地数据，只观察最终落点；可在「检测维度 → 运行时取链」关闭 |
 
 ### 可选增强（默认关闭）
 
@@ -249,6 +261,7 @@ SilverFoxBlocker/
 | 5 | `urlhaus-api.abuse.ch` | 开启 URLhaus | 域名、当前页面 URL |
 | 6 | `netapi.com` | 开启 NetAPI | 域名 |
 | 7 | `safebrowsing.googleapis.com` | 开启 GSB | 完整页面 URL |
+| 7b | `api.silverfoxguard.dpdns.org` | 开启 FoxAPI | 域名（`/v1/domain/lookup`）；`Authorization: Bearer <你的 Key>`；扩展侧每秒最多 1 次、单域名缓存 10 分钟；只取回 `official / matched / source`，不渲染横幅 |
 | 8 | `cdn.jsdelivr.net` / `fastly` / `gcore` / `testingcf` / `raw.githubusercontent.com` / `gh-proxy.com` | 开启社区名单并每日自动 / 手动更新时（多镜像回退）。五份名单依次为 OpenPhish、PhishDestroy、HaGeZi TIF、uBlock Badware risks（`uBlockOrigin/uAssets`）、Dandelion Sprout Anti-Malware（`DandelionSprout/adfilt`） | 无（GET 公开名单文件；后两份是 AdBlock 语法，扩展只解析 `\|\|域名^` 规则，不入库、不执行任何规则） |
 
 ### 用户主动触发
@@ -287,10 +300,10 @@ SilverFoxBlocker/
 
 ## 🔒 隐私
 
-- 检测、评分、名单比对与拦截全部在本地完成；不建立账号、不收集浏览历史、不接入统计或崩溃上报。
+- 检测、评分、名单比对与拦截全部在本地完成；不建立账号、不收集浏览历史、不接入统计或崩溃上报。唯一的「自动跟随」是对**已判危**页面的同源跳转端点做一次后台重访（见《网络请求清单》第 3b 项）：不新增第三方、不附带任何本地数据，可在「检测维度 → 运行时取链」关闭。
 - 设置与统计只写本机 `storage` / IndexedDB；`storage.sync` 的跨设备同步由浏览器账号决定，**不经过作者服务器**。
 - **两个例外需要你主动点击**：反馈邮件与名单上报会把你填写的内容发给作者，Worker 还会在邮件中附上来源 IP 用于限流与溯源；不想分享就不要点。
-- 完整数据流、存储项（含两个 API Key 的密文存储与旧明文迁移）与法律声明见 [PRIVACY.md](./PRIVACY.md)。
+- 完整数据流、存储项（含三个 API Key 的密文存储与旧明文迁移）与法律声明见 [PRIVACY.md](./PRIVACY.md)。
 
 ---
 

@@ -154,7 +154,11 @@ const DEFAULTS = {
       // 两个 Key 都只以 AES-GCM 密文落盘（crypto-helper 加解密），明文仅在后台 SW 内短暂存在。
       // 兼容：旧版明文 VT Key 由 handler 直接使用，设置页打开时自动迁移为密文。
       virustotal: { enabled: false, apiKey: '' },
-      googlesafebrowsing: { enabled: false, apiKey: '' }
+      googlesafebrowsing: { enabled: false, apiKey: '' },
+      // 银狐防护云端名单（FoxAPI）：合作者维护的云端官网/信任名单。
+      // 与其它情报源不同，它**不渲染横幅**，只作为本地评分的一个补充判据（见 content.js）。
+      // Key 同样以 AES-GCM 密文落盘，且仅在后台 SW 内解密使用。
+      foxapi: { enabled: false, apiKey: '' }
     }
   },
   // 社区维护的本地黑名单总开关（默认关闭）：关闭时三个名单既不加载、不自动更新，也不参与比对。
@@ -776,6 +780,90 @@ const THREAT_INTEL_PROVIDERS = [
     }
   }
 ];
+
+// ===== 银狐防护云端名单（FoxAPI，合作者 Yinbo 维护）=====
+// 与上面 THREAT_INTEL_PROVIDERS 的区别（刻意不注册为 provider）：
+//   · 它**不渲染任何横幅**——用户明确要求「开启后不显示横幅，只作为评分判据」；
+//   · 它返回的是「该域名是否在合作者的云端官网/信任名单里」，不是一个恶意判定，
+//     不能套用「命中即横幅」的展示模型；
+//   · 结果由内容脚本取走并并入本地评分（official:false → +45 分），因此走独立消息。
+// 保护措施：
+//   · Key 与 VT / GSB 一样以 AES-GCM 密文落盘，只在后台 SW 内解密，绝不进入页面上下文；
+//   · 免费额度有限（对方为 Go 版，约 2 次/秒），本扩展主动二次限流为**每秒最多 1 次**；
+//   · 同一域名结果缓存 10 分钟，避免站内多点导航反复消耗额度。
+const FOXAPI_ENDPOINT = 'https://api.silverfoxguard.dpdns.org/v1/domain/lookup';
+const FOXAPI_MIN_INTERVAL = 1000;              // 两次请求的最小间隔（ms）
+const FOXAPI_CACHE_TTL = 10 * 60 * 1000;       // 单域名结果缓存 10 分钟
+const FOXAPI_TIMEOUT = 8000;
+const _foxCache = new Map();                   // host -> { t, data }
+let _foxLastAt = 0;                            // 上次实际发起请求的时间
+let _foxQueue = Promise.resolve();             // 串行队列：保证并发页面不会同时打过去
+
+async function foxApiLookup(host) {
+  const h = String(host || '').toLowerCase().trim();
+  if (!h) return { ok: false, reason: 'no_host' };
+
+  const cached = _foxCache.get(h);
+  if (cached && (Date.now() - cached.t) < FOXAPI_CACHE_TTL) return cached.data;
+
+  const s = await getSettings();
+  const ti = (s && s.threatIntel) || {};
+  const cfg = (ti.providers && ti.providers.foxapi) || {};
+  // 总开关或本项未开启 → 一次请求都不发
+  if (!ti.enabled || !cfg.enabled) return { ok: false, reason: 'disabled' };
+
+  let key = cfg.apiKey || '';
+  if (key && typeof sfLooksEncrypted === 'function' && sfLooksEncrypted(key)) {
+    try { key = await sfDecryptKey(key); } catch (e) { key = ''; }
+  }
+  if (!key) return { ok: false, reason: 'no_key' };
+
+  // 串行 + 最小间隔：把「并发 tab」摊平到每秒 1 次，避免触发对方限流
+  const run = async () => {
+    const wait = FOXAPI_MIN_INTERVAL - (Date.now() - _foxLastAt);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    _foxLastAt = Date.now();
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, FOXAPI_TIMEOUT);
+    try {
+      const res = await fetch(FOXAPI_ENDPOINT + '?domain=' + encodeURIComponent(h), {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + key },   // Key 只在请求头里，不写日志、不进 URL
+        cache: 'no-store',
+        signal: ctrl.signal
+      });
+      if (res.status === 401 || res.status === 403) return { ok: false, status: res.status, reason: 'auth' };
+      if (res.status === 429) return { ok: false, status: 429, reason: 'ratelimit' };
+      if (!res.ok) return { ok: false, status: res.status, reason: 'http' };
+      let j = null;
+      try { j = await res.json(); } catch (e) { return { ok: false, reason: 'json' }; }
+      if (!j || typeof j.official !== 'boolean') return { ok: false, reason: 'format' };
+      const data = {
+        ok: true,
+        official: j.official,
+        matched: String(j.matched || ''),
+        source: String(j.source || '')
+      };
+      _foxCache.set(h, { t: Date.now(), data: data });
+      // 缓存上限：极端情况下（大量不同域名）避免无限增长
+      if (_foxCache.size > 500) {
+        const first = _foxCache.keys().next().value;
+        if (first) _foxCache.delete(first);
+      }
+      return data;
+    } catch (e) {
+      const aborted = e && (e.name === 'AbortError' || /abort/i.test(String(e.message || '')));
+      return { ok: false, reason: aborted ? 'timeout' : 'network' };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const task = _foxQueue.then(run, run);
+  _foxQueue = task.then(function () {}, function () {});   // 队列永不因单次失败中断
+  return task;
+}
 
 // 情报查询结果内存缓存（按 hostname，10 分钟有效），避免重复查询命中 API 速率限制
 const _intelCache = {};
@@ -2198,6 +2286,146 @@ function dlBlacklistDomains() {
 // service worker 一启动就预热，保证 downloads.onCreated（同步判断）能立即查到黑名单
 try { _dlBlLoad(); } catch (e) {}
 
+// ===== 跳转解析器跟随（resolver follow，2026-11-20 新增，方案 A）=====
+// 背景：银狐的「下载」按钮往往不是直链，而是同源的解析器端点，例如
+//   https://www.deepseekst.net/go/event?type=download&t=<base64 token>
+// 真正的载荷域名（如 wqrn59d.com/dsnw）藏在 302 / Refresh / JS 跳转里，DOM 上完全看不到。
+// 页面一旦判危就禁用下载入口，用户连 hover 都看不到目标地址 → 自定义黑名单与自动学习都拿不到它。
+//
+// 做法（最小改动）：后台开一个**不可见标签页**去访问这个解析器 URL，用 webRequest 只观察不阻塞地
+//   盯这个 tab 的主文档请求：一旦跳到与落地页不同的注册域，就认定那是隐藏分发域 →
+//   写入「自动学习的下载黑名单」→ 立即关掉探测标签页（不让文件落地）。
+//   · 用真实标签页而不是 fetch：UA / Referer / Cookie / token 时效全部天然一致（这正是它们要的）；
+//   · 不合成点击，因此不涉及 isTrusted；A 拿不到时再考虑 C；
+//   · 5s 超时；同一解析器 URL 60s 内只探测一次。
+// 前提：manifest 已加 "webRequest"（host_permissions 本来就是 <all_urls>）。
+const RESOLVER_TIMEOUT_MS = 5000;
+const RESOLVER_DEDUPE_MS = 60 * 1000;
+const _resolverProbes = new Map();   // probeTabId -> { fromHost, fromReg, url, started, srcTabId, timer }
+const _resolverRecent = new Map();   // 解析器 URL -> 最近一次探测时间
+
+function _resolverRegOf(host) {
+  try { return _regDomain(String(host || '').toLowerCase()); } catch (e) { return ''; }
+}
+
+// 结束一次探测：关标签页、必要时入库、通知发起页。返回是否命中。
+function _resolverEnd(tabId, hitHost, hitUrl, reason) {
+  const p = _resolverProbes.get(tabId);
+  if (!p) return false;
+  _resolverProbes.delete(tabId);
+  try { clearTimeout(p.timer); } catch (e) {}
+  try { chrome.tabs.remove(tabId); } catch (e) {}
+  if (hitHost) {
+    // 与页面级拦截同一条学习链路：受保护域名（GitHub/微软/官方/用户白名单）由 _dlBlProtected 排除
+    try { dlBlacklistAdd(hitHost, { filename: '', from: p.fromHost }); } catch (e) {}
+    if (p.srcTabId != null) {
+      try { safeTabMsg(p.srcTabId, { type: 'sf-resolver-hit', host: hitHost, url: hitUrl || '', from: p.fromHost }); } catch (e) {}
+    }
+    console.log('[resolver] 命中 ' + hitHost + '（' + reason + '），来源 ' + p.url);
+  } else {
+    console.log('[resolver] 未命中/超时（' + reason + '）：' + p.url);
+  }
+  return !!hitHost;
+}
+
+// 该 URL 是否「像下载物」——用于识别解析器通过 XHR 取回载荷地址的情形
+function _resolverLooksPayload(url) {
+  const u = String(url || '');
+  if (/\.(exe|msi|zip|rar|7z|iso|img|apk|bat|cmd|scr|vbs|jar|dmg|pkg|tgz|tar|gz)(\?|#|$)/i.test(u)) return true;
+  try {
+    const t = (SF && SF.classifyLink) ? SF.classifyLink(u) : 'other';
+    return t === 'exec' || t === 'archive' || t === 'cloud';
+  } catch (e) { return false; }
+}
+
+// 发起一次跟随。返回 {ok, started} 或 {ok:false, reason}
+function followResolver(url, srcTabId) {
+  let abs = '';
+  try { abs = new URL(String(url || '')).href; } catch (e) { return { ok: false, reason: 'bad-url' }; }
+  if (!/^https?:/i.test(abs)) return { ok: false, reason: 'not-http' };
+
+  const now = Date.now();
+  const prev = _resolverRecent.get(abs);
+  if (prev && now - prev < RESOLVER_DEDUPE_MS) return { ok: true, skipped: 'recent' };
+  _resolverRecent.set(abs, now);
+  // 顺手清理过期去重记录，避免长期占用内存
+  _resolverRecent.forEach(function (ts, k) {
+    if (now - ts > RESOLVER_DEDUPE_MS) _resolverRecent.delete(k);
+  });
+
+  const fromHost = parseHost(abs);
+  const fromReg = _resolverRegOf(fromHost);
+  if (!fromHost || !fromReg) return { ok: false, reason: 'bad-host' };
+
+  try {
+    // 先开 about:blank 再 update：保证 webRequest 监听器一定能在导航开始前拿到 probe 记录，
+    // 否则极快的第一跳可能在 tabs.create 回调之前就发出（竞态）。
+    chrome.tabs.create({ url: 'about:blank', active: false }, function (tab) {
+      if (chrome.runtime.lastError || !tab || tab.id == null) return;
+      const tabId = tab.id;
+      const probe = {
+        fromHost: fromHost, fromReg: fromReg, url: abs,
+        started: Date.now(), srcTabId: (srcTabId == null ? null : srcTabId), timer: null
+      };
+      probe.timer = setTimeout(function () { _resolverEnd(tabId, '', '', 'timeout'); }, RESOLVER_TIMEOUT_MS);
+      _resolverProbes.set(tabId, probe);
+      try {
+        chrome.tabs.update(tabId, { url: abs }, function () { void chrome.runtime.lastError; });
+      } catch (e) { _resolverEnd(tabId, '', '', 'update-failed'); }
+    });
+  } catch (e) { return { ok: false, reason: 'create-failed' }; }
+  return { ok: true, started: true };
+}
+
+// 观察器：只读，不阻塞请求（webRequest 非 blocking 用法不需要 "webRequestBlocking"）
+try {
+  if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
+    chrome.webRequest.onBeforeRequest.addListener(function (d) {
+      const p = _resolverProbes.get(d.tabId);
+      if (!p || !d.url) return;
+      const h = parseHost(d.url);
+      if (!h) return;
+      const reg = _resolverRegOf(h);
+      if (!reg) return;
+      // ① 主文档跳到别的注册域 = 解析结果（302 / meta refresh / location= 最终都会走到这里）
+      if (d.type === 'main_frame') {
+        if (reg !== p.fromReg) _resolverEnd(d.tabId, h, d.url, 'main_frame');
+        return;
+      }
+      // ② 解析器用 XHR/fetch 取回地址：只认跨注册域且「像下载物」的，避免把统计/广告当载荷
+      if (reg !== p.fromReg && _resolverLooksPayload(d.url)) {
+        _resolverEnd(d.tabId, h, d.url, 'subresource');
+      }
+    }, { urls: ['<all_urls>'], types: ['main_frame', 'xmlhttprequest', 'other', 'script'] }, []);
+  }
+} catch (e) {}
+// 兜底：标签页自己完成了跳转（webRequest 因权限/时机漏掉时）也能收网
+try {
+  if (chrome.tabs && chrome.tabs.onUpdated) {
+    chrome.tabs.onUpdated.addListener(function (tabId, info) {
+      const p = _resolverProbes.get(tabId);
+      if (!p) return;
+      const u = String(info && info.url || '');
+      if (!u) return;
+      const h = parseHost(u);
+      const reg = _resolverRegOf(h);
+      if (h && reg && reg !== p.fromReg) _resolverEnd(tabId, h, u, 'tab-updated');
+    });
+  }
+} catch (e) {}
+// 探测标签页被外部关掉（用户手动关 / 崩溃）→ 清掉记录，避免内存泄漏
+try {
+  if (chrome.tabs && chrome.tabs.onRemoved) {
+    chrome.tabs.onRemoved.addListener(function (tabId) {
+      const p = _resolverProbes.get(tabId);
+      if (!p) return;
+      try { clearTimeout(p.timer); } catch (e) {}
+      _resolverProbes.delete(tabId);
+    });
+  }
+} catch (e) {}
+
+
 // ===== ICP 备案「权威核验」（多源 API + 24h 缓存 + 限流 + 超时）=====
 // 背景：只扫「页面文本里的备案号」两头都会错——
 //   ① 大量合法国内站点并不在页面上展示备案号 → 被误判「无备案」而白白加分；
@@ -2883,16 +3111,18 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     // 兜底「链接 href 与最终下载 URL 经重定向不一致」等精确匹配失败的情况，确保浏览器能真正下到文件。
     if (msg && msg.fromPage) {
       const tid = sender.tab ? sender.tab.id : null;
-      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 4000);
+      // ★ 2026-11-19：4s → 6s。内容脚本现在会在回执之后才重放点击，
+      //   站点自身的取链/鉴权可能再花一两秒，窗口太短会让重放再次落进闸门。
+      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 6000);
     }
     if (!url) {
       // 无具体 URL（如 JS 触发 / 表单提交下载）：仅靠上面的临时放行窗口覆盖后续下载
       const tid = sender.tab ? sender.tab.id : null;
-      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 5000);
+      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 8000);
     }
     // 回执确认：内容脚本在收到回执后才真正触发本页下载，确保本 URL 已登记进放行名单，
     // 避免「消息异步未达、onCreated 先取消」的竞态（导致「仍要下载」后仍被拦截）。
-    try { sendResponse({ ok: true }); } catch (e) {}
+    try { sendResponse({ ok: true, url: url }); } catch (e) {}
   } else if (msg.type === 'sf-record-blocked-download') {
     // 内容脚本在页面级（点击/入口/表单）拦截了一次下载——后台并未走 chrome.downloads 取消流程，
     // 故在此补计「拦截下载次数」并把载荷域名写入自动学习的下载黑名单（与 cancelDownload 同源逻辑）。
@@ -2907,6 +3137,13 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         chrome.storage.local.set({ stats });
       });
     } catch (e) {}
+  } else if (msg.type === 'sf-probe-resolver') {
+    // ★ 2026-11-20：解析器跟随（方案 A）。内容脚本在危险页发现「同源跳转端点」时调用，
+    //   后台开不可见标签页跑一次跳转链，命中跨域载荷域就写进自动学习黑名单并立刻关标签页。
+    //   立刻回执（started），真正结果通过 sf-resolver-hit 推回发起页，不阻塞内容脚本。
+    let r = { ok: false, reason: 'error' };
+    try { r = followResolver(msg.url || '', sender.tab ? sender.tab.id : null); } catch (e) {}
+    try { sendResponse(r); } catch (e) {}
   } else if (msg.type === 'sf-notify') {
     // 危险弹窗系统通知（Windows 右下角 toast）：内容脚本转发，后台创建原生通知
     try {
@@ -3079,6 +3316,19 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     })();
     return true;
   }
+  // ===== 银狐防护云端名单（FoxAPI）=====
+  // 只回传结构化判定，**不触发任何横幅**；内容脚本把它并入本地评分。
+  if (msg.type === 'sf-foxapi-lookup') {
+    (async () => {
+      try {
+        const r = await foxApiLookup(msg.hostname || '');
+        try { sendResponse(r); } catch (e) {}
+      } catch (e) {
+        try { sendResponse({ ok: false, reason: 'error' }); } catch (_) {}
+      }
+    })();
+    return true;
+  }
 });
 
 // ★★ 2026-10-15 修（赞助者反馈：「拦截记录一直是『未知域名』和 NaN/NaN NaN:NaN」）
@@ -3230,6 +3480,16 @@ function armAnalysis(tabId) {
 if (chrome.downloads && chrome.downloads.onCreated) {
   chrome.downloads.onCreated.addListener(function (item) {
     if (!item || !item.url) return;
+    // ★ 2026-11-20：解析器探测标签页触发的下载一律不落地。
+    //   探测只需读到「跳到哪个域名」，文件本身必须当场取消并擦除，避免为抓情报反而把木马存到磁盘。
+    try {
+      if (item.tabId != null && item.tabId >= 0 && _resolverProbes.has(item.tabId)) {
+        _resolverEnd(item.tabId, parseHost(item.url), item.url, 'download-blocked');
+        try { chrome.downloads.cancel(item.id); } catch (e) {}
+        try { chrome.downloads.erase(item.id); } catch (e) {}
+        return;
+      }
+    } catch (e) {}
     // 判安后静默重下的下载（原被闸门挂起者）→ 直接放行，不再二次闸控
     if (reissuedUrls.has(item.url)) { reissuedUrls.delete(item.url); return; }
     // 本次下载用户已明确「仍要下载」→ 直接放行（避免重复拦截）

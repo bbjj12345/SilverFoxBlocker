@@ -1011,6 +1011,24 @@
     return next === '' || !/[a-z]/.test(next);
   }
 
+  // ★ 2026-11-18：站点列表归一化 —— 内置表、云端补录、说明页**共用 iocs 的同一套校验**。
+  //   为什么要统一：云端 correct_sites 是热更新数据，内置表随发版；如果两边各写一套校验，
+  //   同一个地址会出现「内置收、云端拒」或反之的怪象，排查时极难定位。
+  //   只有 IOCS 还没升级到带 normalizeCorrectSites 的版本时，才退回下面的单站点兜底。
+  function _sitesOf(field) {
+    if (IOCS && typeof IOCS.normalizeCorrectSites === 'function') {
+      try { return IOCS.normalizeCorrectSites(field); } catch (e) { /* 落到下面 */ }
+    }
+    const out = [];
+    if (typeof field === 'string' && field) {
+      const h = field.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      if (h.indexOf('.') !== -1) out.push({ url: 'https://' + h, host: h, label: '', kind: 'host' });
+    }
+    return out;
+  }
+  // 单域名 → 单站点数组（兼容旧数据里只有 domain 的条目）
+  function _oneSite(domain) { return _sitesOf(domain); }
+
   // 合并两级数据源（内置 + 云端）。顺序即优先级：内置表先入、云端只补新词；
   // 排序用稳定排序（V8 保证），因此同长度的词仍然保持「内置在前」。
   function _correctTables() {
@@ -1023,12 +1041,27 @@
       const k = bl[i];
       const v = bm[k];
       if (!v || !v.domain) continue;
-      map.set(k, { domain: v.domain, product: v.product || '', source: 'builtin' });
+      // ★ 2026-11-18：带上完整站点列表（多官网 / 链接级官网）。
+      //   内置表现已自带 .sites；万一拿到的是旧版 iocs（没有 .sites），退回「单站点」形态，
+      //   这样扩展本体与数据文件可以先升级一个、不会因为字段缺失而整条映射失效。
+      // 旧：map.set(k, { domain: v.domain, product: v.product || '', source: 'builtin' });
+      map.set(k, {
+        domain: v.domain,
+        sites: (Array.isArray(v.sites) && v.sites.length) ? v.sites : _oneSite(v.domain),
+        product: v.product || '',
+        source: 'builtin'
+      });
       order.push(k);
     }
     EXTRA_CORRECT_MAP.forEach(function (v, k) {
       if (map.has(k)) return;                      // 同名 → 内置优先
-      map.set(k, { domain: v.domain, product: v.product || '', source: 'cloud' });
+      // 旧：map.set(k, { domain: v.domain, product: v.product || '', source: 'cloud' });
+      map.set(k, {
+        domain: v.domain,
+        sites: (Array.isArray(v.sites) && v.sites.length) ? v.sites : _oneSite(v.domain),
+        product: v.product || '',
+        source: 'cloud'
+      });
       order.push(k);
     });
     // 长词优先：exmail 优于 qq、sogoubrowser 优于 sogou
@@ -1133,7 +1166,11 @@
     const e = tables.map.get(r.brand);
     if (e && e.domain) {
       if (e.domain === h) return null;
-      return { domain: e.domain, product: e.product || '', brand: r.brand, source: e.source, confidence: mt };
+      return {
+        domain: e.domain,
+        sites: (Array.isArray(e.sites) && e.sites.length) ? e.sites : _oneSite(e.domain),
+        product: e.product || '', brand: r.brand, source: e.source, confidence: mt
+      };
     }
     // 官网表里没登记这个品牌词：branddomain 还能靠「主干 == 品牌词」反查官方域名表；
     // typo 不行 —— 错拼词若不在官网表里，就没有依据猜它该去哪（保持说明页）。
@@ -1141,7 +1178,11 @@
     const rev = _officialByLabel().get(r.brand);
     if (!rev || !rev.domain || rev.domain === h) return null;
     if (getRegistrableDomain(rev.domain) === getRegistrableDomain(h)) return null;
-    return { domain: rev.domain, product: '', brand: r.brand, source: 'official', confidence: 'branddomain' };
+    return {
+      domain: rev.domain,
+      sites: _oneSite(rev.domain),
+      product: '', brand: r.brand, source: 'official', confidence: 'branddomain'
+    };
   }
   // 「被拦主机名的注册域主干恰好等于品牌词」—— 只用于给提示语定性，不参与域名解析。
   // 与 detectSpoof 同一判据（含各层护栏），故不会和弹窗里的判定打架。
@@ -1169,6 +1210,10 @@
       // 提示语要按「疑似仿冒站」措辞，而不是「打开该站官网」。判定失败不影响结果。
       out = {
         domain: hit.entry.domain,
+        // ★ 2026-11-18：整份站点列表（多官网 / 链接级官网），说明页按这个顺序展示
+        sites: (Array.isArray(hit.entry.sites) && hit.entry.sites.length)
+          ? hit.entry.sites
+          : _oneSite(hit.entry.domain),
         product: hit.entry.product || '',
         brand: hit.brand,
         source: hit.entry.source,
@@ -1184,7 +1229,9 @@
     return out;
   }
 
-  // 返回 { domain, product, brand, source, confidence } 或 null
+  // 返回 { domain, sites, product, brand, source, confidence } 或 null
+  //   domain：第一个主机名级站点（旧调用方只需要一个域名时用它）
+  //   sites ：[{ url, host, label, kind }]，kind = 'host' | 'link'，顺序即展示顺序（2026-11-18）
   //   confidence：'' 直出（字面命中官网表）/ 'typo' 错拼推断 / 'branddomain' 主干同名抢注推断
   function resolveCorrectSite(hostname) { return _correctLookup(hostname); }
   // 只要域名（调用方不关心产品名时用这个）
@@ -1197,6 +1244,10 @@
   //   { product:'…', brands:['huorong'], domain:'huorong.cn' }
   //   { p:'…', b:'huorong', d:'huorong.cn' }        （简写）
   //   'huorong.cn|huorong'                          （字符串：域名|品牌词，多个品牌词空格分隔）
+  // ★ 2026-11-18：对象形态新增可选 sites 字段（多官网 / 链接级官网），写法则与内置表一致：
+  //   { product:'…', brands:['…'], sites:['a.com', { url:'https://b.com/x', label:'发布页' }] }
+  //   给了 sites 就以 sites 为准（domain 可省略）；只给 domain 时按「单站点、主机名级」处理，
+  //   与旧数据完全兼容。sites 里全是脏数据时该条进 skipped，而不是硬塞一个空域名。
   // 覆盖语义：云端这份是镜像，每次同步整体替换；空数组等价于「没有云端补录」。
   // 注意：这里**不清空内置表**——两者是不同层级的补充关系，不是同一份名单的两个来源。
   function registerCloudCorrect(arr) {
@@ -1205,7 +1256,7 @@
     if (Array.isArray(arr)) {
       for (let i = 0; i < arr.length; i++) {
         const raw = arr[i];
-        let domain = '', brands = [], product = '';
+        let domain = '', brands = [], product = '', sites = null;
         if (typeof raw === 'string') {
           const parts = raw.split('|');
           domain = String(parts[0] || '').trim().toLowerCase();
@@ -1215,24 +1266,38 @@
           product = String(raw.product || raw.p || '');
           const b = (raw.brands != null) ? raw.brands : raw.b;
           brands = Array.isArray(b) ? b.slice() : String(b || '').split(/[\s,]+/);
-        } else {
-          continue;
+          // 新：显式站点列表优先。空数组视为「没写」，退回 domain，避免一条写错就让整条消失。
+          if (Array.isArray(raw.sites) && raw.sites.length) sites = _sitesOf(raw.sites);
         }
-        domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
-        // 护栏：域名至少要两级、不能带通配（官网必须是一个确定的主机名）
-        if (!domain || domain.indexOf('.') === -1 || /[*?\s/]/.test(domain)) {
+        // 旧：只把 domain 当一个主机名字符串清洗；现在改为走统一的站点归一化，
+        //     因为「链接级官网」是合法数据，旧写法会把路径截掉。
+        // domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+        if (!sites) {
+          if (domain) sites = _sitesOf(domain);
+        } else if (domain) {
+          // 同时写了 sites 与 domain：以 sites 为准，但允许 domain 参与排序（不太可能用到）
+          domain = '';
+        }
+        if (!sites || !sites.length) {
           _correctSkipped.push(String(raw));
           continue;
         }
+        // .domain 兼容字段：第一个主机名级站点；全是链接级时退回第一个站点的主机名
+        let primary = '';
+        for (let s = 0; s < sites.length; s++) {
+          if (sites[s].kind === 'host') { primary = sites[s].host; break; }
+        }
+        if (!primary) primary = sites[0].host;
         let added = 0;
         for (let k = 0; k < brands.length; k++) {
           const token = String(brands[k] || '').trim().toLowerCase();
           if (!token || token.length < 2 || /[*?\s]/.test(token)) continue;
           if (EXTRA_CORRECT_MAP.has(token)) continue;
-          EXTRA_CORRECT_MAP.set(token, { domain: domain, product: product });
+          // 旧：EXTRA_CORRECT_MAP.set(token, { domain: domain, product: product });
+          EXTRA_CORRECT_MAP.set(token, { domain: primary, sites: sites, product: product });
           added++;
         }
-        if (!added) _correctSkipped.push(String(domain));
+        if (!added) _correctSkipped.push(String(primary));
       }
     }
     _correctMerged = null;   // 云端表变了 → 合并表重建
@@ -1244,7 +1309,11 @@
   // 诊断：云端补录条目明细 + 被拒条目
   function getCloudCorrectSites() {
     const items = [];
-    EXTRA_CORRECT_MAP.forEach((v, k) => { items.push({ brand: k, domain: v.domain, product: v.product }); });
+    // 旧：items 里只有 domain，看不出「多官网」这一层
+    // EXTRA_CORRECT_MAP.forEach((v, k) => { items.push({ brand: k, domain: v.domain, product: v.product }); });
+    EXTRA_CORRECT_MAP.forEach((v, k) => {
+      items.push({ brand: k, domain: v.domain, product: v.product, sites: v.sites || [] });
+    });
     return { items: items, skipped: _correctSkipped.slice() };
   }
 

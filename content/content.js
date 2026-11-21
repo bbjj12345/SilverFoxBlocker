@@ -56,7 +56,7 @@
     // VirusTotal 需用户自有 Key；URLhaus / NetAPI 无需 Key（免费公开接口）。
     threatIntel: {
       enabled: false,
-      providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false },       googlesafebrowsing: { enabled: false, apiKey: '' } }
+      providers: { virustotal: { enabled: false, apiKey: '' }, urlhaus: { enabled: false }, netapi: { enabled: false },       googlesafebrowsing: { enabled: false, apiKey: '' }, foxapi: { enabled: false, apiKey: '' } }
     },
     // 社区维护的本地黑名单总开关（默认关）：关着时五个名单一律不查询、不渲染横幅
     communityLists: { enabled: false },
@@ -946,6 +946,16 @@
     jobs.push(sendMsg({ type: 'sf-domain-age', hostname: location.hostname })
       .then((r) => { if (r && typeof r.days === 'number') data.domainAgeDays = r.days; })
       .catch(() => {}));
+    // 4) 银狐防护云端名单（FoxAPI）：不显示横幅，只取回「是否在合作者云端信任名单中」，
+    //    供主判定里作为 +45 分的补充判据。未启用时一次请求都不发。
+    const _fxOn = !!(settings && settings.threatIntel && settings.threatIntel.enabled &&
+      settings.threatIntel.providers && settings.threatIntel.providers.foxapi &&
+      settings.threatIntel.providers.foxapi.enabled);
+    if (_fxOn) {
+      jobs.push(sendMsg({ type: 'sf-foxapi-lookup', hostname: location.hostname })
+        .then((r) => { if (r && r.ok) data.foxapi = r; })
+        .catch(() => {}));
+    }
     // ★ 总预算：即使某个第三方接口卡在后台超时边缘，也不能让"弹窗"无限期等下去。
     //   到点就用现有数据先判定（后台对同一 tab 的深度补强仍可能再重判一次，去重逻辑照旧）。
     //   budgetMs 由 run() 按「5s 总预算 - 已用时间」算出；不传时退回 4500ms（老调用点兼容）。
@@ -1183,17 +1193,31 @@
       if (abs && /^https?:|^data:|^blob:/i.test(abs)) return abs;
       return '';
     }
-    const attrs = ['href', 'src', 'data-href', 'data-url', 'data-download', 'data-link', 'data-src'];
+    // ★ 2026-11-19：neutralize() 会把 <a> 的 href 摘下来存进 data-sf-original-href，
+    //   因此这里必须认这个属性，否则「仍要下载」拿到的 URL 永远是空串 → 后台只能临时放行、
+    //   前端却没有任何东西可重放，表现就是「点了没反应」。
+    const attrs = ['href', 'src', 'data-href', 'data-url', 'data-download', 'data-link', 'data-src', 'data-sf-original-href'];
     for (let i = 0; i < attrs.length; i++) {
       const v = resolve(el.getAttribute(attrs[i]));
       if (v) return v;
     }
+    // dataset 兜底（属性名在 DOM 里是 data-sf-original-href，dataset 写法是 sfOriginalHref）
+    try {
+      if (el.dataset && el.dataset.sfOriginalHref) {
+        const v = resolve(el.dataset.sfOriginalHref);
+        if (v) return v;
+      }
+    } catch (e) {}
     // 入口为容器（如带「下载」文字的 div）时，真实 URL 常在子元素 <a> 上
     try {
       if (el.querySelector) {
-        const a = el.querySelector('a[href]');
-        const v = a && resolve(a.getAttribute('href'));
-        if (v) return v;
+        const a = el.querySelector('a[href], a[data-sf-original-href]');
+        if (a) {
+          const v = resolve(a.getAttribute('href')) ||
+                    resolve(a.dataset && a.dataset.sfOriginalHref) ||
+                    resolve(a.getAttribute('data-sf-original-href'));
+          if (v) return v;
+        }
       }
     } catch (e) {}
     return '';
@@ -1236,9 +1260,34 @@
     _blockedEls.push(el);                 // ★ 记账，供后续无条件恢复
     // ★ 激进兜底：物理层面让元素彻底失去触发能力，堵死任何绕过点击拦截的下载手法
     //   （如 onclick / addEventListener / 程序化 .click() / 事件委托）。
-    try { if (el.tagName === 'BUTTON') el.disabled = true; } catch (e) {}
-    try { if (el.onclick) el.onclick = null; if (el.removeAttribute) el.removeAttribute('onclick'); } catch (e) {}
-    try { if (el.click && typeof el.click === 'function') { el._sfClick = el.click; el.click = function () { return false; }; } } catch (e) {}
+    // ★ 2026-11-19：拆掉之前先把「原始触发能力」记下来 —— 否则「仍要下载」永远重放不了。
+    try {
+      if (el.tagName === 'BUTTON') { el._sfWasDisabled = true; el.disabled = true; }
+    } catch (e) {}
+    try {
+      if (typeof el.onclick === 'function') { el._sfOnclick = el.onclick; el.onclick = null; }
+      if (el.getAttribute && el.removeAttribute) {
+        const oc = el.getAttribute('onclick');
+        if (oc) { el._sfOnclickAttr = oc; el.removeAttribute('onclick'); }
+      }
+    } catch (e) {}
+    // ★ 2026-11-19 修复「仍要下载」死按钮：
+    //   原实现把元素自带的 click 覆盖成 `return false` 的桩函数，且 restoreBlockedEntries()
+    //   只还原 style/href/dataset、从不还原 click —— 于是「仍要下载」里的 target.click()
+    //   调到的永远是那个桩，点了毫无反应（用户只能被迫去点「完全放行」）。
+    //   现在保留原函数引用，并让它在「放行窗口 / 完全放行」内把调用交还回去。
+    try {
+      if (el.click && typeof el.click === 'function' && !el._sfClick) {
+        const _wrapClick = el.click;
+        el._sfClick = _wrapClick;
+        el.click = function () {
+          if (unblocked || isNextAllowed()) {
+            try { return _wrapClick.call(this); } catch (e) { return false; }
+          }
+          return false;
+        };
+      }
+    } catch (e) {}
     el.addEventListener('click', blockHandler, true);
     el.addEventListener('contextmenu', blockHandler, true);
     // 注意：不再设置 pointer-events:none。一旦置 none，点击会「穿透」到父节点（事件委托），
@@ -1254,6 +1303,25 @@
     blockedCount++;
   }
 
+  // ★ 2026-11-19：把单个入口恢复到「被禁用之前」的触发能力。
+  //   只被「仍要下载」和整体恢复（放行/判定被推翻）调用，不用于常规放行判断。
+  //   注意顺序：href 先回来，再恢复 click / onclick，最后解除 disabled —— 少一步都点不动。
+  function restoreEntryHandlers(el) {
+    if (!el) return;
+    try {
+      if (el.dataset && el.dataset.sfOriginalHref) {
+        try { el.setAttribute('href', el.dataset.sfOriginalHref); } catch (e) {}
+      }
+      if (el._sfWasDisabled) { try { el.disabled = false; } catch (e) {} }
+      if (typeof el._sfOnclick === 'function' && !el.onclick) { try { el.onclick = el._sfOnclick; } catch (e) {} }
+      if (el._sfOnclickAttr && el.getAttribute && !el.getAttribute('onclick')) {
+        try { el.setAttribute('onclick', el._sfOnclickAttr); } catch (e) {}
+      }
+      // 还原原生 click（neutralize 期间被换成了「放行窗口内才转发」的包装）
+      if (typeof el._sfClick === 'function') { try { el.click = el._sfClick; } catch (e) {} }
+    } catch (e) {}
+  }
+
   // 恢复所有被禁用的入口（放行 / 判定被推翻时调用）。
   // 逐元素 try/catch：单个元素恢复失败绝不影响其余元素。
   function restoreBlockedEntries() {
@@ -1264,6 +1332,10 @@
         el.style.pointerEvents = '';
         el.style.opacity = '';
         el.style.filter = '';
+        // ★ 2026-11-19：连触发能力一起还回去（disabled / click / onclick / href）。
+        //   旧实现只还原样式与 href，按钮仍是 disabled、click 仍是桩 —— 「完全放行」后
+        //   程序化点击依旧点不动，用户只能刷新页面。
+        restoreEntryHandlers(el);
         if (el.dataset.sfOriginalHref) {
           try { el.setAttribute('href', el.dataset.sfOriginalHref); } catch (e) {}
           delete el.dataset.sfOriginalHref;
@@ -1372,6 +1444,52 @@
       });
       observer.observe(document.documentElement, { childList: true, subtree: true });
     }
+    // ★ 2026-11-20：解析器跟随（方案 A）—— 危险页的下载入口若是「同源跳转端点」，
+    //   真正载荷域藏在 302/Refresh 里，DOM 上看不到、hover 也看不到。这里交给后台用
+    //   不可见标签页跑一次跳转链，命中后写入「自动学习的下载黑名单」。
+    probeHiddenDownloadResolvers();
+  }
+
+  // ===== 跳转端点探测（方案 A 的前端入口，2026-11-20）=====
+  // 只在「已判危 + 下载入口被禁用」之后触发，每页一次、最多两个目标，避免打扰与放大请求。
+  // 判定条件很保守：同注册域、不是文件直链、路径/参数里带跳转特征词。
+  let _resolverProbedOnce = false;
+  function probeHiddenDownloadResolvers() {
+    if (_resolverProbedOnce) return;
+    _resolverProbedOnce = true;
+    try {
+      if (!chrome.runtime || !chrome.runtime.sendMessage) return;
+      const pageReg = regDomainOf(location.hostname);
+      const seen = {};
+      let sent = 0;
+      const list = _blockedEls.slice();
+      for (let i = 0; i < list.length && sent < 2; i++) {
+        const el = list[i];
+        if (!el) continue;
+        const raw = (el.dataset && el.dataset.sfOriginalHref) ||
+                    (el.getAttribute && (el.getAttribute('href') || el.getAttribute('data-url') ||
+                     el.getAttribute('data-href') || el.getAttribute('data-download'))) || '';
+        const abs = absolutizeUrl(raw);
+        if (!abs || !/^https?:/i.test(abs)) continue;
+        let host = '';
+        try { host = new URL(abs).hostname.toLowerCase(); } catch (e) { continue; }
+        // 只跟同注册域的端点：跨域直链本来就能看见，无需探测
+        if (regDomainOf(host) !== pageReg) continue;
+        // 以文件扩展名结尾的就是直链，不需要跟随
+        const noQuery = abs.split('?')[0].split('#')[0];
+        if (/\.[a-z0-9]{2,8}$/i.test(noQuery)) continue;
+        // 端点特征词：go/event、download、dl、redirect、jump、open、type=/url=/target=
+        if (!/(\/go\/|\/event|download|\/dl\/|redirect|jump|open|type=|url=|target=)/i.test(abs)) continue;
+        if (seen[abs]) continue;
+        seen[abs] = 1;
+        sent++;
+        try {
+          chrome.runtime.sendMessage({ type: 'sf-probe-resolver', url: abs }, function () {
+            try { void chrome.runtime.lastError; } catch (e) {}
+          });
+        } catch (e) {}
+      }
+    } catch (e) {}
   }
 
   // 高置信木马信号判危页拦截「任何程序化导航」（location 跳转 / 锚点 .click / window.open），
@@ -1505,6 +1623,130 @@
     } catch (e) {}
   }
 
+  // ===== 黑名单写入（2026-11-19：支持一次写入多条） =====
+  // 背景：银狐是「落地页 + 复用载荷域名」两段式，只拉黑落地页对下一次投递几乎无用；
+  //   所以「添加到自定义恶意域名黑名单」现在可以连同本页指向的第三方下载域名一起写入。
+  //   写入仍走 SFListStore（storage.local，sync 镜像），与设置页那个文本框同一份数据。
+  const _REG_SUFFIX2 = ['com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'co.uk', 'com.au', 'com.tw', 'co.jp'];
+  function regDomainOf(host) {
+    host = String(host || '').toLowerCase().replace(/^www\./, '');
+    const parts = host.split('.');
+    if (parts.length <= 2) return host;
+    if (parts.length >= 3 && _REG_SUFFIX2.indexOf(parts.slice(-2).join('.')) !== -1) return parts.slice(-3).join('.');
+    return parts.slice(-2).join('.');
+  }
+
+  // 收集「本页指向的第三方下载域名」：只收像下载物的链接（扩展名直链 / analyzer 判为
+  //   exec·archive·cloud / 链接文本含下载词），且必须是另一个注册域；上限 8 条。
+  //   宁可少收也不乱收 —— 每一条都会由用户在确认页里再勾一次。
+  function collectThirdPartyDownloadHosts() {
+    const pageReg = regDomainOf(location.hostname);
+    const found = new Map();  // 注册域 -> 示例 URL
+    const RX_FILE = /\.(exe|msi|zip|rar|7z|iso|img|apk|bat|cmd|scr|vbs|jar|dmg|pkg|tar|gz)(\?|#|$)/i;
+    const add = function (raw, el) {
+      if (!raw) return;
+      let abs = '';
+      try { abs = new URL(String(raw).trim(), location.href).href; } catch (e) { return; }
+      if (!/^https?:/i.test(abs)) return;
+      let host = '';
+      try { host = new URL(abs).hostname.toLowerCase(); } catch (e) { return; }
+      const reg = regDomainOf(host);
+      if (!reg || reg === pageReg) return;
+      if (found.size >= 8 || found.has(reg)) return;
+      let kind = '';
+      try { kind = (SF && SF.classifyLink) ? SF.classifyLink(abs) : ''; } catch (e) {}
+      const byName = RX_FILE.test(abs);
+      const byKind = (kind === 'exec' || kind === 'archive' || kind === 'cloud');
+      let byText = false;
+      try {
+        const txt = elementText(el || {});
+        byText = !!(txt && DOWNLOAD_TEXT.some((k) => txt.indexOf(k) !== -1));
+      } catch (e) {}
+      if (!byName && !byKind && !byText) return;
+      found.set(reg, abs);
+    };
+    try {
+      const els = NATIVE.qsAll(document, 'a[href],a[data-sf-original-href],[data-url],[data-href],[data-download]');
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i];
+        if (!el || !el.getAttribute) continue;
+        add(el.getAttribute('data-sf-original-href'), el);
+        add(el.getAttribute('href'), el);
+        add(el.getAttribute('data-url'), el);
+        add(el.getAttribute('data-href'), el);
+        add(el.getAttribute('data-download'), el);
+      }
+    } catch (e) {}
+    return Array.from(found.keys());
+  }
+
+  // 写名单：hosts 一次写入，已存在的跳过。onDone(ok, addedList)
+  function addHostsToGlobalBlacklist(hosts, onDone) {
+    const list = (Array.isArray(hosts) ? hosts : [hosts])
+      .map(function (h) { return String(h || '').toLowerCase().replace(/^www\./, '').trim(); })
+      .filter(Boolean);
+    if (!list.length) { if (onDone) onDone(false, []); return; }
+    try {
+      const store = (typeof SFListStore !== 'undefined') ? SFListStore : null;
+      const readList = store ? store.read : function (cb) { chrome.storage.sync.get({ customBadDomains: [] }, cb); };
+      const writeList = store ? store.write : function (o, cb) { chrome.storage.sync.set(o, cb); };
+      readList(function (s) {
+        try {
+          const arr = Array.isArray(s && s.customBadDomains) ? s.customBadDomains.slice() : [];
+          const added = [];
+          list.forEach(function (h) {
+            if (!isHostBlacklisted(h, arr)) { arr.push(h); added.push(h); }
+          });
+          if (!added.length) { if (onDone) onDone(true, []); return; }
+          writeList({ customBadDomains: arr }, function (err) {
+            if (onDone) onDone(!err, err ? [] : added);
+          });
+        } catch (e) { if (onDone) onDone(false, []); }
+      });
+    } catch (e) { if (onDone) onDone(false, []); }
+  }
+
+  // 「添加到自定义恶意域名黑名单」的确认页：当前页固定加入，第三方下载域由用户勾选。
+  function showBlacklistConfirm(card, result, hosts) {
+    const pageHost = String(location.hostname || '').toLowerCase().replace(/^www\./, '');
+    const rows = hosts.map(function (h) {
+      return '<label class="sf-bl-row"><input type="checkbox" data-bl-host="' + escapeHtml(h) + '" checked>' +
+             '<span>' + escapeHtml(h) + '</span></label>';
+    }).join('');
+    card.innerHTML =
+      SHIELD_SVG +
+      '<h2 class="sf-title">加入黑名单</h2>' +
+      '<p class="sf-sub">当前页面 <b>' + escapeHtml(pageHost) + '</b> 会加入自定义恶意域名黑名单。<br>' +
+      '下面是从本页找出的第三方下载域名（银狐常换落地页、复用同一个投递域名，拉黑它更有价值），勾选后一并加入：</p>' +
+      '<div class="sf-bl-list">' + rows + '</div>' +
+      '<div class="sf-actions">' +
+      '<button class="sf-btn sf-btn-leave" id="sf-bl-cancel" data-sf-act="bl-cancel" type="button">返回</button>' +
+      '<button class="sf-btn sf-btn-continue" id="sf-bl-commit" data-sf-act="bl-commit" type="button">加入选中</button>' +
+      '</div>' +
+      '<p class="sf-foot">不确定来源是否恶意时请不要勾选：误加会连坐影响后续访问，可在设置页逐条删除。</p>';
+    const root = warningOverlay || card;
+    const acts = sfMainActions(card, result);
+    acts['bl-cancel'] = function () { try { sfRenderMainCard(root, card, result); } catch (e) {} };
+    acts['bl-commit'] = function () {
+      const picked = [];
+      try {
+        const boxes = NATIVE.qsAll(card, 'input[data-bl-host]');
+        for (let i = 0; i < boxes.length; i++) {
+          if (boxes[i].checked) picked.push(boxes[i].getAttribute('data-bl-host'));
+        }
+      } catch (e) {}
+      addHostsToGlobalBlacklist([pageHost].concat(picked), function (ok, added) {
+        try {
+          if (ok) showToast(added.length ? ('已加入黑名单：' + added.join('、')) : '这些域名已在黑名单中');
+          else showToast('加入自定义恶意域名黑名单失败，请重试');
+        } catch (e) {}
+        try { sfRenderMainCard(root, card, result); } catch (e) {}
+        try { syncBlacklistButton(card); } catch (e) {}
+      });
+    };
+    sfBindUiActions(root, acts);
+  }
+
   // ★ 用户主动「添加到自定义恶意域名黑名单」：写入 customBadDomains（storage.local，跨站点永久生效；
   //   2026-11-12 起由 SFListStore 落盘，small 名单仍会镜像回 sync 以保留跨设备同步）。
   //   设计变更（2026-11-03）：判危本身**不再自动拉黑**（原逻辑会把 84 分的页面自动记入
@@ -1561,6 +1803,7 @@
   }
 
   // ★ 2026-11-12：拦截弹窗「访问正确的页面」——从被拦主机名推断品牌，打开该品牌的真实官网。
+  //   ⚠️ 以下 1)~4) 描述的是 **2026-11-18 之前**的行为，保留作为改动依据；现行流程见下方 11-18 注释。
   //
   //   数据链路（全部本地，无网络请求）：
   //     1) analyzer.resolveCorrectSite(host)：内置表（rules/iocs.js 的 CORRECT_SITE_CATALOG）
@@ -1575,7 +1818,38 @@
   //   为什么统一走后台开标签页：内容脚本没有 tabs 权限，window.open 又会被本页的
   //   弹窗策略（部分仿冒站会重写 window.open）拦掉，按钮就成了「点了没反应」。
   //   后台 chrome.tabs.create 不受页面策略影响，失败时才退回 window.open 兜底。
+  // ★ 2026-11-18：改为**无条件**打开说明页，由说明页列出全部已收录官网（支持多官网 / 链接级官网）。
+  //   旧实现（下面注释保留）是「命中一个官网就直接跳过去」；问题有三：
+  //     ① 一个品牌常有多个官网（WorkBuddy：workbuddy.cn 与 codebuddy.cn/work/），
+  //        替用户挑一个，等于把另一个入口藏起来了；
+  //     ② 有些软件没有主机名意义上的官网（qBittorrent Enhanced Edition 只发 GitHub Releases），
+  //        「主机名」模型表达不了，旧逻辑只能落到「暂未收录」；
+  //     ③ 直接跳转会立刻离开扩展能解释的上下文 —— 用户看不到「为什么把你送到这里」。
+  //   现在统一先到说明页：有官网就逐条列出（带自定义文案），没有就显示提示与反馈入口。
+  //   ⚠️ 站点数据不通过 query 传递：说明页自己读 storage.local 的 sfCloudCorrect 再解析，
+  //     避免超长 URL、二次编码，以及「页面显示与扩展内部结论不一致」。
   function openCorrectSite() {
+    let host = '';
+    try { host = String(location.hostname || '').toLowerCase().replace(/^www\./, ''); } catch (e) {}
+
+    let target = '';
+    try { target = chrome.runtime.getURL('ui/no-correct-site.html'); } catch (e) { target = ''; }
+    if (!target) { try { showToast('暂时无法打开说明页，请稍后重试'); } catch (e) {} return; }
+    target += '?host=' + encodeURIComponent(host || '');
+
+    const fallbackOpen = function () {
+      try { window.open(target, '_blank', 'noopener,noreferrer'); } catch (e) {}
+    };
+    try {
+      chrome.runtime.sendMessage({ type: 'SF_OPEN_TAB', url: target, active: true }, function (res) {
+        // 后台不可用 / 未响应 → 用页面自己的 window.open 兜底（可能被页面策略拦，但聊胜于无）
+        if (chrome.runtime.lastError || !res || !res.ok) fallbackOpen();
+      });
+    } catch (e) { fallbackOpen(); }
+
+    try { showToast('已在新标签页打开说明页，请核对页面列出的官方地址'); } catch (e) {}
+    /*
+    // ===== 旧实现（2026-11-12）：命中官网直接跳转，未命中才开说明页 —— 保留备查 =====
     let host = '';
     try { host = String(location.hostname || '').toLowerCase().replace(/^www\./, ''); } catch (e) {}
 
@@ -1617,6 +1891,7 @@
             : '已在新标签页打开' + who + '官网：' + hit.domain);
       } catch (e) {}
     }
+    */
   }
 
   // ★ 2026-11-12 修复「第二次点『继续访问』无响应」：
@@ -1631,7 +1906,15 @@
       leave: function () { leaveSite(); },
       continue: function () { try { showContinueConfirm(card, result); } catch (e) {} },
       // ★ 用户主动拉黑：判危不再自动写入自定义恶意域名黑名单，避免误报无法复查；只有点这个按钮才永久拉黑
-      'add-blacklist': function (e, el) { addHostToGlobalBlacklist(el); },
+      // ★ 2026-11-19：若本页能找到第三方下载域名，先弹确认页（当前页固定加入 + 勾选载荷域）；
+      //   找不到时行为与旧版完全一致 —— 直接写入当前 host，不多一步确认。
+      'add-blacklist': function (e, el) {
+        try {
+          const hosts = collectThirdPartyDownloadHosts();
+          if (hosts && hosts.length) { showBlacklistConfirm(card, result, hosts); return; }
+        } catch (err) {}
+        addHostToGlobalBlacklist(el);
+      },
       // ★ 2026-11-12：访问被仿冒网站对应的正确官网（见 openCorrectSite）
       'open-correct': function () { openCorrectSite(); },
       __escape: function () { leaveSite(); }
@@ -1937,13 +2220,26 @@
   // 内容脚本在页面级（点击/入口/表单）拦截下载时，后台并未走 chrome.downloads 取消流程，
   // 故 cancelDownload 里的「拦截下载次数 +1 / 写入自动学习黑名单」不会执行——导致计数恒为 0、黑名单恒空。
   // 这里在拦截发生时主动通知后台补计（与 cancelDownload 同源逻辑），覆盖后台取消流程到不了的路径。
+  // ★ 2026-11-19：统一把结果解析成绝对 URL。后台 dlBlacklistAdd 用的是 parseHost()，
+  //   相对路径（/dsnw、download.php?id=1）在它那里会解析失败 → 记成空域名 → 自动学习静默失效。
+  function absolutizeUrl(raw) {
+    if (!raw) return '';
+    try { return new URL(String(raw).trim(), location.href).href; } catch (e) { return ''; }
+  }
   function extractBlockUrl(opts) {
-    if (opts && typeof opts.url === 'string' && opts.url) return opts.url;
+    if (opts && typeof opts.url === 'string' && opts.url) {
+      const a = absolutizeUrl(opts.url);
+      if (a) return a;
+    }
     const el = opts && opts.target;
     if (el && el.getAttribute) {
+      // ★ 2026-11-19：被禁用过的 <a> 其 href 已被摘到 data-sf-original-href，
+      //   这里不认它就会把「载荷域名」记成空串 → 自动学习永远学不到（学习入口被白断）。
       const u = el.getAttribute('href') || el.getAttribute('src') ||
-                el.getAttribute('data-href') || el.getAttribute('data-url');
-      if (u) return u;
+                el.getAttribute('data-href') || el.getAttribute('data-url') ||
+                el.getAttribute('data-sf-original-href') ||
+                (el.dataset && el.dataset.sfOriginalHref) || '';
+      if (u) return absolutizeUrl(u);
     }
     return '';
   }
@@ -1978,18 +2274,33 @@
         'dl-keep': function () { closeEl(overlayRef); },
         'dl-allow': function () {
           closeEl(overlayRef);
-          allowNextAction(700);
-          // 拿到真实下载 URL（优先 opts.url，其次从入口元素提取），登记进后台放行名单。
-          const url = (opts.url || getEntryDownloadUrl(opts.target) || '').trim();
-          // 触发本页实际下载：优先点击原始入口（保留站内 JS 行为 / 鉴权上下文），否则用 <a> 兜底。
+          // URL 要在「恢复入口」之前取：被禁用的 <a> 其 href 已被摘到 data-sf-original-href，
+          // getEntryDownloadUrl 现在两处都认（见 2026-11-19 的兜底分支）。
+          const url = (absolutizeUrl(opts.url) || getEntryDownloadUrl(opts.target) || '').trim();
+          // 触发本页实际下载：优先恢复入口后重放它的原始点击（保留站内 JS 行为 / 鉴权上下文），
+          // 其次用 <a> 兜底打开真实 URL。
           const trigger = function () {
-            if (opts.target && opts.target.click) { try { opts.target.click(); return; } catch (e) {} }
+            // ★ 2026-11-19：放行窗口必须在这里才打开 —— sendMessage 回执是异步的，
+            //   若在点击瞬间就 allowNextAction(700)，后台稍慢一点窗口就过期，重放又被拦。
+            allowNextAction(1500);
+            const t = opts.target;
+            if (t) {
+              // 把 href / disabled / click / onclick 一次性还回去，否则「重放」只是空转
+              try { restoreEntryHandlers(t); } catch (e) {}
+              const fn = (typeof t.click === 'function') ? t.click : null;
+              if (fn) {
+                try { fn.call(t); return; } catch (e) {}
+              }
+            }
             if (url) {
               const a = document.createElement('a');
               a.href = url; a.download = ''; a.target = '_blank'; a.style.display = 'none';
               document.body.appendChild(a); a.click();
               setTimeout(function () { try { a.remove(); } catch (e) {} }, 100);
+              return;
             }
+            // 既没有可重放的入口、也拿不到 URL（纯 JS 动态取链）：如实告诉用户，别假装已放行
+            try { showToast('无法获取该下载地址，请在页面内手动重新点击下载'); } catch (e) {}
           };
           if (chrome.runtime && chrome.runtime.sendMessage) {
             try {
@@ -2334,6 +2645,21 @@
     }
     // 自定义黑名单已在函数入口按「黑名单优先」统一处理（_badKey === 'customBlack'），
     //   此处不再叠加 100 分，避免同一域名既走快速分支又被加一次分。
+    // 银狐防护云端名单（FoxAPI）：只在「总开关 + FoxAPI 子开关」都开启、且后台成功返回时参与。
+    //   口径（已与用户确认）：official === false → 合作者云端名单未收录 → 风险分 +45；
+    //                        official === true  → 对方认得这是官网 → 完全不影响本地判定
+    //                        （本地若判 warn/danger，仍以本地结论为准）。
+    //   刻意不注册为 THREAT_INTEL_PROVIDERS：不渲染横幅，也不进入设置页的 29 维权重。
+    const _fx = data && data.foxapi;
+    if (_fx && _fx.ok && _fx.official === false) {
+      result.score = Math.min(100, (result.score || 0) + 45);
+      result.foxapiUnlisted = true;
+      result.reasons.push({
+        label: '合作者黑名单',
+        detail: '该域名不受 SilverFox Guard 云端信任。（合作者云端名单未收录，风险分 +45）',
+        weight: 45
+      });
+    }
     recomputeLevel(result, settings.sensitivity);
 
     // 跳转链污染升级：本标签由危险站跳转而来，且本页有下载入口/网盘/低质量等信号，升级为 danger 强制拦截
@@ -3059,6 +3385,10 @@
     if (msg && msg.type === 'sf-download-blocked') { showDownloadBlocked(location.hostname, { url: msg.url || '', fromBackground: true }); }
     if (msg && msg.type === 'sf-dl-ext-blocked') { showExtDlConfirm(location.hostname, { url: msg.url || '', filename: msg.filename || '' }); }
     if (msg && msg.type === 'sf-download-allow-failed') { showToast('⚠️ 请手动在站内点击下载，已临时放行该链接'); }
+    // ★ 2026-11-20：后台跟随跳转端点后推回的「隐藏分发域」，已同时写入自动学习黑名单
+    if (msg && msg.type === 'sf-resolver-hit') {
+      try { showToast('🔎 已识别隐藏分发域名：' + (msg.host || '') + '，已加入下载黑名单'); } catch (e) {}
+    }
   });
 
   // ===== SPA 路由变化：pushState / replaceState / popstate 后重新起闸并重判（2026-11-11 新增）=====

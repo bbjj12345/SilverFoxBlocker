@@ -67,7 +67,9 @@ const DEFAULTS = {
       virustotal: { enabled: false, apiKey: '' },
       urlhaus: { enabled: false },
       netapi: { enabled: false },
-      googlesafebrowsing: { enabled: false, apiKey: '' }
+      googlesafebrowsing: { enabled: false, apiKey: '' },
+      // FoxAPI（银狐防护云端名单）：不显示横幅，只作为本地评分判据；Key 同样以密文存储
+      foxapi: { enabled: false, apiKey: '' }
     }
   },
   // 社区维护的本地黑名单总开关（默认关闭）：关闭时三个名单不加载、不更新、不参与比对；
@@ -109,6 +111,13 @@ let _vtSavedCipher = '';     // 已保存的密文，用户未改动输入框时
 let _vtEncryptFailed = false;// 本次保存加密是否失败（首次填写失败 → 不存明文，提示重试）
 let _vtFieldDirty = false;   // 用户是否改动过 Key 输入框
 const VT_MASK = new Array(64 + 1).join(GSB_MASK_CHAR);   // VT v3 API Key 典型长度 64 位
+
+// FoxAPI（银狐防护云端名单）Key 状态：与 VT / GSB 同一套「密文 + 掩码」机制，状态独立
+let _foxKeySet = false;      // 设置页打开时是否已存在密文 Key
+let _foxSavedCipher = '';    // 已保存的密文（用户未改动输入框时原样保留）
+let _foxEncryptFailed = false;
+let _foxFieldDirty = false;
+const FOX_MASK = new Array(40 + 1).join(GSB_MASK_CHAR);  // sk_live_ + 32 位 = 40 个圆点
 
 function $(id) { return document.getElementById(id); }
 // 扩展环境才有 chrome.storage；浏览器直接预览时优雅退回默认值，不影响真实行为
@@ -1135,6 +1144,48 @@ function bindControls(settings) {
     if (tiGsEnabled) tiGsEnabled.addEventListener('change', function () {
       if (tiGsKeyWrap) tiGsKeyWrap.style.display = tiGsEnabled.checked ? '' : 'none';
     });
+
+    // FoxAPI（银狐防护云端名单）：与 GSB 完全同构的加密 / 掩码 / 留空保留逻辑
+    const fox = (ti.providers && ti.providers.foxapi) || { enabled: false, apiKey: '' };
+    const tiFoxEnabled = $('tiFoxEnabled');
+    const tiFoxKey = $('tiFoxKey');
+    const tiFoxKeyWrap = $('tiFoxKeyWrap');
+    const tiFoxKeyHint = $('tiFoxKeyHint');
+    _foxKeySet = false; _foxSavedCipher = ''; _foxFieldDirty = false;
+    if (tiFoxEnabled) tiFoxEnabled.checked = !!fox.enabled;
+    if (tiFoxKey) {
+      tiFoxKey.value = '';
+      tiFoxKey.type = 'password';
+      tiFoxKey.onfocus = null;
+      tiFoxKey.oninput = function () { _foxFieldDirty = true; };
+      tiFoxKey.placeholder = '粘贴你的 FoxAPI Key（sk_live_…，保存时自动加密）';
+    }
+    if (tiFoxKeyWrap) tiFoxKeyWrap.style.display = (tiFoxEnabled && tiFoxEnabled.checked) ? '' : 'none';
+    if (tiFoxKeyHint) { tiFoxKeyHint.textContent = ''; tiFoxKeyHint.style.color = ''; }
+    if (fox.apiKey && sfLooksEncrypted(fox.apiKey)) {
+      _foxKeySet = true; _foxSavedCipher = fox.apiKey; _foxFieldDirty = false;
+      if (tiFoxKey) {
+        tiFoxKey.type = 'password';
+        tiFoxKey.value = FOX_MASK;
+        tiFoxKey.placeholder = '已加密保存（显示为圆点）。点击可输入新 Key 替换；留空保存则保留原 Key。';
+        tiFoxKey.onfocus = function () {
+          if (tiFoxKey.value === FOX_MASK) { try { tiFoxKey.select(); } catch (_) {} }
+        };
+      }
+      if (tiFoxKeyHint) {
+        tiFoxKeyHint.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。';
+        tiFoxKeyHint.style.color = '#2e9e6b';
+      }
+    } else if (fox.apiKey) {
+      if (tiFoxKey) { tiFoxKey.type = 'password'; tiFoxKey.value = ''; }
+      if (tiFoxKeyHint) {
+        tiFoxKeyHint.textContent = '检测到旧格式 Key（未加密），请重新输入以重新加密保存。';
+        tiFoxKeyHint.style.color = '#c0392b';
+      }
+    }
+    if (tiFoxEnabled) tiFoxEnabled.addEventListener('change', function () {
+      if (tiFoxKeyWrap) tiFoxKeyWrap.style.display = tiFoxEnabled.checked ? '' : 'none';
+    });
   }
 
   // 社区维护的本地黑名单：主开关默认不勾选；勾选后才展开五个名单子项（各自还有独立开关）
@@ -1534,6 +1585,35 @@ async function collectSettings() {
       tiVtKeyHintEl.style.color = '#2e9e6b';
     }
   } catch (e) {}
+  // FoxAPI：与 VT / GSB 同一套加密规则（失败绝不回退明文）
+  const foxRaw = ($('tiFoxKey') ? ($('tiFoxKey').value || '') : '');
+  const foxInput = foxRaw.split(GSB_MASK_CHAR).join('').trim();
+  let foxKeyEnc = '';
+  _foxEncryptFailed = false;
+  if (!_foxFieldDirty) {
+    foxKeyEnc = _foxSavedCipher || '';
+  } else if (foxInput && foxInput !== _foxSavedCipher) {
+    const enc = await sfEncryptKey(foxInput);
+    if (enc) {
+      foxKeyEnc = enc;
+    } else if (_foxKeySet) {
+      foxKeyEnc = _foxSavedCipher || '';        // 加密异常但已有密文 → 保留旧值
+    } else {
+      foxKeyEnc = ''; _foxEncryptFailed = true; // 首次填写却加密失败 → 绝不写明文
+    }
+  } else {
+    foxKeyEnc = _foxSavedCipher || '';
+  }
+  try {
+    const tiFoxKeyEl = $('tiFoxKey');
+    if (tiFoxKeyEl) { tiFoxKeyEl.type = 'password'; tiFoxKeyEl.value = foxKeyEnc ? FOX_MASK : ''; }
+    _foxSavedCipher = foxKeyEnc; _foxFieldDirty = false;
+    const tiFoxKeyHintEl = $('tiFoxKeyHint');
+    if (tiFoxKeyHintEl && foxKeyEnc) {
+      tiFoxKeyHintEl.textContent = '✓ 已配置并加密保存（圆点仅为掩码，不可还原为明文）。如需更换，直接输入新的 Key 再保存；留空保存则保留原 Key。';
+      tiFoxKeyHintEl.style.color = '#2e9e6b';
+    }
+  } catch (e) {}
   return {
     enabledGlobal: (window.__sfSettings ? !!window.__sfSettings.enabledGlobal : true),
     showWarning: $('showWarning').checked,
@@ -1572,6 +1652,10 @@ async function collectSettings() {
         googlesafebrowsing: {
           enabled: ($('tiGsEnabled') ? $('tiGsEnabled').checked : false),
           apiKey: gsKeyEnc   // 密文（AES-GCM）；明文仅在后台 service worker 内解密
+        },
+        foxapi: {
+          enabled: ($('tiFoxEnabled') ? $('tiFoxEnabled').checked : false),
+          apiKey: foxKeyEnc  // 密文（AES-GCM）；明文仅在后台 service worker 内解密
         }
       }
     },
@@ -1931,6 +2015,31 @@ async function init() {
     });
   })();
 
+  // 急救页：SilverFoxCleaner（自制银狐专杀工具）。
+  // 下载逻辑与 SoftcnKiller 完全一致 —— 按钮本身就是原生 <a href="蓝奏云分享页" target="_blank">，
+  //   这里不拦截导航，只在点击时把提取码复制到剪贴板；复制失败静默保留原文案（提取码始终可见）。
+  // 页面不展示蓝奏云分享链接，所以不存在「直链卡」；提取码那行本身也可点复制。
+  (function bindSfCleaner() {
+    const btn = $('sfCleanerBtn'), tip = $('sfCleanerPwdTip');
+    const PWD = 'fijy';
+    // 与 options.html 里的初始文案必须一致（改了要一起改）
+    const BASE_TIP = '蓝奏云提取码：fijy（点击按钮自动复制到剪贴板）';
+    const DONE_TIP = '蓝奏云提取码 fijy 已复制，去蓝奏云页面粘贴即可';
+    const copyPwd = function () {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+        navigator.clipboard.writeText(PWD).then(function () {
+          if (!tip) return;
+          tip.textContent = DONE_TIP;
+          setTimeout(function () { tip.textContent = BASE_TIP; }, 2600);
+        }, function () {});
+      } catch (e) {}
+    };
+    // 页面不再展示蓝奏云分享链接，因此这里没有可复制的链接卡，只保留提取码复制。
+    if (btn) btn.addEventListener('click', copyPwd);
+    if (tip) tip.addEventListener('click', copyPwd);
+  })();
+
   bindDlBlacklist();
   bindRulesIO();
   loadDlBlacklist();
@@ -2091,19 +2200,24 @@ async function init() {
       // 诊断日志：确认两个需 Key 的源都写入了密文（用户在 DevTools 控制台可据此判断 Key 是否真的存上了）
       const gsProv = (patch.threatIntel && patch.threatIntel.providers && patch.threatIntel.providers.googlesafebrowsing) || {};
       const vtProv = (patch.threatIntel && patch.threatIntel.providers && patch.threatIntel.providers.virustotal) || {};
+      const foxProv = (patch.threatIntel && patch.threatIntel.providers && patch.threatIntel.providers.foxapi) || {};
       console.log('[SilverFoxBlocker][设置] 保存威胁情报：'
         + 'VT 子开关=' + !!vtProv.enabled
         + '，VT 密文=' + (vtProv.apiKey ? '已加密(' + vtProv.apiKey.length + ')' : '空')
         + '，GSB 子开关=' + !!gsProv.enabled
         + '，GSB 密文长度=' + ((gsProv.apiKey || '').length)
+        + '，FoxAPI 子开关=' + !!foxProv.enabled
+        + '，FoxAPI 密文长度=' + ((foxProv.apiKey || '').length)
         + (_gsEncryptFailed ? '，⚠ 本次 GSB Key 加密失败，未写入明文（已留空）' : '')
-        + (_vtEncryptFailed ? '，⚠ 本次 VT Key 加密失败，未写入明文（已留空）' : ''));
+        + (_vtEncryptFailed ? '，⚠ 本次 VT Key 加密失败，未写入明文（已留空）' : '')
+        + (_foxEncryptFailed ? '，⚠ 本次 FoxAPI Key 加密失败，未写入明文（已留空）' : ''));
       // 自定义主题可能含大体积背景图，单独存 chrome.storage.local，避免 sync 8KB 配额静默失败
       if (hasStorageLocal()) chrome.storage.local.set({ sfCustomThemes: (window.__sfSettings && Array.isArray(window.__sfSettings.customThemes)) ? window.__sfSettings.customThemes : [] });
-      if (_gsEncryptFailed || _vtEncryptFailed) {
+      if (_gsEncryptFailed || _vtEncryptFailed || _foxEncryptFailed) {
         const names = [
           _vtEncryptFailed ? 'VirusTotal' : '',
-          _gsEncryptFailed ? 'Google Safe Browsing' : ''
+          _gsEncryptFailed ? 'Google Safe Browsing' : '',
+          _foxEncryptFailed ? 'FoxAPI' : ''
         ].filter(Boolean).join('、');
         alert(names + ' 的 API Key 本次加密失败，未保存。请重试；如反复失败请检查浏览器是否支持 Web Crypto（chrome-extension:// 页面默认可用）。');
         return;
@@ -2832,6 +2946,31 @@ function normalizeCloudList(json, opts) { return normalizeCloudListEx(json, opts
 //   这里每个条目是一个对象（产品名 / 品牌词 / 官网），官网必须是确定的主机名（不收通配），
 //   品牌词必须是 2 字符以上的 ASCII 片段（收 `*` `?` 只会永不命中，属于静默失效）。
 // 兼容三种写法：{product,brands:[],domain} / 简写 {p,b,d} / 字符串 '域名|品牌词 品牌词'。
+// ★ 2026-11-18：站点规格归一化 —— 优先复用 rules/iocs.js 的同一套校验
+//   （内置表、云端补录、说明页三处必须用同一把尺子，否则「内置收、云端拒」无从排查）。
+//   设置页在 iocs.js 之后加载，正常都能拿到；拿不到时退回「只认主机名」的旧能力。
+function normalizeCorrectSitesLocal(field) {
+  const I = (typeof window !== 'undefined' && window.SF_IOCS) || null;
+  if (I && typeof I.normalizeCorrectSites === 'function') {
+    try { return I.normalizeCorrectSites(field); } catch (e) { /* 落到下面 */ }
+  }
+  const out = [];
+  const one = function (v) {
+    if (typeof v !== 'string') return;
+    const h = v.toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '');
+    if (!h || h.indexOf('.') === -1 || /[*?\s]/.test(h)) return;
+    out.push({ url: 'https://' + h, host: h, label: '', kind: 'host' });
+  };
+  if (typeof field === 'string') one(field);
+  else if (Array.isArray(field)) field.forEach(one);
+  else if (field && typeof field === 'object') one(field.url || field.u || field.domain || field.d || '');
+  return out;
+}
+
+// 旧（2026-11-12）：只认一个主机名 domain —— 链接级官网（GitHub Releases 之类）会被
+//   `.replace(/[/?#].*$/, '')` 截成主机名，等于把「发布页」变成「首页」，指错地方。
+//   整段停用，保留备查。
+/*
 function normalizeCloudCorrect(arr) {
   const out = [];
   if (!Array.isArray(arr)) return out;
@@ -2858,6 +2997,46 @@ function normalizeCloudCorrect(arr) {
     if (seen.has(key)) return;
     seen.add(key);
     out.push({ product: String(product).slice(0, 60), brands: clean, domain: domain });
+  });
+  return out;
+}
+*/
+// 新（2026-11-18）：支持 sites（多官网 / 链接级官网）。输出结构多一个 sites 字段，
+//   内容脚本与说明页都只认这个结构；domain 仍保留为「第一个主机名级站点」，兼容旧读取方。
+function normalizeCloudCorrect(arr) {
+  const out = [];
+  if (!Array.isArray(arr)) return out;
+  const seen = new Set();
+  arr.forEach(function (x) {
+    let domain = '', brands = [], product = '', sitesRaw = null;
+    if (typeof x === 'string') {
+      const parts = x.split('|');
+      domain = parts[0] || '';
+      brands = String(parts[1] || '').split(/[\s,]+/);
+    } else if (x && typeof x === 'object') {
+      domain = x.domain || x.d || '';
+      product = x.product || x.p || '';
+      const b = (x.brands != null) ? x.brands : x.b;
+      brands = Array.isArray(b) ? b : String(b || '').split(/[\s,]+/);
+      if (Array.isArray(x.sites) && x.sites.length) sitesRaw = x.sites;
+    } else { return; }
+
+    const sites = normalizeCorrectSitesLocal(sitesRaw || String(domain || '').trim());
+    if (!sites.length) return;
+    // 主域 = 第一个主机名级站点；全是链接级时退回第一个站点的主机名
+    let primary = '';
+    for (let i = 0; i < sites.length; i++) {
+      if (sites[i].kind === 'host') { primary = sites[i].host; break; }
+    }
+    if (!primary) primary = sites[0].host;
+
+    const clean = brands.map(function (b) { return String(b == null ? '' : b).trim().toLowerCase(); })
+      .filter(function (b) { return b && b.length >= 2 && !/[*?\s]/.test(b); });
+    if (!clean.length) return;
+    const key = primary + '|' + clean.join(' ');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ product: String(product).slice(0, 60), brands: clean, domain: primary, sites: sites });
   });
   return out;
 }

@@ -135,3 +135,85 @@ h1 {
   .card { padding: 26px 18px 20px; }
   .actions { flex-direction: column; }
 }
+
+/* ==========================================================================
+   官方页面列表（2026-11-18 新增）
+   一个品牌可能有多个官网，也可能只有一个「发布页」链接，所以列表要能容纳
+   一行行「文案 + 完整地址」，并允许地址折行（GitHub Releases 那种很长）。
+   配色沿用上面的变量，浅色 / 深色主题都自动跟随。
+   ========================================================================== */
+.sites {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  text-align: left;
+}
+
+.site {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--sec-bg);
+}
+.site + .site { margin-top: 8px; }
+
+.site-label {
+  flex: 0 0 auto;
+  min-width: 62px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.site-url {
+  flex: 1 1 auto;
+  font-size: 13.5px;
+  color: var(--primary);
+  text-decoration: none;
+  word-break: break-all;
+  /* 等宽字体的地址更好逐个字符核对，正是这一页要用户做的事 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+}
+.site-url:hover { text-decoration: underline; }
+.site-url:visited { color: var(--primary); }
+.site-url:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.hint,
+.note {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: left;
+  color: var(--muted);
+}
+
+/* 推断类命中（拼写相近 / 主干同名）需要更醒目的提示，用琥珀色而不是红色：
+   它只是「疑似」，用户仍可能是在访问同名的另一家公司。 */
+.note {
+  padding: 9px 12px;
+  border: 1px solid #e8c98a;
+  border-radius: 9px;
+  background: #fdf6e6;
+  color: #7a5b13;
+}
+@media (prefers-color-scheme: dark) {
+  .note {
+    border-color: #6b5426;
+    background: #2b2415;
+    color: #e6c877;
+  }
+}
+
+@media (max-width: 420px) {
+  .site { flex-direction: column; gap: 2px; }
+  .site-label { min-width: 0; }
+}
+

@@ -149,7 +149,7 @@
             <div class="row" style="border:0;padding:0" data-page-node-id="sfTiRow1">
               <div class="rl" data-page-node-id="sfTiRl1">
                 <div class="rt" data-page-node-id="sfTiRt1">威胁情报 API（可选）</div>
-                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal（需自有 Key）、URLhaus（无需 Key）、NetAPI（无需 Key）、Google Safe Browsing（需自有 Key）。四者横幅自上而下依次为 VirusTotal → URLhaus → NetAPI → Google Safe Browsing，仅显示判为恶意的情报源；任一未检出则后续自动上移补位。</div>
+                <div class="rd" data-page-node-id="sfTiRd1">启用后，扩展实时查询当前域名在第三方威胁情报库的判定，并在网页顶部横幅提示。默认关闭，不影响任何本地检测。当前开放 VirusTotal（需自有 Key）、URLhaus（无需 Key）、NetAPI（无需 Key）、Google Safe Browsing（需自有 Key）、银狐防护云端名单 FoxAPI（需自有 Key）。前四者横幅自上而下依次为 VirusTotal → URLhaus → NetAPI → Google Safe Browsing，仅显示判为恶意的情报源；任一未检出则后续自动上移补位。FoxAPI <b>不显示横幅</b>，只作为本地评分判据（未收录 +45 分）。</div>
               </div>
               <label class="switch" data-page-node-id="sfTiSw1"><input type="checkbox" id="tiEnabled" data-page-node-id="sfTiCb1"><span class="slider" data-page-node-id="sfTiSl1"></span></label>
             </div>
@@ -271,6 +271,47 @@
                     <div class="hint" id="tiGsKeyHint" style="margin:6px 0 2px" data-page-node-id="sfTiGsKeyHint"></div>
                   </div>
                 </div>
+                <div class="ti-provider" data-page-node-id="sfTiFox">
+                  <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowFox">
+                    <div class="rl" data-page-node-id="sfTiRlFox">
+                      <div class="rt" data-page-node-id="sfTiRtFox">银狐防护云端名单列表（FoxAPI）</div>
+                      <div class="rd" data-page-node-id="sfTiRdFox">需自有 API Key。免费版（Go）额度有限（每秒 2 次查询）。Key 以<b>密文</b>形式保存（AES-GCM 加密，非明文落盘）。由我们的合作者 Yinbo 维护的云端白名单列表，可在短时间内查询当前页面是否为官网，可作为拦截危险网站的补充依据。为了缓解对方服务器的压力，我们对 Go 额度进行二次限制，通过本扩展每秒只允许进行 1 次查询。启用后<b>不显示任何横幅</b>：接口返回 <b>official:false</b> 时，在现有评分逻辑上加 45 分，并记一条「合作者黑名单」判据；返回 <b>official:true</b> 时不影响本地判断（本地判 warn / danger 仍以本地为准）。该判据仅在「威胁情报总开关 + 本项」都开启时生效，不参与设置页的 29 维权重。</div>
+                      <div class="ti-guide" data-page-node-id="sfTiGuideFox">
+                        <button type="button" class="ti-guide-btn" aria-expanded="false" data-page-node-id="sfTiGuideBtnFox">如何获取 API？</button>
+                        <div class="ti-guide-body">
+                          <ol class="ti-guide-steps">
+                            <li>创建 FoxAPI 账号
+                              <ul class="ti-guide-sub">
+                                <li>打开浏览器，访问 FoxAPI 官方网站 <span class="ti-guide-url">https://api.silverfoxguard.dpdns.org</span>。</li>
+                                <li>点击注册按钮，完成注册。注意：注册强制使用两步验证（2FA），建议提前在手机安装身份验证器。</li>
+                                <li>验证邮箱地址后，完成登录。</li>
+                              </ul>
+                            </li>
+                            <li>查找你的 FoxAPI 密钥
+                              <ul class="ti-guide-sub">
+                                <li>成功登录 FoxAPI 账号后，点击页面左侧导航栏中的「控制台」选项；</li>
+                                <li>在控制台页面中，找到「API Keys」部分；</li>
+                                <li>新建一个 API Key，复制显示的字符串，这就是你的密钥。</li>
+                              </ul>
+                            </li>
+                            <li>添加 API Key
+                              <ul class="ti-guide-sub">
+                                <li>回到 SilverFoxBlocker 扩展的设置页，添加 FoxAPI Key，保存设置即可。</li>
+                                <li>免费用户限额：每分钟 1 次、每周 10000 次、每月 30000 次。</li>
+                              </ul>
+                            </li>
+                          </ol>
+                          <div class="ti-guide-note">注意：请妥善保管你的 API 密钥，不要分享给他人，以免账号被滥用。</div>
+                        </div>
+                      </div>
+                    </div>
+                    <label class="switch" data-page-node-id="sfTiSwFox"><input type="checkbox" id="tiFoxEnabled" data-page-node-id="sfTiCbFox"><span class="slider" data-page-node-id="sfTiSlFox"></span></label>
+                  </div>
+                  <div id="tiFoxKeyWrap" style="display:none;margin:4px 0 2px" data-page-node-id="sfTiFoxKeyWrap">
+                    <input type="password" id="tiFoxKey" class="ti-input" placeholder="粘贴你的 FoxAPI Key（sk_live_…，保存时自动加密）" autocomplete="off" spellcheck="false" data-page-node-id="sfTiFoxKey">
+                    <div class="hint" id="tiFoxKeyHint" style="margin:6px 0 2px" data-page-node-id="sfTiFoxKeyHint"></div>
+                  </div>
+                </div>
               </div>
           </div>
         </div>
@@ -364,7 +405,7 @@
         <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">
           <div class="field" data-page-node-id="oOItSmLqHP6DxMGlyjQtdD">
             <label data-page-node-id="Ol7axpG3tDeKZDnTWkWPDA">自动学习的下载黑名单</label>
-            <div class="hint" style="margin:0 0 10px" data-page-node-id="sBAydBiDlqog7AExbalZSf">每次成功拦截一次可疑下载，该文件所在域名会被自动记下；此后任何页面指向同一域名都会加分或直接拦截（银狐换落地页不换载荷服务器）。90 天未再命中自动移除，最多保留 500 条。GitHub、微软等可信下载源与自定义信任白名单永不入库。如遇误拦，删除对应条目即可恢复下载。</div>
+            <div class="hint" style="margin:0 0 10px" data-page-node-id="sBAydBiDlqog7AExbalZSf">每次成功拦截一次可疑下载，该文件所在域名会被自动记下；此后任何页面指向同一域名都会加分或直接拦截（银狐换落地页不换载荷服务器）。<br>2026-11-20 起：如果危险页的下载按钮是「<code>/go/event?…</code>」这类跳转端点（真实分发域藏在 302 里、页面上看不到），扩展会在后台用一个不可见标签页跑一次该跳转，把最终落到的域名也记进来（只取域名，文件当场取消，不落地）。<br>90 天未再命中自动移除，最多保留 500 条。GitHub、微软等可信下载源与自定义信任白名单永不入库。如遇误拦，删除对应条目即可恢复下载。</div>
             <div id="dlBlList" class="dlbl-list" data-page-node-id="QqOYCkUFdlkjxhAgD5Qnst"><div class="dlbl-empty" data-page-node-id="n8ABGTP8WjHPSA2pUBKNXD">暂无记录</div></div>
             <div class="row" style="border:0;padding:10px 0 0" data-page-node-id="P4nUgox4RtsqIe7N2y7UNu">
               <div class="rl" data-page-node-id="LJQEqK6sFEuwws5KWPWMGh"><div class="rd" id="dlBlCount" data-page-node-id="2jyArmVFPgNNywIxcGquFE">共 0 条</div></div>
@@ -502,6 +543,21 @@
           <div class="rescue-url" id="kvrtUrl" title="点击复制" data-page-node-id="SF_KVRT_URL">加载中…</div>
         </div>
 
+        <!-- SilverFoxCleaner（自制银狐专杀）：下载逻辑复用 SoftcnKiller 的「蓝奏云分享页」——
+             原生 <a target="_blank" rel="noreferrer">，不拦截、不改写导航；点击时只额外把提取码
+             fijy 复制到剪贴板（复制失败时静默保留原文案，绝不假装已复制）。 -->
+        <div class="card rescue-hero rescue-hero-sfc" data-page-node-id="SF_SFC_HERO">
+          <div class="rescue-ico rescue-ico-sfc" data-page-node-id="SF_SFC_ICO">
+            <svg viewBox="0 0 24 24" fill="none" data-page-node-id="SF_SFC_SVG"><path d="M12 3 4 6v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V6l-8-3Z" stroke="#8ef0c0" stroke-width="1.5" stroke-linejoin="round"/><circle cx="12" cy="11.2" r="3.4" stroke="#8ef0c0" stroke-width="1.5"/><circle cx="12" cy="11.2" r="1" fill="#8ef0c0"/></svg>
+          </div>
+          <div class="rescue-txt" data-page-node-id="SF_SFC_TXT">
+            <h2 data-page-node-id="SF_SFC_TITLE">SilverFoxCleaner（自制银狐专杀工具）</h2>
+            <p data-page-node-id="SF_SFC_DESC">SilverFoxCleaner是一款使用Rust编写的自制银狐专杀工具，原作者是百度贴吧“病毒吧”的大佬“霸总爱上了龙子”。该项目目前由本扩展的作者独立维护。<br>该工具内置机器学习模型，通过YARA规则和39个评分维度，模型为每个检出项评分、并判断应该执行的操作。<br>另：我们对原作者的工具进行了修改，实现了原版缺失的“恢复功能”（通过独立的恢复程序实现）；提高了工具的可交互性和透明度。<br><span class="sfc-warn" data-page-node-id="SF_SFC_WARN"><strong>警告：</strong>本工具目前处于试验阶段，可能存在误报偏高的问题。建议将本工具作为主流工具的补充，而不是唯一的急救手段。</span></p>
+            <div class="tip tip-hint" data-page-node-id="SF_SFC_HINT"><strong>下载说明：</strong>下载入口是蓝奏云分享页，点击右侧按钮会在新标签页打开，同时自动把提取码复制到剪贴板，在蓝奏云页面直接粘贴即可。若剪贴板里没有内容，也可以手动输入下方的提取码。<br><span class="sfc-pwd" id="sfCleanerPwdTip" title="点击复制提取码" data-page-node-id="SF_SFC_PWD">蓝奏云提取码：fijy（点击按钮自动复制到剪贴板）</span></div>
+          </div>
+          <a class="btn btn-rescue btn-rescue-sfc" id="sfCleanerBtn" href="https://wwavz.lanzout.com/b01gihf8he" target="_blank" rel="noreferrer" title="前往蓝奏云分享页（提取码 fijy，点击按钮自动复制到剪贴板）" data-page-node-id="SF_SFC_BTN">前往蓝奏云下载 SilverFoxCleaner</a>
+        </div>
+
         <div class="card" data-page-node-id="gTah7gKPbKroVgQZjpBvfB">
           <p class="sec-desc" data-page-node-id="6lgtt3tsiDbkbavYDeIq0B">中招后急救步骤：</p>
           <ol class="rescue-steps" data-page-node-id="VWrJdUd5nZ8mioitT0HO5o">
@@ -609,7 +665,7 @@
                以前只在控制台 console.warn 里出现，等于对用户静默；这里把原文 + 原因直接列出来，
                让用户/作者能照着自己改名单。默认隐藏，无丢弃时不占位。 -->
           <div class="about-row" id="cloudDropRow" data-page-node-id="SF_CLOUD_DROP_ROW" style="display:none"><span class="ak">未生效条目</span><span class="av" id="cloudDropDetail" data-page-node-id="SF_CLOUD_DROP" style="font-weight:400;opacity:.75;word-break:break-all"></span></div>
-          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75"><b>云端黑名单、云端白名单</b>，以及「规则与名单」里的<b>两个自定义名单</b>都支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配。<b>顶级域通配</b>目前只对<b>云端黑名单</b>开放（<code>*-deepseek-*.*</code> 这类），并要求「除 TLD 外至少保留 4 个字面字符」，<code>*.*</code> / <code>*a*.*</code> / <code>foo.*</code> 仍会被丢弃；TLD 位的 <code>*</code> 同时覆盖多级后缀（<code>com.cn</code> / <code>co.uk</code>），所以 <code>*.*deepseek-*.*</code> 能拦 <code>app.vip-deepseek-offical.com.cn</code>；云端白名单、内置名单、两个自定义名单维持禁止。<br>另支持<b>路径条目</b>（云端黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；<b>路径条目也不限条数</b>。<br><b>官网映射</b>（<code>correct_sites</code>，只服务「访问正确的页面」按钮）不支持通配：官网必须是一个确定的主机名，写 <code>*</code> 或 <code>?</code> 会被丢弃。</span></div>
+          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75"><b>云端黑名单、云端白名单</b>，以及「规则与名单」里的<b>两个自定义名单</b>都支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配。<b>顶级域通配</b>目前只对<b>云端黑名单</b>开放（<code>*-deepseek-*.*</code> 这类），并要求「除 TLD 外至少保留 4 个字面字符」，<code>*.*</code> / <code>*a*.*</code> / <code>foo.*</code> 仍会被丢弃；TLD 位的 <code>*</code> 同时覆盖多级后缀（<code>com.cn</code> / <code>co.uk</code>），所以 <code>*.*deepseek-*.*</code> 能拦 <code>app.vip-deepseek-offical.com.cn</code>；云端白名单、内置名单、两个自定义名单维持禁止。<br>另支持<b>路径条目</b>（云端黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；<b>路径条目也不限条数</b>。<br><b>官网映射</b>（<code>correct_sites</code>，只服务「访问正确的页面」按钮）不支持通配：官网必须是一个确定的主机名，写 <code>*</code> 或 <code>?</code> 会被丢弃。<br>2026-11-18 起，一条映射可以写<b>多个站点</b>（<code>sites</code> 数组，单条最多 8 个），也支持<b>链接级页面</b>（带路径的地址，如 GitHub Releases）与每个站点的自定义文案：拦截后统一先进说明页，由说明页把这些入口逐条列出。</span></div>
         </div>
 
         <!-- 反馈与建议：两个通道 —— 打开预填的 GitHub Issues 新建页，或经自建 Worker 代发邮件到作者邮箱。
@@ -739,6 +795,6 @@
   <script src="../rules/liststore.js"></script>
   <script src="../crypto-helper.js"></script>
   <script src="feedback-config.js?v=20261102"></script>
-  <script src="options.js?v=20261111i"></script>
+  <script src="options.js?v=20261120a"></script>
 </body>
 </html>
