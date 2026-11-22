@@ -75,6 +75,8 @@
       ['Mozilla', 'mozilla.org firefox.com', 'Firefox'],
       ['Google', 'google.com google.cn google.com.hk googlemail.com gmail.com', 'Google / Gmail'],
       ['其他海外浏览器', 'brave.com opera.com vivaldi.com yandex.com torproject.org apple.com apple.com.cn', 'Brave / Opera / Vivaldi / Yandex / Tor / Safari（2026-11-12 移除 safari.com：归属无法确认，Safari 官网在 apple.com/safari，已由 apple.com 覆盖）'],
+      // 新（2026-11-22）：云端 correct_sites 迁入，整站放行
+      ['Chromium', 'chromium.org', 'Chromium 开源项目官网，Chrome / Edge 的上游'],
       ['官网表补录', 'vivaldi.net yandex.ru', '来源：CORRECT_SITE_CATALOG 同名大类（2026-11-21 两表合并），均为官网表已核实的官方主机名'],
     ]],
 
@@ -115,6 +117,9 @@
       ['微软系', 'microsoft.com microsoft.cn office.com microsoft365.com live.com outlook.com onenote.com office365.com hotmail.com msn.com', 'Windows / Office / Outlook（含 Edge 下载页）'],
       ['微软身份认证', 'microsoftonline.com windows.net login.windows.net azure.com passport.com passport.microsoft.com azureedge.net', 'OAuth / SSO / 登录中转'],
       ['协作工具', 'zoom.us webex.com slack.com discord.com telegram.org skype.com thunderbird.net', 'Zoom / Webex / Slack / Discord / Telegram'],
+      // 新（2026-11-22）：云端 correct_sites 迁入，整站放行
+      ['腾讯会议', 'meeting.tencent.com voovmeeting.com', '腾讯会议 / 国际版 VooV'],
+      ['金山词霸 / 金山软件', 'iciba.com kingsoft.com', '金山词霸（iciba）与金山软件集团站（kingsoft.com）'],
       ['官网表补录', 'azure.cn zoom.com', '来源：CORRECT_SITE_CATALOG 同名大类（2026-11-21 两表合并），均为官网表已核实的官方主机名'],
     ]],
 
@@ -400,8 +405,17 @@
   //   渲染成「相关：qBittorrent Enhanced Edition」小节，标题仍是本条目产品名。
   //   · 双向生效：A 写了 B，B 也自动认 A —— 只补一边不会出现「点 A 看得到 B、点 B 看不到 A」。
   //   · 去重与上限不变：按 url 去重，合并后仍受 8 条上限，自己条目的站点永远排在前面。
+  //   · 跨数据源（2026-11-22 方案二）：iocs 里的合并只发生在「内置表内部」；analyzer 拿到
+  //     「内置 + 云端」合并表后会**再跑一遍**同一套规则（读 IOCS.CORRECT_SITE_RELATIONS），
+  //     因此 rel 也能连到只存在于云端补录里的条目。两边都跑是幂等的（按 url 去重）。
   //   · 用途边界：只连「同一产品的不同发行版 / 官方分支」。同公司不同产品（如 uTorrent 与
   //     BitTorrent）不要连 —— 那会让页面标题和列表自相矛盾，用户反而更容易点错。
+  //   · 2026-11-22 第十一轮扩围：除「发行版 / 官方分支」外，也连「同一产品的区域版 / 国际版」——
+  //     飞书 ↔ Lark、Steam ↔ 蒸汽平台、抖音 ↔ TikTok、支付宝 ↔ 支付宝国际、银联 ↔ 银联国际。
+  //     判据：两者是**同一个产品**的两套站点（共用账号体系 / 同一品牌授权 / 表里已自称「国际版」），
+  //     用户被拦在任一方的仿冒站上时，看到对方的官网是有用的。
+  //     同公司但不同产品（微信 ↔ QQ、淘宝 ↔ 天猫、百度 ↔ 百度网盘、阿里云 ↔ 阿里云盘、
+  //     360 安全卫士 ↔ 360 极速浏览器）仍然不连。
   //
   // 品牌词匹配规则（analyzer.js 的 resolveCorrectDomain 实现）：
   //   1) 主机名小写、去掉前导 www. 后，逐个品牌词做**子串查找**；
@@ -474,7 +488,17 @@
         { url: 'sd.360.cn', label: '360杀毒官网' },
         { url: '360totalsecurity.com', label: '360 Total Security海外官网' }
       ], '手机助手 / 手机卫士 / 安全浏览器同属 360.cn'],
-      ['火绒安全软件', 'huorong', 'huorong.cn', ''],
+      // 旧（单域名，2026-11-12）：只有主站，官网页面上看不到官方论坛入口
+      // ['火绒安全软件', 'huorong', 'huorong.cn', ''],
+      // 新（2026-11-22）：主站 + 关联「火绒安全论坛」（第 5 个字段；论坛是同一产品的官方社区站）
+      ['火绒安全软件', 'huorong', 'huorong.cn', '官方主站；官方论坛是同一产品的社区站，入口见下方「相关」小节', ['huorongbbs']],
+      // 新（2026-11-22）：迁自云端白名单 correct_sites 的「火绒安全论坛 / huorongbbs」
+      //   云端原来同时写了 bbs.huorong.cn 与 www.huorong.cn；迁移后只留论坛自己的地址，
+      //   回指主站交给上面的 rel（双向），否则同一页会出现 huorong.cn 与 www.huorong.cn 两条重复入口。
+      // 备注（2026-11-22）：论坛不是「官网」，文案写成「官方论坛」；标签上限见 CORRECT_LABEL_MAX
+      ['火绒安全论坛', 'huorongbbs', [
+        { url: 'bbs.huorong.cn', label: '官方论坛' }
+      ], '火绒官方社区；冒充论坛的仿冒域（如 huorongbbs.com）点按钮会落到这里'],
       ['腾讯电脑管家', 'guanjia', [
         'guanjia.qq.com',
         'gj.qq.com'
@@ -545,8 +569,12 @@
         { url: 'browser.qq.com', label: 'QQ 浏览器官网' },
         { url: 'liulanqi.qq.com', label: 'QQ 浏览器下载页（含手机版）' }
       ], '两个入口独立成页，均为官方'],
-      ['搜狗高速浏览器', 'ie.sogou sogouie sogoubrowser', 'sogou.browser.qq.com', 'ie.sogou.com 现 301 跳转到 sogou.browser.qq.com（腾讯收购后并入 QQ 浏览器域名）'],
-      ['搜狗浏览器（新域）', 'sogou.browser', 'sogou.browser.qq.com', '腾讯收购后的新入口'],
+      // 旧（2026-11-22 前）：只有 ie.sogou / sogouie / sogoubrowser，带连字符的 sogou-browser.top 会误落到「搜狗搜索」
+      // ['搜狗高速浏览器', 'ie.sogou sogouie sogoubrowser', 'sogou.browser.qq.com', 'ie.sogou.com 现 301 跳转到 sogou.browser.qq.com（腾讯收购后并入 QQ 浏览器域名）'],
+      // 新（2026-11-22）：并入冗余条目「搜狗浏览器（新域）」的 sogou.browser，并补带连字符写法
+      ['搜狗高速浏览器', 'ie.sogou sogouie sogoubrowser sogou-browser sogou.browser', 'sogou.browser.qq.com', 'ie.sogou.com 现 301 跳转到 sogou.browser.qq.com（腾讯收购后并入 QQ 浏览器域名）'],
+      // 旧（2026-11-22 前）：与「搜狗高速浏览器」同站点，品牌词 sogou.browser 已并入那条
+      // ['搜狗浏览器（新域）', 'sogou.browser', 'sogou.browser.qq.com', '腾讯收购后的新入口'],
       ['猎豹浏览器', 'liebao', 'liebao.cn', '项目已停止更新，但官网仍在线'],
       ['傲游浏览器', 'maxthon', [
         { url: 'maxthon.com', label: '国际官网' },
@@ -558,7 +586,10 @@
       ], '国际站 ucweb.com；UC 手机助手同属阿里'],
       ['Firefox 火狐', 'firefox', 'firefox.com', '⚠️ 2026-11-21 实测：firefox.com 本身就是产品官网（mozilla.org/firefox 反过来 302 到它）；firefox.com.cn 已变成 Markmonitor 停放页，不再是国内站'],
       ['Mozilla', 'mozilla', 'mozilla.org', ''],
-      ['Google / Chrome', 'google', [
+      // 旧（2026-11-22 前）：只有 google，chrome-setup.xyz 这类纯「Chrome」仿冒站命中不了
+      // ['Google / Chrome', 'google', [
+      // 新（2026-11-22）：补 chrome；判定侧词表（BRAND_KEYWORDS）早就有 chrome，官网表补词不新增拦截面
+      ['Google / Chrome', 'google chrome', [
         { url: 'google.com', label: 'Google 官网' },
         { url: 'google.com/chrome', label: 'Chrome 浏览器下载页' },
         { url: 'google.cn', label: 'Google 中国站' }
@@ -582,6 +613,8 @@
         { url: 'apple.com', label: '国际官网' },
         { url: 'apple.com.cn', label: '中国官网' }
       ], ''],
+      // 新（2026-11-22）：迁自云端白名单 correct_sites（Chromium / chromium）
+      ['Chromium', 'chromium', 'chromium.org', 'Chromium 开源项目官网（Chrome / Edge 的上游项目）'],
     ]],
 
     // ========== IM 与社交类 ==========
@@ -595,7 +628,10 @@
       ['QQ', 'qq', 'im.qq.com', '主站 qq.com；邮箱 mail.qq.com'],
       ['腾讯', 'tencent', 'tencent.com', ''],
       ['钉钉', 'dingtalk', 'dingtalk.com', ''],
-      ['飞书', 'feishu', 'feishu.cn', ''],
+      // 旧（2026-11-22 前）：单站点，国际版只写在别人的条目里
+      // ['飞书', 'feishu', 'feishu.cn', ''],
+      // 新（2026-11-22）：国际版 Lark 单列一行，这里用 rel 双向带出，两边都能看到对方
+      ['飞书', 'feishu', 'feishu.cn', '国际版为 Lark（larksuite.com），两家共用同一产品线但站点独立', ['larksuite']],
       ['Lark（飞书国际版）', 'larkoffice larksuite', 'larksuite.com', '⚠️ 白名单收录 larkoffice.com，实测 307 跳 feishu.cn；国际版官网实为 larksuite.com'],
       ['陌陌', 'immomo', 'immomo.com', ''],
       ['Soul', 'soulapp', 'soulapp.cn', ''],
@@ -622,7 +658,8 @@
       ['虎扑', 'hupu', 'hupu.com', ''],
       ['QQ 邮箱', 'mail.qq qqmail', 'mail.qq.com', '迁自云端补录'],
       ['腾讯企业邮箱', 'exmail', 'exmail.qq.com', '迁自云端补录'],
-      ['网易 163 邮箱', '163', '163.com', '迁自云端补录；白名单「网易邮箱」只收了 netease/126/yeah'],
+      // 旧（2026-11-22 前）：与「网易」同站点，品牌词 163 已并入企业机构类的「网易」条目
+      // ['网易 163 邮箱', '163', '163.com', '迁自云端补录；白名单「网易邮箱」只收了 netease/126/yeah'],
     ]],
 
     // ========== 输入法类 ==========
@@ -638,9 +675,13 @@
       ], '讯飞开放平台 xfyun.cn；xunfei.cn 是官方商城'],
       ['手心输入法', 'xinshuru', 'xinshuru.com', '⚠️ 白名单原备注写「讯飞新输入法」，实测 xinshuru.com 是「手心输入法」，与讯飞无关'],
       ['QQ 输入法', 'qq.pinyin', 'qq.pinyin.cn', '原名 QQ 拼音输入法'],
-      ['百度输入法', 'shurufa.baidu', 'shurufa.baidu.com', ''],
-      ['百度文心（旧入口）', 'chat.baidu', 'wenxin.baidu.com', ''],
-      ['百度输入法（旧入口）', 'ime.baidu', 'shurufa.baidu.com', ''],
+      // 旧（2026-11-22 前）：只有 shurufa.baidu，下面另有一条「百度输入法（旧入口）/ ime.baidu」重复条目
+      // ['百度输入法', 'shurufa.baidu', 'shurufa.baidu.com', ''],
+      ['百度输入法', 'shurufa.baidu ime.baidu', 'shurufa.baidu.com', 'ime.baidu.com 是旧入口（现在 302 到本域）'],
+      // 旧（2026-11-22 前）：与「百度文心」同站点，品牌词 chat.baidu 已并入上面那行
+      // ['百度文心（旧入口）', 'chat.baidu', 'wenxin.baidu.com', ''],
+      // 旧（2026-11-22 前）：与「百度输入法」同站点，品牌词 ime.baidu 已并入上面那行
+      // ['百度输入法（旧入口）', 'ime.baidu', 'shurufa.baidu.com', ''],
     ]],
 
     // ========== 办公与文档类 ==========
@@ -653,12 +694,26 @@
         { url: 'wps.com', label: '国际官网' }
       ], '⚠️ 2026-11-21 实测 wps-linux.com 无响应，不再列出'],
       ['金山文档（WPS 云文档）', 'kdocs', 'kdocs.cn', ''],
+      // 新（2026-11-22）：迁自云端白名单 correct_sites（金山词霸 / iciba）
+      ['金山词霸', 'iciba', [
+        { url: 'iciba.com', label: '产品官网' },
+        { url: 'kingsoft.com', label: '金山软件集团' }
+      ], 'kingsoft.com 是金山软件集团站（WPS / 毒霸 / 词霸同属），与 iciba.com 各自独立成页'],
       ['腾讯文档', 'docs.qq qqdocs', 'docs.qq.com', ''],
+      // 新（2026-11-22）：迁自云端白名单 correct_sites（腾讯会议 / meeting.tencent）
+      ['腾讯会议', 'meeting.tencent tencentmeeting voovmeeting', [
+        { url: 'meeting.tencent.com', label: '中国官网' },
+        { url: 'voovmeeting.com', label: '国际版 VooV' }
+      ], 'meeting.qq.com 实测 301 到 meeting.tencent.com（同一站，不单列）'],
       ['石墨文档', 'shimo', 'shimo.im', ''],
       ['永中 Office', 'yozosoft', 'yozosoft.com', '⚠️ 白名单原备注写「有赞文档」，实测 yozosoft.com 属永中软件（Yozo Office），与「有赞 youzan.com」无关'],
-      ['Microsoft 微软', 'microsoft', 'microsoft.com', '中国站 microsoft.com.cn 301 到 microsoft.com/zh-cn（同一页，不单列）'],
+      // 旧（2026-11-22 前）：只有 microsoft，Microsoft Teams 的仿冒站落到说明页
+      // ['Microsoft 微软', 'microsoft', 'microsoft.com', '中国站 microsoft.com.cn 301 到 microsoft.com/zh-cn（同一页，不单列）'],
+      ['Microsoft 微软', 'microsoft teams', 'microsoft.com', '中国站 microsoft.com.cn 301 到 microsoft.com/zh-cn（同一页，不单列）'],
       // 新（2026-11-21）：office.com 与 microsoft365.com 是两个仍各自在用的入口，全部列出
-      ['Microsoft Office / 365', 'office365 microsoft365 m365 cloud.microsoft', [
+      // 旧（2026-11-22 前）：只有套件名，Excel / PowerPoint 的破解站命中不了
+      // ['Microsoft Office / 365', 'office365 microsoft365 m365 cloud.microsoft', [
+      ['Microsoft Office / 365', 'office365 microsoft365 m365 cloud.microsoft excel powerpoint', [
         { url: 'microsoft365.com', label: 'Microsoft 365 官网' },
         { url: 'office.com', label: 'Office 经典入口' }
       ], '⚠️ 2026-11-21 实测：office.com 会自动跳转到 https://m365.cloud.microsoft/zh-hans/（即 Microsoft 365 的中文新首页），两者是同一个订阅入口的两个门牌；microsoft365.com 同样 301 到 m365.cloud.microsoft；本机代理链路抓不到 office.com 的响应，浏览器直连可正常打开'],
@@ -683,7 +738,9 @@
     ]],
     // ========== 影音娱乐类 ==========
     ['影音娱乐类', [
-      ['腾讯视频', 'v.qq vqq qqvideo', [
+      // 旧（2026-11-22 前）：只有 v.qq / vqq / qqvideo，国际版 WeTV 的仿冒站命中不了
+      // ['腾讯视频', 'v.qq vqq qqvideo', [
+      ['腾讯视频', 'v.qq vqq qqvideo wetv', [
         { url: 'v.qq.com', label: '中国官网' },
         { url: 'wetv.vip', label: '国际版 WeTV' }
       ], '腾讯视频与极速版共用 v.qq.com；QQ 音乐另见 y.qq.com'],
@@ -698,7 +755,9 @@
         { url: 'bilibili.tv', label: '国际版' }
       ], 'bilibili.tv 为独立海外站'],
       ['芒果TV', 'mgtv', 'mgtv.com', '湖南广电旗下；国际版 imgo.tv 301 到 mgtv.com（同一页，不单列）'],
-      ['抖音', 'douyin', 'douyin.com', '国际版 TikTok 已单列（tiktok.com）'],
+      // 旧（2026-11-22 前）：国际版只在备注里提一句，点按钮看不到
+      // ['抖音', 'douyin', 'douyin.com', '国际版 TikTok 已单列（tiktok.com）'],
+      ['抖音', 'douyin', 'douyin.com', '国际版为 TikTok（tiktok.com），内容池与运营主体独立', ['tiktok']],
       ['TikTok', 'tiktok', 'tiktok.com', '抖音国际版'],
       ['西瓜视频', 'ixigua xigua', 'ixigua.com', '字节跳动旗下；xigua.com 与 ixigua.com 同页'],
       ['剪映', 'capcut jianying', [
@@ -713,7 +772,9 @@
         { url: 'yy.com', label: '中国官网' },
         { url: 'joyy.com', label: '欢聚集团（海外站）' }
       ], 'joyy.com 为母公司 JOYY 的海外站'],
-      ['快手', 'kuaishou', [
+      // 旧（2026-11-22 前）：只有 kuaishou，国际版 Kwai 的仿冒站（kwai-vip.top）命中不了
+      // ['快手', 'kuaishou', [
+      ['快手', 'kuaishou kwai', [
         { url: 'kuaishou.com', label: '中国官网' },
         { url: 'kwai.com', label: '国际版 Kwai' }
       ], ''],
@@ -737,7 +798,9 @@
       ['OBS Studio', 'obsproject', 'obsproject.org', ''],
       ['Audacity', 'audacity', 'audacityteam.org', ''],
       ['FFmpeg', 'ffmpeg', 'ffmpeg.org', ''],
-      ['Adobe', 'adobe', 'adobe.com', 'Photoshop / Acrobat / Premiere 同属'],
+      // 旧（2026-11-22 前）：备注写着「Photoshop / Acrobat / Premiere 同属」，品牌词却只有 adobe
+      // ['Adobe', 'adobe', 'adobe.com', 'Photoshop / Acrobat / Premiere 同属'],
+      ['Adobe', 'adobe photoshop acrobat premiere aftereffects illustrator lightroom', 'adobe.com', 'Photoshop / Acrobat / Premiere / Illustrator / Lightroom 同属'],
       ['PotPlayer', 'potplayer', 'potplayer.daum.net', 'Daum（Kakao）旗下'],
     ]],
 
@@ -776,7 +839,9 @@
 
     // ========== AI 大模型类 ==========
     ['AI大模型类', [
-      ['百度文心', 'wenxin yiyan', 'wenxin.baidu.com', '原「文心一言」现名「文心助手」；yiyan.baidu.com / chat.baidu.com 均 302 到本站（同一页，不单列）'],
+      // 旧（2026-11-22 前）：备注写着 chat.baidu.com 已在备注里，但另有一条「百度文心（旧入口）」重复条目
+      // ['百度文心', 'wenxin yiyan', 'wenxin.baidu.com', '原「文心一言」现名「文心助手」；yiyan.baidu.com / chat.baidu.com 均 302 到本站（同一页，不单列）'],
+      ['百度文心', 'wenxin yiyan chat.baidu', 'wenxin.baidu.com', '原「文心一言」现名「文心助手」；yiyan.baidu.com / chat.baidu.com 均 302 到本站（同一页，不单列）'],
       ['千问（通义）', 'qianwen tongyi', [
         { url: 'qianwen.com', label: '官网' },
         { url: 'qianwen.aliyun.com', label: '阿里云产品入口' }
@@ -789,6 +854,12 @@
         { url: 'xfyun.cn', label: '讯飞开放平台' },
         { url: 'iflytek.com', label: '科大讯飞公司官网' }
       ], '输入法见 srf.xunfei.cn'],
+      // 新（2026-11-22）：迁自云端白名单 correct_sites（讯飞开放平台 / xfyun）
+      //   注意与「讯飞星火」分开：星火是产品（xinghuo），开放平台是开发者站（xfyun），品牌词不冲突。
+      ['讯飞开放平台', 'xfyun', [
+        { url: 'xfyun.cn', label: '开放平台' },
+        { url: 'iflytek.com', label: '科大讯飞公司官网' }
+      ], 'srf.xunfei.cn 是讯飞输入法站，与开放平台不同'],
       ['360 纳米AI', 'nami 360nami', 'chat.360.com', 'ai.360.com / ai.360.cn 与本站同页'],
       ['Kimi', 'kimi moonshot', [
         { url: 'kimi.com', label: '产品官网' },
@@ -798,7 +869,9 @@
         { url: 'deepseek.com', label: '公司官网' },
         { url: 'chat.deepseek.com', label: 'DeepSeek 网页版' }
       ], ''],
-      ['智谱清言', 'chatglm zhipu', [
+      // 旧（2026-11-22 前）：只有 chatglm / zhipu，开放平台 bigmodel.cn 的仿冒站命中不了（判定词表已有 bigmodel）
+      // ['智谱清言', 'chatglm zhipu', [
+      ['智谱清言', 'chatglm zhipu bigmodel', [
         { url: 'chatglm.cn', label: '产品官网' },
         { url: 'zhipuai.cn', label: '智谱（Z.ai）公司官网' },
         { url: 'bigmodel.cn', label: '开放平台' }
@@ -807,7 +880,9 @@
       ['海螺 AI', 'hailuo', 'hailuoai.com', 'MiniMax 旗下'],
       ['腾讯元宝', 'yuanbao', 'yuanbao.tencent.com', ''],
       ['百川智能', 'baichuan', 'baichuan-ai.com', ''],
-      ['天工 Skywork', 'tiangong', [
+      // 旧（2026-11-22 前）：只有 tiangong，国际版 suno 的仿冒写法 skywork-* 命中不了
+      // ['天工 Skywork', 'tiangong', [
+      ['天工 Skywork', 'tiangong skywork', [
         { url: 'tiangong.cn', label: '国内官网' },
         { url: 'skywork.ai', label: '国际版 Skywork' }
       ], '昆仑万维旗下；tiangong.ai 同为官方入口'],
@@ -898,7 +973,10 @@
       ['uTorrent', 'utorrent', 'utorrent.com', ''],
       ['BitTorrent', 'bittorrent', 'bittorrent.com', ''],
       ['Transmission', 'transmission', 'transmissionbt.com', ''],
-      ['Aria2', 'aria2', 'aria2.github.io', ''],
+      // 旧（2026-11-22 前）：品牌词只有 aria2，下面另有一条 aria2.github 重复条目
+      // ['Aria2', 'aria2', 'aria2.github.io', ''],
+      // 新（2026-11-22）：两条合并为一条，aria2.github 作为品牌词并入（并非两个产品）
+      ['Aria2', 'aria2 aria2.github', 'aria2.github.io', '项目主页挂在 GitHub Pages；aria2.github.io 与 aria2.github 是同一站'],
       ['Motrix', 'motrix', 'motrix.app', ''],
       ['XDown', 'xdown', 'xdown.org', ''],
       ['PuTTY', 'putty', [
@@ -907,7 +985,8 @@
       ], 'PuTTY 由 Simon Tatham 维护，官方发布页挂在他本人的 chiark 站点上；putty.org 只是长期存在的社区入口，不是开发者主站'],
       ['WinSCP', 'winscp', 'winscp.net', ''],
       ['FileZilla', 'filezilla', 'filezilla-project.org', ''],
-      ['Aria2', 'aria2.github', 'aria2.github.io', ''],
+      // 旧（2026-11-22 前）：与上面那条完全重复（同产品、同站点、品牌词互为子串）
+      // ['Aria2', 'aria2.github', 'aria2.github.io', ''],
     ]],
 
     // ========== 系统工具类 ==========
@@ -980,7 +1059,10 @@
         { url: 'acer.com', label: '国际官网' },
         { url: 'acer.com.cn', label: '中国官网' }
       ], ''],
-      ['小米', 'xiaomi', [
+      // 旧（2026-11-22 前）：只有 xiaomi，下面另有一条「小米商城 / mi.com」重复条目
+      // ['小米', 'xiaomi', [
+      // 新（2026-11-22）：并入 mi.com 品牌词（带点写法，接 mi.com / mi.com.cn / mi.com-xxx 这类仿冒），商城站点本来就在本站点列表里
+      ['小米', 'xiaomi mi.com', [
         { url: 'xiaomi.com', label: '官网' },
         { url: 'mi.com', label: '小米商城' }
       ], ''],
@@ -1034,7 +1116,9 @@
         { url: 'global.jd.com', label: '京东全球售' },
         { url: 'jd.hk', label: '京东香港站' }
       ], ''],
-      ['拼多多', 'pinduoduo pdd', [
+      // 旧（2026-11-22 前）：只有 pinduoduo / pdd，跨境站 Temu 的仿冒站命中不了
+      // ['拼多多', 'pinduoduo pdd', [
+      ['拼多多', 'pinduoduo pdd temu', [
         { url: 'pinduoduo.com', label: '中国站' },
         { url: 'www.temu.com', label: '国际版 Temu' }
       ], 'Temu 为拼多多控股的跨境平台，站点完全独立；裸域 temu.com 会 302 到 http，写 www 才走 HTTPS'],
@@ -1087,17 +1171,28 @@
       ['特步', 'xtep', 'xtep.com', ''],
       ['鸿星尔克', 'erke', 'erke.com', ''],
       ['1 号会员店', 'yhd yhd.jd.com', 'yhd.jd.com', ''],
-      ['小米商城', 'mi.com', 'mi.com', ''],
-      ['支付宝', 'alipay', 'alipay.com', '⚠️ 2026-11-21 实测 alipay.cn 返回 404，不是官网；国际版 alipayplus.com 已单列'],
+      // 旧（2026-11-22 前）：与「小米」条目同站点同产品，品牌词 mi.com 已并入上面那行
+      // ['小米商城', 'mi.com', 'mi.com', ''],
+      // 旧（2026-11-22 前）：国际版单独一行，从支付宝这边看不到
+      // ['支付宝', 'alipay', 'alipay.com', '⚠️ 2026-11-21 实测 alipay.cn 返回 404，不是官网；国际版 alipayplus.com 已单列'],
+      // 旧（2026-11-22 前）：只有 alipay，下面另有一条「支付宝（拼音域名）/ zhifubao」重复条目
+      // ['支付宝', 'alipay', 'alipay.com', '⚠️ 2026-11-21 实测 alipay.cn 返回 404，不是官网；国际版为 Alipay+（alipayplus.com）', ['alipayplus']],
+      ['支付宝', 'alipay zhifubao', 'alipay.com', '⚠️ 2026-11-21 实测 alipay.cn 返回 404，不是官网；国际版为 Alipay+（alipayplus.com）；zhifubao.com 是拼音写法', ['alipayplus']],
       ['支付宝国际', 'alipayplus', 'alipayplus.com', ''],
-      ['中国银联', 'unionpay', 'unionpay.com', '银联国际 unionpayintl.com、银联在线 up.com.cn、云闪付客服 95516.com 均已单列'],
+      // 旧（2026-11-22 前）：银联国际单独一行，从中国银联这边看不到
+      // ['中国银联', 'unionpay', 'unionpay.com', '银联国际 unionpayintl.com、银联在线 up.com.cn、云闪付客服 95516.com 均已单列'],
+      ['中国银联', 'unionpay', 'unionpay.com', '银联在线 up.com.cn、云闪付客服 95516.com 已单列；境外业务为银联国际（unionpayintl.com）', ['unionpayintl']],
       ['银联国际', 'unionpayintl', 'unionpayintl.com', ''],
       ['银联在线', 'up.com.cn', 'up.com.cn', ''],
       ['银联电子支付', 'chinapay', 'chinapay.com', ''],
       ['银联客服', '95516', '95516.com', ''],
-      ['微信支付', 'pay.weixin', 'pay.weixin.qq.com', ''],
-      ['支付宝（拼音域名）', 'zhifubao', 'alipay.com', ''],
-      ['微信支付（商户）', 'wechatpay wxpay', 'pay.weixin.qq.com', '迁自云端补录'],
+      // 旧（2026-11-22 前）：只有 pay.weixin，下面另有一条「微信支付（商户）/ wechatpay wxpay」重复条目
+      // ['微信支付', 'pay.weixin', 'pay.weixin.qq.com', ''],
+      ['微信支付', 'pay.weixin wechatpay wxpay', 'pay.weixin.qq.com', 'wechatpay / wxpay 是商户侧的英文与缩写写法，站点与个人版同一个'],
+      // 旧（2026-11-22 前）：与「支付宝」同站点，品牌词 zhifubao 已并入上面那行
+      // ['支付宝（拼音域名）', 'zhifubao', 'alipay.com', ''],
+      // 旧（2026-11-22 前）：与「微信支付」同站点，品牌词已并入上面那行
+      // ['微信支付（商户）', 'wechatpay wxpay', 'pay.weixin.qq.com', '迁自云端补录'],
     ]],
 
     // ========== 地图与出行类 ==========
@@ -1182,7 +1277,9 @@
       ['Vue.js', 'vuejs', 'vuejs.org', ''],
       // 旧（2026-11-12）：reactjs.org 已 301 到 react.dev，主域应改
       // ['React', 'reactjs', 'reactjs.org', ''],
-      ['React', 'reactjs', 'react.dev', '⚠️ 2026-11-21：reactjs.org 已 301 到 react.dev（官方新文档站）'],
+      // 旧（2026-11-22 前）：只有 reactjs，react-official.top 这类用 react 的仿冒站命中不了
+      // ['React', 'reactjs', 'react.dev', '⚠️ 2026-11-21：reactjs.org 已 301 到 react.dev（官方新文档站）'],
+      ['React', 'reactjs react', 'react.dev', '⚠️ 2026-11-21：reactjs.org 已 301 到 react.dev（官方新文档站）'],
       ['MySQL', 'mysql', 'mysql.com', ''],
       ['MariaDB', 'mariadb', 'mariadb.org', ''],
       ['PostgreSQL', 'postgresql', 'postgresql.org', ''],
@@ -1228,10 +1325,15 @@
     ['游戏与加速器类', [
       // 2026-11-21：原来是多站点，实测 www.wegame.com 与 www.wegame.com.cn 页面标题完全一致（同一站），改回单域名
       ['腾讯游戏', 'wegame', 'wegame.com.cn', 'wegame.com 是同一站的别名（标题一致），不单列'],
+      // 旧（2026-11-22 前）：中国区「蒸汽平台」是另一行，两边互不可见
+      // ['Steam', 'steam', [
+      //   { url: 'steampowered.com', label: '商店官网' },
+      //   { url: 'steamcommunity.com', label: '社区官网' }
+      // ], '社区与商店是两个独立站点，账号通用'],
       ['Steam', 'steam', [
         { url: 'steampowered.com', label: '商店官网' },
         { url: 'steamcommunity.com', label: '社区官网' }
-      ], '社区与商店是两个独立站点，账号通用'],
+      ], '社区与商店是两个独立站点，账号通用；中国区合规版为蒸汽平台（steamchina.com），账号互通', ['steamchina']],
       ['蒸汽平台', 'steamchina', 'steamchina.com', ''],
       ['Epic Games', 'epicgames', 'epicgames.com', ''],
       ['GOG', 'gog.com', 'gog.com', ''],
@@ -1287,7 +1389,10 @@
         { url: 'toutiao.com', label: '主站' },
         { url: 'mp.toutiao.com', label: '头条号创作者平台' }
       ], '创作者后台独立成页，登录入口与主站分开'],
-      ['网易', '163.com', '163.com', '网易公司官网 netease.com 已收在「网易邮箱」条目（IM 与社交类），此处不重复列出'],
+      // 旧（2026-11-22 前）：只有 163.com，下面另有一条「网易 163 邮箱 / 163」重复条目（同站点）
+      // ['网易', '163.com', '163.com', '网易公司官网 netease.com 已收在「网易邮箱」条目（IM 与社交类），此处不重复列出'],
+      // 新（2026-11-22）：并入纯数字品牌词 163（163vip.top / 163mail.top 这类仿冒靠它），门户与邮箱共用 163.com
+      ['网易', '163.com 163', '163.com', '网易公司官网 netease.com 已收在「网易邮箱」条目（IM 与社交类），此处不重复列出；163 是邮箱域名的纯数字写法'],
       ['新浪', 'sina', 'sina.com.cn', '门户主站；微博 weibo.com 已单列（IM 与社交类），sina.cn 为移动版同站'],
       ['中华网', 'china.com', 'china.com', ''],
       ['人民网', 'people.com.cn', 'people.com.cn', '人民日报电子版 paper.people.com.cn 为同站子域，不单列'],
@@ -2287,6 +2392,17 @@
   //   .sites  [{ url, host, label, kind }]，顺序即说明页展示顺序
   //   .sites[].group（2026-11-22）：仅「关联品牌词」带出来的站点才有，值为来源条目的产品名
   const CORRECT_DOMAIN_MAP = _CORRECT_FLAT.index;
+  // 新（2026-11-22 方案二）：品牌词 → 关联品牌词列表，交给 analyzer 在「内置 + 云端」合并表上再跑一遍。
+  //   为什么 iocs 里做不完：这里只能看到内置表，够不到云端补录的独立条目 ——
+  //   例：火绒论坛若只存在于云端（品牌词 huorongbbs），给内置 huorong 写 rel 在 iocs 内不会有任何效果。
+  const CORRECT_SITE_RELATIONS = Object.create(null);
+  (function () {
+    for (let i = 0; i < _CORRECT_FLAT.order.length; i++) {
+      const b = _CORRECT_FLAT.order[i];
+      const e = CORRECT_DOMAIN_MAP[b];
+      if (e && e.rel && e.rel.length) CORRECT_SITE_RELATIONS[b] = e.rel.slice();
+    }
+  })();
   // 品牌词列表（按长度降序：长词优先命中，sogoubrowser 先于 sogou）
   const CORRECT_BRANDS = _CORRECT_FLAT.order.slice().sort(function (a, b) {
     return b.length - a.length;
@@ -2812,6 +2928,8 @@
     CORRECT_SITE_CATALOG,
     CORRECT_DOMAIN_MAP,
     CORRECT_BRANDS,
+    // 2026-11-22：关联品牌词（品牌词 → 关联品牌词数组），analyzer 合并两级数据源后据此追加站点
+    CORRECT_SITE_RELATIONS,
     // 2026-11-18：站点规格归一化（多官网 / 链接级官网）。analyzer 与设置页共用同一套校验，
     //   避免「内置表按一套规则收、云端补录按另一套规则收」导致同一个地址两边表现不一致。
     normalizeCorrectSites,

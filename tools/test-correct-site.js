@@ -221,12 +221,18 @@ const BRANDDOMAIN_CASES = [
   ['huorong.com.cn', 'huorong.cn'],
   ['huawei.com.cn', 'huawei.com'],          // 官网表未收录 huawei → 官方域名表反查
   ['huawei.cn', 'huawei.com'],
-  ['photoshop.com.cn', 'photoshop.com'],
+  // 旧（2026-11-22 前）：photoshop / teams / chrome 都不是官网表品牌词，
+  //   photoshop.com.cn 只能反查同名主站，teams / chrome 主干不同名 → 宁可落说明页
+  // ['photoshop.com.cn', 'photoshop.com'],
+  // ['teams.com.cn', ''],
+  // ['chrome.com.cn', ''],
+  // 新（2026-11-22 第十二轮）：三者已补进官网表品牌词，branddomain 直接给出所属产品官网
+  ['photoshop.com.cn', 'adobe.com'],
+  ['teams.com.cn', 'microsoft.com'],
+  ['chrome.com.cn', 'google.com'],
   ['ppsspp.cn', 'ppsspp.org'],
   ['panda.com.cn', ''],                     // 只反查到 panda.tv（已停运的直播站）→ 宁可说明页
   ['2345.com.cn', ''],                      // 只反查到 haozip.2345.cc（好压子站）→ 宁可说明页
-  ['teams.com.cn', ''],                     // 官方域是 teams.microsoft.com，主干不同名 → 不猜
-  ['chrome.com.cn', '']                     // 官方域是 google.com，主干不同名 → 不猜
 ];
 
 function runTypo(cases) {
@@ -306,7 +312,12 @@ fail += runSites();
 // 送去钓鱼站 —— 而这类错误不会抛异常，只会安静地显示一个错误链接。
 function runSites() {
   let bad = 0;
+  // 旧（2026-11-18）：条数写死，每加一条断言都要改一处 total
+  // const total = 19;
+  // 新（2026-11-22）：断言条数动态统计，增删断言不必再改计数
+  let ran = 0;
   const t = function (name, cond, extra) {
+    ran++;
     if (!cond) { bad++; console.log('FAIL  ' + name + (extra !== undefined ? '   ' + extra : '')); }
   };
   const I = require(path.join(__dirname, '..', 'rules', 'iocs.js'));
@@ -375,10 +386,125 @@ function runSites() {
   // 4) 单站点条目自动补出 sites（旧数据不改也能被说明页消费）
   const h = A.resolveCorrectSite('huorongsafe.com.cn');
   const hs = (h && h.sites) || [];
-  t('火绒虽为旧写法也有 sites', hs.length === 1 && hs[0].url === 'https://huorong.cn', JSON.stringify(hs));
+  // 旧（2026-11-18）：火绒只有 1 个站点
+  //   2026-11-22 起与「火绒安全论坛」互相关联，站点数变成 2（见本节第 7 组断言）。
+  // t('火绒虽为旧写法也有 sites', hs.length === 1 && hs[0].url === 'https://huorong.cn', JSON.stringify(hs));
+  t('火绒旧写法条目也有 sites 且首条是主站', hs.length >= 1 && !!hs[0] && hs[0].url === 'https://huorong.cn', JSON.stringify(hs));
 
   // 5) 查不到 → null（说明页据此显示「暂未收录」）
   t('无关域名返回 null', A.resolveCorrectSite('totally-unrelated-xyz.com') === null);
+
+  // 7) 「关联品牌词」：火绒主站 ↔ 火绒安全论坛（2026-11-22）
+  const hr = A.resolveCorrectSite('huorong.cn');
+  const hrs = (hr && hr.sites) || [];
+  t('火绒列出 2 个站点（主站 + 官方论坛）', hrs.length === 2, hrs.length);
+  t('火绒第一条是主站且无分组名', !!hrs[0] && hrs[0].url === 'https://huorong.cn' && !hrs[0].group,
+    hrs[0] && (hrs[0].url + ' | ' + hrs[0].group));
+  t('火绒第二条是论坛，group=火绒安全论坛',
+    !!hrs[1] && hrs[1].url === 'https://bbs.huorong.cn' && hrs[1].group === '火绒安全论坛',
+    hrs[1] && (hrs[1].url + ' | ' + hrs[1].group));
+  const hb = A.resolveCorrectSite('huorongbbs.com');
+  const hbs = (hb && hb.sites) || [];
+  t('仿冒论坛命中「火绒安全论坛」条目', !!hb && hb.brand === 'huorongbbs', hb && hb.brand);
+  t('火绒论坛反向带出主站（group=火绒安全软件）',
+    hbs.length === 2 && !!hbs[1] && hbs[1].url === 'https://huorong.cn' && hbs[1].group === '火绒安全软件',
+    JSON.stringify(hbs.map(function (x) { return x.url + '|' + x.group; })));
+
+  // 8) 云端 correct_sites 迁入内置表（2026-11-22）：4 个品牌现在必须由内置表命中
+  const migrated = [
+    ['tencentmeeting-x.com', '腾讯会议', 2],
+    ['chromium-fake.com', 'Chromium', 1],
+    ['xfyun-fake.com', '讯飞开放平台', 2],
+    ['iciba-fake.com', '金山词霸', 2]
+  ];
+  for (let mi = 0; mi < migrated.length; mi++) {
+    const m = migrated[mi];
+    const r = A.resolveCorrectSite(m[0]);
+    t(m[1] + ' 已由内置表命中（source=builtin）', !!r && r.source === 'builtin', r && r.source);
+    t(m[1] + ' 列出 ' + m[2] + ' 个站点', !!r && r.sites.length === m[2], r && r.sites.length);
+  }
+
+  // 9) 跨数据源关联（方案二）：内置条目 rel 指向「只存在于云端」的品牌，也必须生效
+  const relSaved = I.CORRECT_SITE_RELATIONS['huorong'];
+  I.CORRECT_SITE_RELATIONS['huorong'] = ['zzcloudbbs'];
+  A.registerCloudCorrect([{ product: '云端论坛', brands: ['zzcloudbbs'], domain: 'bbs.example-cdn-test.com' }]);
+  const cs = (A.resolveCorrectSite('huorong.cn') || {}).sites || [];
+  t('内置条目能带出云端补录的关联条目',
+    cs.length === 3 && !!cs[2] && cs[2].url === 'https://bbs.example-cdn-test.com',
+    JSON.stringify(cs.map(function (x) { return x.url; })));
+  t('跨数据源追加的站点带 group=云端产品名', !!cs[2] && cs[2].group === '云端论坛', cs[2] && cs[2].group);
+  A.registerCloudCorrect([]);                      // 还原云端表，避免污染后续用例
+  I.CORRECT_SITE_RELATIONS['huorong'] = relSaved;   // 还原内置关联表
+
+  // 10) 「同一产品的区域版 / 国际版」关联（2026-11-22 第十一轮）
+  //     判据：同一产品的两套站点、共用账号或同一品牌授权；被拦在任一方的仿冒站上，看到对方官网是有用的。
+  const pairs = [
+    { a: 'feishu.cn',           b: 'larksuite.com',    pa: '飞书',       pb: 'Lark（飞书国际版）' },
+    { a: 'douyin.com',          b: 'tiktok.com',       pa: '抖音',       pb: 'TikTok' },
+    { a: 'steampowered.com',    b: 'steamchina.com',   pa: 'Steam',      pb: '蒸汽平台' },
+    { a: 'alipay.com',          b: 'alipayplus.com',   pa: '支付宝',     pb: '支付宝国际' },
+    { a: 'unionpay.com',        b: 'unionpayintl.com', pa: '中国银联',   pb: '银联国际' }
+  ];
+  for (let pi = 0; pi < pairs.length; pi++) {
+    const pr = pairs[pi];
+    const ra = A.resolveCorrectSite(pr.a);
+    const rb = A.resolveCorrectSite(pr.b);
+    t(pr.pa + ' 能带出 ' + pr.pb,
+      !!ra && ra.sites.some(function (x) { return x.url === "https://" + pr.b && x.group === pr.pb; }),
+      ra && JSON.stringify(ra.sites.map(function (x) { return x.url + "|" + x.group; })));
+    t(pr.pb + ' 反向带出 ' + pr.pa,
+      !!rb && rb.sites.some(function (x) { return x.url === "https://" + pr.a && x.group === pr.pa; }),
+      rb && JSON.stringify(rb.sites.map(function (x) { return x.url + "|" + x.group; })));
+  }
+
+  // 11) Aria2 曾拆成两条（aria2 / aria2.github，同产品同站点），2026-11-22 合并为一条
+  const ar = A.resolveCorrectSite('aria2.github.io');
+  t('Aria2 只剩一条条目（站点数 1）', !!ar && ar.sites.length === 1, ar && ar.sites.length);
+  t('Aria2 品牌词已含 aria2.github', !!ar && /aria2\.github/.test(ar.brand), ar && ar.brand);
+
+  // 12) 冗余条目注释后仍能解析（2026-11-22 第十二轮）：品牌词已并入保留的那一行
+  const mergedRows = [
+    ['mi.com',                 '小米',           'https://xiaomi.com'],
+    ['mi.com.cn',              '小米',           'https://xiaomi.com'],
+    ['wechatpay-vip.top',      '微信支付',       'https://pay.weixin.qq.com'],
+    ['wxpay.top',              '微信支付',       'https://pay.weixin.qq.com'],
+    ['163vip.top',             '网易',           'https://163.com'],
+    ['sogou.browser.qq.com',   '搜狗高速浏览器', 'https://sogou.browser.qq.com'],
+    ['chat.baidu.com',         '百度文心',       'https://wenxin.baidu.com'],
+    ['ime.baidu.com',          '百度输入法',     'https://shurufa.baidu.com'],
+    ['zhifubao.top',           '支付宝',         'https://alipay.com']
+  ];
+  for (let mi2 = 0; mi2 < mergedRows.length; mi2++) {
+    const mr = mergedRows[mi2];
+    const rr = A.resolveCorrectSite(mr[0]);
+    t('合并后 ' + mr[0] + ' 仍落到「' + mr[1] + '」',
+      !!rr && rr.product === mr[1] && !!rr.sites[0] && rr.sites[0].url === mr[2],
+      rr && (rr.product + " | " + (rr.sites[0] || {}).url));
+  }
+  const sgb = A.resolveCorrectSite('sogou-browser.top');
+  t('带连字符的 sogou-browser.top 落到搜狗浏览器（不再误落搜狗搜索）',
+    !!sgb && sgb.product === '搜狗高速浏览器', sgb && sgb.product);
+
+  // 13) 补品牌词后新命中（2026-11-22 第十二轮）：此前一律落说明页
+  const addedWords = [
+    ['skywork-shop.top',    '天工 Skywork'],
+    ['react-official.top',  'React'],
+    ['chrome-setup.top',    'Google / Chrome'],
+    ['kwai-vip.top',        '快手'],
+    ['wetv-vip.top',        '腾讯视频'],
+    ['temu-shop.top',       '拼多多'],
+    ['bigmodel-fake.top',   '智谱清言'],
+    ['photoshop-crack.top', 'Adobe'],
+    ['excel-crack.top',     'Microsoft Office / 365'],
+    ['teams-crack.top',     'Microsoft 微软']
+  ];
+  for (let ai2 = 0; ai2 < addedWords.length; ai2++) {
+    const aw = addedWords[ai2];
+    const ar2 = A.resolveCorrectSite(aw[0]);
+    t('补词后 ' + aw[0] + ' 落到「' + aw[1] + '」',
+      !!ar2 && ar2.product === aw[1],
+      ar2 && (ar2.product + " | " + ar2.brand));
+  }
 
   // 6) 归一化护栏：脏数据一律丢弃，绝不能变成可点链接
   const bad1 = I.normalizeCorrectSites(['javascript:alert(1)']);
@@ -392,8 +518,10 @@ function runSites() {
   const cap = I.normalizeCorrectSites(['a1.com', 'a2.com', 'a3.com', 'a4.com', 'a5.com', 'a6.com', 'a7.com', 'a8.com', 'a9.com', 'a10.com']);
   t('单条最多 8 个站点', cap.length === 8, cap.length);
 
-  const total = 19;
-  console.log((bad ? '✗ ' : '✓ ') + '站点列表 ' + (total - bad) + '/' + total + ' 通过');
+  // 旧：条数写死（2026-11-22 改为 ran 动态统计）
+  // const total = 19;
+  // console.log((bad ? '✗ ' : '✓ ') + '站点列表 ' + (total - bad) + '/' + total + ' 通过');
+  console.log((bad ? '✗ ' : '✓ ') + '站点列表 ' + (ran - bad) + '/' + ran + ' 通过');
   return bad;
 }
 
@@ -418,7 +546,10 @@ if (fs.existsSync(WL)) {
       t('腾讯会议列出 2 个站点', s.length === 2, s.length);
       t('第一条是 meeting.tencent.com', !!s[0] && s[0].host === 'meeting.tencent.com', s[0] && s[0].host);
       t('第二条带自定义文案「国际版 VooV」', !!s[1] && s[1].label === '国际版 VooV', s[1] && s[1].label);
-      t('云端条目标记为 source=cloud', !!r && r.source === 'cloud', r && r.source);
+      // 旧（2026-11-18）：腾讯会议只存在于云端补录
+      // t('云端条目标记为 source=cloud', !!r && r.source === 'cloud', r && r.source);
+      // 新（2026-11-22）：该条已迁入内置表；云端 correct_sites 里留的是回滚副本，内置优先 → builtin
+      t('腾讯会议条目已由内置表提供（source=builtin）', !!r && r.source === 'builtin', r && r.source);
       console.log((bad ? '✗ ' : '✓ ') + (4 - bad) + '/4 通过');
       fail += bad;
     }

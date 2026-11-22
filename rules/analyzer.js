@@ -1064,10 +1064,69 @@
       });
       order.push(k);
     });
+    // 新（2026-11-22 方案二）：两级数据源都进表之后，再跑一次「关联品牌词」合并。
+    //   内置表在 iocs 里已经跑过一遍（仅内置 ↔ 内置），这里补上「内置 ↔ 云端」这一半 ——
+    //   否则「内置条目 rel 指向云端补录的独立条目」会静默失效（火绒 ↔ 火绒论坛就是这种形态）。
+    //   重复跑是幂等的：追加前按 url 去重，已有条目原样保留、顺序不变。
+    _mergeCorrectRelations(map);
     // 长词优先：exmail 优于 qq、sogoubrowser 优于 sogou
     order.sort(function (a, b) { return b.length - a.length; });
     _correctMerged = { brands: order, map: map };
     return _correctMerged;
+  }
+
+  // 跨数据源「关联品牌词」（2026-11-22 方案二）
+  //   数据侧：iocs.js 的条目第 5 个字段写出关联品牌词，导出为 IOCS.CORRECT_SITE_RELATIONS；
+  //   这里在「内置 + 云端」合并表上按品牌词查两侧条目，把对方的站点追加进来。
+  //   规则与 iocs 内保持一致：双向、按 url 去重、受 8 条上限、追加站点带 group = 来源产品名。
+  //   每次合并表重建（首次调用 / 云端名单变更）都会重跑，所以本身不再缓存。
+  function _mergeCorrectRelations(map) {
+    const rel = IOCS.CORRECT_SITE_RELATIONS;
+    if (!rel) return;
+    // 内置表里「一行多个品牌词」共用同一个 sites 数组；合并后要把结果写回同一行的所有品牌词，
+    // 否则会出现「用品牌词 A 查得到关联站点、用同一行的品牌词 B 却查不到」的不一致。
+    const alias = new Map();
+    map.forEach(function (e) {
+      if (!e || !Array.isArray(e.sites)) return;
+      if (!alias.has(e.sites)) alias.set(e.sites, []);
+      alias.get(e.sites).push(e);
+    });
+    const brands = Object.keys(rel);
+    for (let i = 0; i < brands.length; i++) {
+      const from = map.get(brands[i]);
+      if (!from) continue;                       // 关联方可能在云端被删掉了：跳过即可，不报错
+      const targets = rel[brands[i]] || [];
+      for (let t = 0; t < targets.length; t++) {
+        const to = map.get(targets[t]);
+        if (!to || to === from) continue;
+        const fromArr = from.sites;
+        const toArr = to.sites;
+        _appendSites(from, to);                  // A 带出 B 的站点
+        _appendSites(to, from);                  // B 也带出 A 的（双向）
+        // 把合并结果同步给「同一行」的其它品牌词（按合并前的数组引用找同伴）
+        const fh = alias.get(fromArr);
+        if (fh && fh.length > 1) for (let k = 0; k < fh.length; k++) fh[k].sites = from.sites;
+        const th = alias.get(toArr);
+        if (th && th.length > 1) for (let k = 0; k < th.length; k++) th[k].sites = to.sites;
+      }
+    }
+  }
+  // 把 src 条目自己的站点追加到 dst 条目末尾（dst 自己的一律在前，绝不会被顶掉）
+  const REL_SITE_MAX = 8;    // 与 iocs 的 CORRECT_SITE_MAX 对齐（iocs 未导出该常量，这里单独定义）
+  function _appendSites(dst, src) {
+    const own = (Array.isArray(dst.sites) && dst.sites.length) ? dst.sites : _oneSite(dst.domain);
+    const add = (Array.isArray(src.sites) && src.sites.length) ? src.sites : _oneSite(src.domain);
+    const out = own.slice();
+    const seen = Object.create(null);
+    for (let i = 0; i < out.length; i++) seen[out[i].url] = 1;
+    for (let i = 0; i < add.length; i++) {
+      const s = add[i];
+      if (!s || !s.url || seen[s.url]) continue;
+      if (out.length >= REL_SITE_MAX) break;
+      seen[s.url] = 1;
+      out.push({ url: s.url, host: s.host, label: s.label, kind: s.kind, group: s.group || src.product || '' });
+    }
+    dst.sites = out;
   }
 
   // 在一张「品牌词 → 条目」的表里找最长命中；命中返回 { brand, entry }

@@ -2,7 +2,7 @@
 
 **SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期：2026-11-21　|　适用版本：v1.8.5（本次修订：新增 `webRequest` 权限与「解析器跟随」探测的完整披露，权限总数 6 → **7 项 API 权限 + 1 项主机权限**；社区黑名单统一表述为 **5 份**；内置白名单与「访问正确的页面」官网表完成合并）
+生效日期：2026-11-21　|　适用版本：v1.8.6（本次修订：**权限与数据范围均无变化**，仍为 7 项 API 权限 + 1 项主机权限；改动仅限「访问正确的页面」官网映射表的数据——补齐同一产品的区域版 / 国际版关联（飞书 ↔ Lark、Steam ↔ 蒸汽平台、抖音 ↔ TikTok、支付宝 ↔ 支付宝国际、银联 ↔ 银联国际）、补全 17 个品牌词的英文/国际版写法（chrome / react / skywork / kwai / wetv / temu / photoshop 等），并合并 8 条同产品重复条目（Aria2、小米商城、微信支付商户、网易 163 邮箱等）。以上全部只是字符串数据，不新增任何网络请求、不改变数据收集范围、不改变拦截判定）
 
 ---
 ## 一、概述
@@ -288,7 +288,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## English Summary
 
-**SilverFoxBlocker v1.8.5** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
+**SilverFoxBlocker v1.8.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
 
 **Automatic requests (on by default, disableable):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`); limited reads of resources already referenced by the page you are visiting for download discovery. Any list hit short-circuits these lookups.
 
