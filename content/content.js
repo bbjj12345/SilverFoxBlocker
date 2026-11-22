@@ -3358,10 +3358,21 @@
 
     const text = document.createElement('div');
     text.className = 'sf-ib-text';
-    text.textContent = '云端名单已更新，建议重新评估当前页面';
+    // ★ 2026-11-22（二）：文案补一句「请尽快保存当前页面的所有工作」。
+    //   为什么要说这句：点「确认」会整页重判（等同一次 SPA 换路由）——浮层/横幅会清掉重来，
+    //   危险页还会重新灰化入口；未保存的表单、正在编辑的富文本可能被这轮重置打断，
+    //   用户需要被提前告知，而不是事后发现内容没了。
+    // 旧：text.textContent = '云端名单已更新，建议重新评估当前页面';
+    text.textContent = '云端名单已更新，建议重新评估当前页面；请尽快保存当前页面的所有工作';
     banner.appendChild(text);
 
+    // 倒计时句柄（供 closeBanner 统一清理，避免横幅已消失、定时器还在跑）
+    let cdTimer = null;
+
     const closeBanner = function () {
+      // ★ 2026-11-22（二）：收起横幅时立刻停表 —— 否则「忽略」之后 30 秒到点，
+      //   会对着一条已经消失的横幅自动重判，用户会莫名其妙被重置一次页面。
+      if (cdTimer) { clearInterval(cdTimer); cdTimer = null; }
       banner.classList.add('sf-closing');
       setTimeout(function () {
         try { banner.remove(); } catch (e) {}
@@ -3369,13 +3380,10 @@
       }, 280);
     };
 
-    // 主操作：按新名单重判（与 SPA 换路由共用 reanalyzeForRoute 的重置逻辑）
-    const okBtn = document.createElement('button');
-    okBtn.type = 'button';
-    okBtn.className = 'sf-ib-primary';
-    okBtn.textContent = '确认';
-    okBtn.title = '作废本页已缓存的旧名单，按刚同步的新名单整页重新判定';
-    okBtn.addEventListener('click', function () {
+    // ★ 2026-11-22（二）：把「重判」动作抽成函数 —— 手动点「确认」和 30 秒倒计时到点后
+    //   自动确认走同一条路径，避免两处实现分叉（本项目已多次因两处实现分叉出问题：
+    //   横幅漏 appendChild、GSB Key 丢失等）。
+    const doReanalyze = function () {
       closeBanner();
       // ★ 2026-11-22：先把「上一条结论施加到页面上的效果」还回去，再重判。
       //   为什么必须显式恢复：reanalyzeForRoute 只清 UI 与标记位，不碰被灰化/禁用过的下载入口；
@@ -3390,7 +3398,103 @@
         if (typeof reanalyzeForRoute === 'function') reanalyzeForRoute();
         else run();
       } catch (e) {}
-    });
+    };
+
+    // 主操作：按新名单重判（与 SPA 换路由共用 reanalyzeForRoute 的重置逻辑）
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'sf-ib-primary';
+    // 旧：okBtn.textContent = '确认';
+    // 旧：okBtn.title = '作废本页已缓存的旧名单，按刚同步的新名单整页重新判定';
+    okBtn.textContent = '确认 30s';
+    okBtn.title = '作废本页已缓存的旧名单，按刚同步的新名单整页重新判定（30 秒后自动确认）';
+    // ★ 2026-11-22（二）：手动点击与倒计时到点共用 doReanalyze。
+    //   旧实现把重判逻辑内联在这个回调里（只能手动触发）：
+    //   okBtn.addEventListener('click', function () {
+    //     closeBanner();
+    //     try { restoreBlockedEntries(); } catch (e) {}
+    //     try { _cloudListsPromise = null; } catch (e) {}
+    //     try { ensureCloudLists(); } catch (e) {}
+    //     try {
+    //       if (typeof reanalyzeForRoute === 'function') reanalyzeForRoute();
+    //       else run();
+    //     } catch (e) {}
+    //   });
+    okBtn.addEventListener('click', function () { doReanalyze(); });
+
+    // ★ 2026-11-22（二）：30 秒倒计时，实时显示在「确认」二字右侧；到点自动确认（模拟自动重判）。
+    //   为什么要有超时自动确认：这条横幅的本意是「名单变了，本页结论可能过期」，若用户没看见、
+    //     或看见了也没处理，本页就会一直按旧名单显示，成了一条永久滞留的提示。
+    //   实现要点：
+    //     · 只改按钮文本，不新起 DOM 节点 —— 横幅是 flex 布局，按钮宽度会随之变化，
+    //       多包一个 <span> 反而要额外处理对齐与换行；
+    //     · 每秒 tick 前先验 isConnected：横幅可能被 reanalyzeForRoute / SPA 换路由 /
+    //       用户点「忽略」清掉，容器没了就必须停表，否则会对已销毁的横幅触发一次重判；
+    //     · 停表统一走 closeBanner（里面 clearInterval），手动点也走同一条清理路径。
+    const AUTO_SECONDS = 30;
+    // ★ 2026-11-22（三）：护栏 —— 正在输入 / 全屏时顺延一轮（最多只顺延一次，总时长 ≤ 60 秒）。
+    //   起因：到点自动确认会走一遍 reanalyzeForRoute（清浮层/横幅 + 重跑分析），
+    //     用户正在填表单、写富文本或看全屏视频时被打断，体感很差（这也是当初核对 5 点时
+    //     唯一未实现的第 4 点「尊重用户交互状态」）。现在补上，但只顺延不退让：
+    //     第二轮到点无条件执行，避免「一直在输入 → 永远不重判」，横幅变成永久滞留。
+    const MAX_DEFER_ROUNDS = 1;
+    let cdLeft = AUTO_SECONDS;
+    let deferUsed = 0;
+
+    // 顺延说明行（复用 .sf-ib-tip 的分隔线小字样式；默认隐藏，只在顺延时出现）
+    const deferTip = document.createElement('div');
+    deferTip.className = 'sf-ib-tip';
+    deferTip.style.display = 'none';
+
+    // 判定「用户此刻正在忙什么」。只认两类：
+    //   fullscreen — 页面处于全屏（看视频/演示，重判会把全屏打断）；
+    //   editing    — 焦点落在可编辑元素上（文本类 input / textarea / select / contenteditable）。
+    // 刻意不把「焦点在按钮上」算作忙：否则用户点一下页面任何按钮就会被当成正在操作。
+    const userBusyReason = function () {
+      try {
+        if (document.fullscreenElement || document.webkitFullscreenElement ||
+            document.mozFullScreenElement || document.msFullscreenElement) return 'fullscreen';
+        const el = document.activeElement;
+        if (el && el.nodeType === 1) {
+          const tag = String(el.tagName || '').toUpperCase();
+          if (tag === 'TEXTAREA' || tag === 'SELECT') return 'editing';
+          if (tag === 'INPUT') {
+            const type = String(el.type || '').toLowerCase();
+            const notEditing = ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'range', 'color', 'image', 'hidden'];
+            if (notEditing.indexOf(type) === -1) return 'editing';
+          }
+          if (el.isContentEditable) return 'editing';
+        }
+      } catch (e) {}
+      return '';
+    };
+
+    const paintCountdown = function () {
+      okBtn.textContent = '确认 ' + cdLeft + 's';
+      okBtn.title = '作废本页已缓存的旧名单，按刚同步的新名单整页重新判定（'
+        + (deferUsed ? '已顺延一轮，' : '') + cdLeft + ' 秒后自动确认）';
+    };
+    paintCountdown();
+    cdTimer = setInterval(function () {
+      if (!banner.isConnected) { clearInterval(cdTimer); cdTimer = null; return; }
+      cdLeft--;
+      if (cdLeft > 0) { paintCountdown(); return; }
+      // 到点：忙 → 顺延一轮（只一次）；否则（或已顺延过）无条件执行
+      const busy = userBusyReason();
+      if (busy && deferUsed < MAX_DEFER_ROUNDS) {
+        deferUsed++;
+        cdLeft = AUTO_SECONDS;
+        deferTip.textContent = (busy === 'fullscreen'
+          ? '检测到页面处于全屏，已顺延 30 秒；'
+          : '检测到正在输入内容，已顺延 30 秒；')
+          + '再过 ' + AUTO_SECONDS + ' 秒将自动确认并重判本页。';
+        deferTip.style.display = '';
+        paintCountdown();
+        return;
+      }
+      clearInterval(cdTimer); cdTimer = null;
+      doReanalyze();
+    }, 1000);
     banner.appendChild(okBtn);
 
     // 次操作：只收起提示，保持当前页面结论不变（名单本身已生效，下次打开自然按新名单判）
@@ -3408,6 +3512,8 @@
     // 旧：这里重复声明 nb / nw（与函数顶部重复，属冗余）；统一用顶部那份。
     sub.textContent = subText;
     banner.appendChild(sub);
+    // ★ 2026-11-22（三）：顺延说明行（默认 display:none，顺延时才显示）
+    banner.appendChild(deferTip);
 
     ibInsertSorted(stack, banner, IB_ORDER.cloudUpdated);
     positionIntelStack(stack);

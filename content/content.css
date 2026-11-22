@@ -295,6 +295,9 @@
   background: #fff !important; color: #1c3f86 !important; -webkit-text-fill-color: #1c3f86 !important;
   border-radius: 10px !important; padding: 6px 13px !important; font-size: calc(12px * var(--sf-scale)) !important;
   font-weight: 700 !important; font-family: inherit !important; }
+/* ★ 2026-11-22（二）：按钮文案变成「确认 30s」，倒计时数字每秒变化 —— 固定单行，
+   避免横幅变窄（页面字号缩放 / 窄窗口）时把「30s」折到第二行，按钮高度跳动。 */
+.sf-intel-banner .sf-ib-primary { white-space: nowrap !important; }
 .sf-intel-banner .sf-ib-primary:hover { background: rgba(255,255,255,.88) !important; }
 /* 抗页面样式覆盖 */
 .sf-intel-banner, .sf-intel-banner * { color: #fff !important; -webkit-text-fill-color: #fff !important; user-select: none !important; -webkit-user-select: none !important; }
