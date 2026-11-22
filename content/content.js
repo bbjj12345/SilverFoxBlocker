@@ -1095,10 +1095,31 @@
   //   当成"页面上的下载入口"→ 灰化 + 拦截点击（neutralize 还会设 pointer-events:none）
   //   ⇒ 表现为「拦截弹窗的按钮点了没反应，甚至又弹出一个下载拦截窗」。
   // 改为自行沿 parentElement 上溯并直接比对 class，完全不依赖 closest/querySelector。
-  const _SF_UI_CLASSES = ['sf-overlay', 'sf-banner', 'sf-hint', 'sf-toast', 'sf-fallback', 'sf-analyzing'];
+  // ★ 2026-11-22：横幅（情报 / 本地名单 / 云端更新提示）被误判成下载入口的问题。
+  //   起因：危险页 fullLockdown 生效时，isDownloadEntry 对任何 <button> 一律返回 true；
+  //     而情报横幅容器 .sf-intel-stack / 横幅 .sf-intel-banner 都不在原 _SF_UI_CLASSES 里，
+  //     于是 MutationObserver 里的 neutralize() 会把横幅里的「确认（重判）」「知道了」「详情」
+  //     当成下载入口：加 data-sf-blocked、disabled=true、灰化，并在点击时被 globalClickGuard
+  //     当作页面下载入口 → 弹出全屏「下载已被拦截」。用户点「确认」就被弹窗打断一次。
+  //   修法：给扩展自建 UI 一个显式标记 data-sf-ui="1"（由 ensureIntelStack / ibInsertSorted 打上），
+  //     并让 isSfUiElement 同时认「标记属性」与新增的几个类名；neutralize 里再加一道早退。
+  // 旧：const _SF_UI_CLASSES = ['sf-overlay', 'sf-banner', 'sf-hint', 'sf-toast', 'sf-fallback', 'sf-analyzing'];
+  const _SF_UI_CLASSES = [
+    'sf-overlay', 'sf-banner', 'sf-hint', 'sf-toast', 'sf-fallback', 'sf-analyzing',
+    // 横幅体系（2026-11-22 补）：容器、单条横幅，以及横幅内的按钮/文案子元素
+    'sf-intel-stack', 'sf-intel-banner', 'sf-ib-text', 'sf-ib-sub', 'sf-ib-tip',
+    'sf-ib-close', 'sf-ib-primary', 'sf-ib-detail-btn', 'sf-ib-detail', 'sf-ib-detail-row',
+    'sf-cloud-updated'
+  ];
   function isSfUiElement(el) {
     let cur = el, guard = 0;
     while (cur && cur.nodeType === 1 && guard++ < 64) {
+      // ① 显式标记：扩展自己创建的容器/横幅都会带 data-sf-ui="1"（最可靠，不受类名改名影响）
+      try {
+        if (cur.getAttribute && cur.getAttribute('data-sf-ui') === '1') return true;
+      } catch (e) {}
+      // ② 类名匹配：老元素（改版前创建、尚未打标记的浮层/提示条）与横幅内部子元素走这条。
+      //   刻意**不按 id 前缀判断** —— 页面自己可以写 id="sfXxx" 来骗过守卫、绕过下载拦截。
       let cls = '';
       try {
         const cn = cur.className;
@@ -1241,6 +1262,11 @@
 
   function neutralize(el) {
     if (!el || (el.dataset && el.dataset.sfBlocked) || unblocked) return;
+    // ★ 2026-11-22：扩展自建 UI（情报横幅、本地名单横幅、云端更新横幅、浮层）一律不参与灰化/禁用。
+    //   危险页 fullLockdown 下 isDownloadEntry 对任何 <button> 都返回 true，横幅里的
+    //   「确认（重判）」「知道了」「详情」会被当成下载入口 → disabled + data-sf-blocked，
+    //   点击被 globalClickGuard 拦成「下载已被拦截」弹窗。这里先早退，从源头不碰自己的 UI。
+    if (isSfUiElement(el)) return;
     if (el.tagName === 'A') {
       const href = el.getAttribute('href');
       // mailto:/tel: 等非下载外链直接跳过
@@ -3215,10 +3241,17 @@
   // 保证所有横幅上下堆叠、共用同一套定位逻辑（跟随顶部 .sf-banner / .sf-hint 下移）。
   function ensureIntelStack() {
     let stack = document.getElementById('sfIntelStack');
-    if (stack) return stack;
+    if (stack) {
+      // ★ 2026-11-22：兼容「标记上线前就已建好」的容器（扩展热重载后旧 DOM 还在的情况）
+      try { if (stack.getAttribute('data-sf-ui') !== '1') stack.setAttribute('data-sf-ui', '1'); } catch (e) {}
+      return stack;
+    }
     stack = document.createElement('div');
     stack.id = 'sfIntelStack';
     stack.className = 'sf-intel-stack' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+    // ★ 2026-11-22：打上扩展 UI 标记，供 isSfUiElement / neutralize / globalClickGuard 识别，
+    //   避免危险页把横幅里的按钮当下载入口灰化并拦成「下载已被拦截」弹窗。
+    try { stack.setAttribute('data-sf-ui', '1'); } catch (e) {}
     const root = document.body || document.documentElement;
     if (!root) return null;
     root.appendChild(stack);
@@ -3240,11 +3273,17 @@
   // 就会看到「TIF 有时在 OpenPhish 上面、有时在下面」。这里给每条横幅盖一个固定 rank，
   // 插入时按 rank 归位，保证永远是：VT → URLhaus → NetAPI → GSB → OpenPhish →
   // PhishDestroy → TIF → uBlock → Dandelion。
-  const IB_ORDER = { intel: 1, openphish: 10, phishdestroy: 20, hagezi: 30, badware: 40, dsam: 50 };
+  // ★ 2026-11-22：新增 cloudUpdated = 0 —— 「云端名单已更新，建议重判」是一条**待用户操作**的
+  //   提示，排在最上面（先决定要不要重判，再谈页面上已有的情报结论）。
+  // 旧：const IB_ORDER = { intel: 1, openphish: 10, phishdestroy: 20, hagezi: 30, badware: 40, dsam: 50 };
+  const IB_ORDER = { cloudUpdated: 0, intel: 1, openphish: 10, phishdestroy: 20, hagezi: 30, badware: 40, dsam: 50 };
 
   function ibInsertSorted(stack, banner, rank) {
     const r = (typeof rank === 'number') ? rank : 100;
     try { banner.setAttribute('data-sf-order', String(r)); } catch (e) {}
+    // ★ 2026-11-22：每条横幅也独立打标记（不依赖父容器），
+    //   万一将来有代码把横幅搬去别处或单独克隆，isSfUiElement 依然认得出是扩展 UI。
+    try { banner.setAttribute('data-sf-ui', '1'); } catch (e) {}
     const kids = stack.children;
     for (let i = 0; i < kids.length; i++) {
       const o = parseInt(kids[i].getAttribute('data-sf-order'), 10);
@@ -3287,6 +3326,90 @@
     banner.appendChild(btn);
     appendSafetyAdvice(banner);   // 五份名单的横幅统一附带提醒语
     ibInsertSorted(stack, banner, rank);
+    positionIntelStack(stack);
+  }
+
+  // ★ 2026-11-22：云端名单更新后的「建议重判」横幅。
+  //   背景：设置页「从云端更新名单」写的是 storage.local，而本脚本对名单只在页面生命周期内取一次
+  //   （见 ensureCloudLists 的 _cloudListsPromise），所以同步之前就打开的页面会一直用旧名单判定。
+  //   做法：复用情报横幅的堆叠容器 + 排序插入（与 VT / GSB / 五份本地名单同一套），
+  //   但这里是「待用户操作」的提示，不是威胁结论，所以：
+  //     · 不带 SAFETY_ADVICE（避免让人误以为本页已被判危）；
+  //     · 两个出口：确认 → 作废名单缓存并整页重判（等价一次 SPA 换路由）；忽略 → 只收起横幅。
+  //   幂等：同一时刻只留一条（重复广播只刷新副行条数）；用户处理掉之后，下一次同步可以再提示。
+  function showCloudUpdatedBanner(info) {
+    const nb = (info && typeof info.black === 'number') ? info.black : 0;
+    const nw = (info && typeof info.white === 'number') ? info.white : 0;
+    const subText = '本次同步：云端黑名单 ' + nb + ' 条、白名单 ' + nw + ' 条。重判会按新名单重新给本页打分，可能解除或新增拦截。';
+    // 幂等：同一时刻只保留一条（不用 stack._sfKeys，那是「文案级永久去重」——
+    //   会把「用户忽略后，下一次同步再想提示」也一起屏蔽掉）。
+    const exist = document.getElementById('sfCloudUpdated');
+    if (exist) {
+      const s = exist.querySelector('.sf-ib-sub');
+      if (s) s.textContent = subText;   // 未处理时又来一次同步：只刷新条数，不再叠一条
+      return;
+    }
+    const stack = ensureIntelStack();
+    if (!stack) return;
+
+    const banner = document.createElement('div');
+    banner.className = 'sf-intel-banner sf-cloud-updated';
+    banner.id = 'sfCloudUpdated';
+
+    const text = document.createElement('div');
+    text.className = 'sf-ib-text';
+    text.textContent = '云端名单已更新，建议重新评估当前页面';
+    banner.appendChild(text);
+
+    const closeBanner = function () {
+      banner.classList.add('sf-closing');
+      setTimeout(function () {
+        try { banner.remove(); } catch (e) {}
+        if (stack && stack.children.length === 0) { try { stack.remove(); } catch (e) {} }
+      }, 280);
+    };
+
+    // 主操作：按新名单重判（与 SPA 换路由共用 reanalyzeForRoute 的重置逻辑）
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'sf-ib-primary';
+    okBtn.textContent = '确认';
+    okBtn.title = '作废本页已缓存的旧名单，按刚同步的新名单整页重新判定';
+    okBtn.addEventListener('click', function () {
+      closeBanner();
+      // ★ 2026-11-22：先把「上一条结论施加到页面上的效果」还回去，再重判。
+      //   为什么必须显式恢复：reanalyzeForRoute 只清 UI 与标记位，不碰被灰化/禁用过的下载入口；
+      //   若新名单把本页判成 safe，这些入口会一直停在"发白、点不动"的状态（与 SPA 换路由时的
+      //   老问题同源，但换路由会让旧 DOM 直接消失，这里不会）。restoreBlockedEntries 是账本式恢复，
+      //   新判定若仍是 danger，run() 会重新灰化，不会漏防。
+      try { restoreBlockedEntries(); } catch (e) {}
+      // 双保险：先作废名单缓存（确保 getSettings 会重新读 storage），再走重置 + 重判
+      try { _cloudListsPromise = null; } catch (e) {}
+      try { ensureCloudLists(); } catch (e) {}
+      try {
+        if (typeof reanalyzeForRoute === 'function') reanalyzeForRoute();
+        else run();
+      } catch (e) {}
+    });
+    banner.appendChild(okBtn);
+
+    // 次操作：只收起提示，保持当前页面结论不变（名单本身已生效，下次打开自然按新名单判）
+    const noBtn = document.createElement('button');
+    noBtn.type = 'button';
+    noBtn.className = 'sf-ib-detail-btn';
+    noBtn.textContent = '忽略';
+    noBtn.title = '不重新评估，仅收起这条提示；名单已生效，刷新或下次访问时自动按新名单判定';
+    noBtn.addEventListener('click', function () { closeBanner(); });
+    banner.appendChild(noBtn);
+
+    // 副行：说明本次同步规模，并交代两个按钮的后果（放在按钮之后，独占一行）
+    const sub = document.createElement('div');
+    sub.className = 'sf-ib-sub';
+    // 旧：这里重复声明 nb / nw（与函数顶部重复，属冗余）；统一用顶部那份。
+    sub.textContent = subText;
+    banner.appendChild(sub);
+
+    ibInsertSorted(stack, banner, IB_ORDER.cloudUpdated);
     positionIntelStack(stack);
   }
 
@@ -3388,6 +3511,15 @@
     // ★ 2026-11-20：后台跟随跳转端点后推回的「隐藏分发域」，已同时写入自动学习黑名单
     if (msg && msg.type === 'sf-resolver-hit') {
       try { showToast('🔎 已识别隐藏分发域名：' + (msg.host || '') + '，已加入下载黑名单'); } catch (e) {}
+    }
+    // ★ 2026-11-22：云端名单同步完成（后台广播）→ 作废本页的旧名单副本，并挂一条「建议重判」横幅。
+    //   为什么要在这里作废缓存：本页的 analyzer 名单集合是页面加载时灌进去的，
+    //   只弹横幅不换名单的话，用户点「确认」也还是拿旧名单重判，等于白重判。
+    //   注意这里只换名单、不自动重判 —— 重判会清掉本页现有的拦截/解锁状态，
+    //   必须由用户显式点「确认（重判）」触发（自动重判的效果与代价见 README 讨论）。
+    if (msg && msg.type === 'sf-cloud-lists-updated') {
+      try { _cloudListsPromise = null; ensureCloudLists(); } catch (e) {}
+      try { showCloudUpdatedBanner(msg); } catch (e) {}
     }
   });
 

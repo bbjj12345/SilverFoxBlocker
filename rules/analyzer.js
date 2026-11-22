@@ -595,7 +595,10 @@
 
   // 设置页专用的「预检」：按真正生效的规则清洗一份名单，返回
   //   list     — 应写入 storage 的条目（= 实际生效条目；路径条目保留 `主机名/路径` 原样）
-  //   wild     — 其中真正以正则形式生效的通配条数（`*.foo.com` 归一为后缀，不计入）
+  //   wild     — 其中**原始写法含 `*` 或 `?`** 的条数（2026-11-22 口径：`*.foo.com` 归一为后缀后照样计入，
+  //              与 `*.*-deepseek*.*` 同一个计数器；不再单独统计「整站后缀」子类）
+  // 旧：//   wild     — 其中真正以正则形式生效的通配条数（`*.foo.com` 归一为后缀，不计入）
+  // 旧：//   wildSuffix — wild 里被归一成整站后缀的条数（设置页用它说明「双口径」：通配 5 条 = 通配符 4 + 整站后缀 1）
   //   paths    — 其中带路径的条目数（状态行用它说明「有 N 条只对特定链接生效」）
   //   dropped  — [{ entry, reason }]，被丢弃的条目及原因
   // 这样状态行就能报「实际生效几条、忽略几条」，而不是把被丢的也算进去（此前的静默失效）。
@@ -613,6 +616,16 @@
     const wild = [];
     const dropped = [];
     let paths = 0;
+    // ★ 2026-11-22：通配统计口径统一为「按原始写法」。
+    //   起因：`*.wlygrowth.com` 被归一为后缀条目 `wlygrowth.com`，此前不计入 wild，
+    //     于是用户新增了一条带 `*.` 的规则，状态行却仍报「4 条通配」，看起来像没生效。
+    //   新口径：**所有真正生效、且原始写法含 `*` 或 `?` 的条目**一律计入通配数，
+    //     与 `*.*-deepseek*.*` 这类编译成正则的写法**同一份逻辑、同一个计数器**，不再区分 subtype。
+    //   护栏：只统计**确实贡献了一条存储条目**的写法（去重后的重复条目不计），
+    //     否则会出现「通配数 > 总条数」的矛盾数字。
+    // 旧（同日早先版本）：额外维护 wildSuffix（归一为整站后缀的条数）供设置页报「4 条通配符 + 1 条整站后缀」；
+    //   用户要求并回单一计数，故删除该字段（保留注释说明曾存在，避免以后又有人加回来）。
+    // 旧：let wildSuffix = 0;
     const src = Array.isArray(arr) ? arr : [];
     for (let i = 0; i < src.length; i++) {
       const ex = _normCloudEntryEx(src[i], { allowWild: allowWild });
@@ -627,12 +640,17 @@
         // 旧：if (wild.length >= WILD_MAX) { dropped.push({ entry: ex.value, reason: 'wild-over-limit' }); continue; }
         //   ↑ 2026-11-12：取消通配条数上限，只保留「能不能编译」这道格式护栏。
         const stored = c.value + ex.path;   // `*.foo.com/bar` 归一成 `foo.com/bar`
-        if (!seen.has(stored)) {
+        const isNew = !seen.has(stored);
+        if (isNew) {
           seen.add(stored);
           list.push(stored);
           if (ex.path) paths++;
         }
-        if (c.kind === 'wild' || c.kind === 'suffix-wild') wild.push(stored);
+        // 旧（2026-11-22 前）：只有编译成正则的写法才算通配，`*.foo.com` 归一为后缀后不计入 →
+        //   用户新增一条 `*.域名` 后状态行数字不变，被误读成「规则没生效」。
+        // 旧：if (c.kind === 'wild' || c.kind === 'suffix-wild') wild.push(stored);
+        // 新：原始写法含 * / ? 即计入 —— 与 `*.*-deepseek*.*` 走同一个计数器，不再按 subtype 分流。
+        if (isNew) wild.push(stored);
         continue;
       }
       if (ex.path) {
@@ -643,6 +661,9 @@
       }
       if (!seen.has(ex.value)) { seen.add(ex.value); list.push(ex.value); }
     }
+    // 旧（同日早先版本）：多返回 wildSuffix，设置页据此显示「4 条通配符 + 1 条整站后缀」。
+    //   用户要求并回单一「通配」计数，故此处恢复原返回结构（wild 已包含 `*.` 归一来的条目）。
+    // 旧：return { list: list, wild: wild, dropped: dropped, paths: paths, wildSuffix: wildSuffix };
     return { list: list, wild: wild, dropped: dropped, paths: paths };
   }
 

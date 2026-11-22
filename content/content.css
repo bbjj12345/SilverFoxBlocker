@@ -286,6 +286,16 @@
 .sf-intel-banner.sf-hagezi,
 .sf-intel-banner.sf-ublock,
 .sf-intel-banner.sf-dsam { background: linear-gradient(90deg, rgba(16,104,128,.97), rgba(20,78,116,.96)) !important; border-color: rgba(168,226,255,.6) !important; }
+/* ★ 2026-11-22：云端名单更新提示横幅 —— 这条**不是威胁结论**，是「要不要按新名单重判」的询问，
+   因此用中性蓝，避免被误读成本页已被判危。 */
+.sf-intel-banner.sf-cloud-updated { background: linear-gradient(90deg, rgba(30,88,178,.97), rgba(24,62,140,.96)) !important; border-color: rgba(170,205,255,.7) !important; }
+/* 主操作按钮（确认/重判）：实心白底 + 深蓝字，权重高于旁边的「忽略」；
+   必须显式指定文字色，否则会被上面 `.sf-intel-banner *` 的白色 !important 规则吃掉。 */
+.sf-intel-banner .sf-ib-primary { flex: none !important; cursor: pointer !important; border: 1px solid rgba(255,255,255,.8) !important;
+  background: #fff !important; color: #1c3f86 !important; -webkit-text-fill-color: #1c3f86 !important;
+  border-radius: 10px !important; padding: 6px 13px !important; font-size: calc(12px * var(--sf-scale)) !important;
+  font-weight: 700 !important; font-family: inherit !important; }
+.sf-intel-banner .sf-ib-primary:hover { background: rgba(255,255,255,.88) !important; }
 /* 抗页面样式覆盖 */
 .sf-intel-banner, .sf-intel-banner * { color: #fff !important; -webkit-text-fill-color: #fff !important; user-select: none !important; -webkit-user-select: none !important; }
 

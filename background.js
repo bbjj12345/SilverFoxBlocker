@@ -62,9 +62,43 @@ function cloudReady() { return _cloudReady; }
 reloadCloudLists();
 try {
   chrome.storage.onChanged.addListener(function (ch, area) {
-    if (area === 'local' && (ch.sfCloudWhite || ch.sfCloudBlack || ch.sfCloudCorrect)) reloadCloudLists();
+    if (area === 'local' && (ch.sfCloudWhite || ch.sfCloudBlack || ch.sfCloudCorrect)) {
+      reloadCloudLists();
+      // ★ 2026-11-22：名单落地后广播给所有标签页 —— 已打开的页面需要「云端名单已更新，建议重判」提示
+      //   （内容脚本的名单副本是页面加载时灌进去的，不广播的话用户只能靠手动刷新）。
+      notifyCloudListsUpdated();
+    }
   });
 } catch (e) {}
+
+// ★ 2026-11-22：云端名单变更 → 广播给所有标签页（内容脚本据此挂「建议重判」横幅）。
+//   为什么要防抖：一次同步会写 sfCloudWhite / sfCloudBlack / sfCloudCorrect 三个键，
+//   onChanged 可能回调多次，合并成一条广播，避免同一页面上叠出多条一模一样的横幅。
+//   为什么在后台读条数：横幅副行要写「黑 N / 白 M」，后台读一次比让每个页面各读一次便宜。
+let _cloudNotifyTimer = null;
+function notifyCloudListsUpdated() {
+  if (_cloudNotifyTimer) clearTimeout(_cloudNotifyTimer);
+  _cloudNotifyTimer = setTimeout(function () {
+    _cloudNotifyTimer = null;
+    try {
+      chrome.storage.local.get({ sfCloudBlack: [], sfCloudWhite: [] }, function (o) {
+        void chrome.runtime.lastError;
+        const nb = (o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack.length : 0;
+        const nw = (o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite.length : 0;
+        try {
+          // 没有 tabs 权限也能 query（只是拿不到 url/title），sendMessage 对有 host 权限的标签页有效；
+          // 非 http(s) 页面没有内容脚本，safeTabMsg 会把 lastError 吞掉，不会刷屏。
+          chrome.tabs.query({}, function (tabs) {
+            void chrome.runtime.lastError;
+            (tabs || []).forEach(function (t) {
+              if (t && t.id != null) safeTabMsg(t.id, { type: 'sf-cloud-lists-updated', black: nb, white: nw });
+            });
+          });
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }, 300);
+}
 
 // 用户在当前会话里「仍要下载」明确放行的下载 URL（避免重复拦截；SW 重启后清空，会重新询问，安全）
 const allowedDownloads = new Set();

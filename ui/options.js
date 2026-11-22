@@ -2937,6 +2937,8 @@ function normalizeCloudListEx(json, opts) {
       if (/[*?]/.test(v)) wild.push(stored);
     }
   });
+  // 旧（2026-11-22 早先版本）：曾多返回 wildSuffix:0 与 analyzer 对齐，口径合并后一并删除。
+  // 旧：return { list: list, wild: wild, dropped: dropped, paths: countPathEntries(list), wildSuffix: 0 };
   return { list: list, wild: wild, dropped: dropped, paths: countPathEntries(list) };
 }
 // 旧签名（只取条目），保留给其它调用点
@@ -3051,12 +3053,24 @@ function setCloudStatus(text) {
 // ★ 2026-11-09：条数改为「实际生效条数」，并单独报出被丢弃的条目数。
 //   此前把被丢弃的也算进去（通配超 200 条、白名单写通配、中文域名），
 //   用户看到「已更新 205 条」却只有 200 条生效，属于最坏的静默失败。
+// 2026-11-22（当日第二版）：取消「整站后缀」这个独立计数。
+//   用户要求把 `*.域名` 并回通配符计数、复用 `*.*-deepseek*.*` 的同一份统计逻辑，
+//   所以删掉 wildSuffixB 形参，文案回到单一「N 条通配」。
+// 旧：// 2026-11-22：末尾新增 wildSuffixB —— 黑名单里「被归一为整站后缀」的通配条数，
+// 旧：//   只用于括号内的双口径说明（通配 5 条 = 4 条通配符 + 1 条「*.」整站后缀）。
+// 旧：function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source, correctN, wildSuffixB) {
 function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source, correctN) {
   // 通配条目单独点出来：否则用户写完 `*web.cdn-deepseek.com` 只看到"黑名单 1 条"，
   // 无法判断那条到底是被当成普通域名（永不命中）还是被当成规则收录了。
   // 2026-11-09：路径条目（主机名/路径）同理——只对特定链接生效，必须让用户看得见。
   const tags = function (wild, path) {
     const arr = [];
+    // 旧（2026-11-22 早先版本）：这里还区分「通配符 N 条 + 『*.』整站后缀 M 条」。
+    //   归一化是编译细节，不该让用户面对两个数字；含 * / ? 的一律只算「通配」。
+    // 旧：if (wild) {
+    // 旧：  const sfx = wildSuffix;
+    // 旧：  arr.push(sfx ? wild + ' 条通配【' + (wild - sfx) + ' 条通配符 + ' + sfx + ' 条「*.」整站后缀】' : wild + ' 条通配');
+    // 旧：}
     if (wild) arr.push(wild + ' 条通配');
     if (path) arr.push(path + ' 条路径');
     return arr.length ? '（含 ' + arr.join('、') + '）' : '';
@@ -3083,6 +3097,9 @@ function countPathEntries(arr) {
   }).length;
 }
 // 名单里含通配符（* / ?）的条目数
+// 2026-11-22：口径与 sanitizeCloudDomains 的新 wild 一致（按「写法里有没有 * / ?」），
+//   但这是**老快照的兜底**：快照里存的已是归一后的 `foo.com`，`*.foo.com` 早已看不到星号，
+//   因此这里对「整站后缀」那部分天然少数（少 1 条）；有 meta.wild 时一律优先用 meta。
 function countWildEntries(arr) {
   return (Array.isArray(arr) ? arr : []).filter(function (d) {
     const v = String(d == null ? '' : d);
@@ -3159,6 +3176,8 @@ function refreshCloudListStatus() {
       (mw.source && mw.source !== '云端接口') ? mw.source
         : ((mb.source && mb.source !== '云端接口') ? mb.source : ''),
       (mw.correct != null ? mw.correct : cN)
+      // 旧（2026-11-22 早先版本）：第 11 个实参是 mb.wildSuffix（整站后缀条数），已随口径合并删除。
+      // 旧：(mb.wildSuffix || 0)
     );
     // 未生效条目的明细（原文 + 原因）直接列在下面：此前只在 console 里，用户看不到
     // 旧：白名单里含 * / ? 的条目一律列为「不会生效」的杂项；2026-11-11 起白名单也支持通配，
@@ -3413,6 +3432,8 @@ async function updateCloudLists(btn) {
       updated: now, count: black.list.length, pulled: black.list.length + black.dropped.length,
       added: db.added, removed: db.removed, wild: black.wild.length, dropped: black.dropped.length,
       paths: black.paths || 0, drops: black.dropped.slice(0, 40),
+      // 旧（2026-11-22 早先版本）：wildSuffix —— 整站后缀条数，口径已合并，不再落盘。
+      // 旧：wildSuffix: black.wildSuffix || 0,
       source: black.source || '云端接口'
     };
     // 内容没变就只写 meta：此前无条件 set 会触发 onChanged → 后台重注入 + 四个缓存清空，
@@ -3440,7 +3461,15 @@ async function updateCloudLists(btn) {
       black.paths || 0, white.paths || 0,    // 形参顺序：pathB, pathW
       srcNote,
       (white.correct || []).length
+      // 旧（2026-11-22 早先版本）：第 11 个实参是 black.wildSuffix，口径合并后删除。
+      // 旧：black.wildSuffix || 0
     ));
+    // 旧（2026-11-22 早先版本）：曾额外打印「其中整站后缀 N」；口径合并后回到单一通配数。
+    // 旧：console.log('[云端名单] 黑', black.list.length, '条（通配', black.wild.length,
+    // 旧：  '，其中整站后缀', black.wildSuffix || 0, '／忽略', black.dropped.length,
+    // 旧：  '；新增', db.added, '/ 移除', db.removed,
+    // 旧：  '）；白', white.list.length, '条（忽略', white.dropped.length,
+    // 旧：  '；新增', dw.added, '/ 移除', dw.removed, '）');
     console.log('[云端名单] 黑', black.list.length, '条（通配', black.wild.length,
       '/ 忽略', black.dropped.length, '；新增', db.added, '/ 移除', db.removed,
       '）；白', white.list.length, '条（忽略', white.dropped.length,
