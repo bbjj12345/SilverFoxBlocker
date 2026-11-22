@@ -71,27 +71,42 @@ try {
   });
 } catch (e) {}
 
-// ★ 2026-11-22：云端名单变更 → 广播给所有标签页（内容脚本据此挂「建议重判」横幅）。
+// ★ 2026-11-22：云端名单变更 → 通知标签页（内容脚本据此挂「建议重判」横幅）。
 //   为什么要防抖：一次同步会写 sfCloudWhite / sfCloudBlack / sfCloudCorrect 三个键，
 //   onChanged 可能回调多次，合并成一条广播，避免同一页面上叠出多条一模一样的横幅。
 //   为什么在后台读条数：横幅副行要写「黑 N / 白 M」，后台读一次比让每个页面各读一次便宜。
+//   ★ 2026-11-22（四）：投递范围从「全部标签页」收窄为「焦点窗口的活跃标签页」。见下方说明。
 let _cloudNotifyTimer = null;
 function notifyCloudListsUpdated() {
   if (_cloudNotifyTimer) clearTimeout(_cloudNotifyTimer);
   _cloudNotifyTimer = setTimeout(function () {
     _cloudNotifyTimer = null;
     try {
-      chrome.storage.local.get({ sfCloudBlack: [], sfCloudWhite: [] }, function (o) {
+      chrome.storage.local.get({ sfCloudBlack: [], sfCloudWhite: [], sfCloudListMeta: null }, function (o) {
         void chrome.runtime.lastError;
         const nb = (o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack.length : 0;
         const nw = (o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite.length : 0;
+        // 名单版本号（= 设置页落盘的 meta.black.updated，Date.now() 数字）。
+        // 内容脚本切到前台时会拿它和「自己当初注入的那份名单」比对，比这里旧才提示重判。
+        const upd = (o && o.sfCloudListMeta && o.sfCloudListMeta.black && o.sfCloudListMeta.black.updated) || 0;
         try {
-          // 没有 tabs 权限也能 query（只是拿不到 url/title），sendMessage 对有 host 权限的标签页有效；
-          // 非 http(s) 页面没有内容脚本，safeTabMsg 会把 lastError 吞掉，不会刷屏。
-          chrome.tabs.query({}, function (tabs) {
+          // ★ 2026-11-22（四）：只通知「用户当前正在看的那个标签页」，不再全量广播。
+          //   起因：标签页一多，一次同步会让几十个页面同时挂横幅、同时倒计时重判，
+          //   后台与渲染进程排队跑 analyze → 卡顿甚至无响应。
+          //   口径（用户指定）：只有「焦点窗口里的活跃标签页」算当前页面；打开了但没在看的
+          //   标签页不在这里发消息 —— 它们由内容脚本自己的 visibilitychange / focus 惰性检查
+          //   （installCloudUpdateLazyWatch）在被切到前台的那一刻再决定是否提示，
+          //   从而做到「100% 只对正在看的页面付费」。
+          //   为什么用 lastFocusedWindow 而不是 currentWindow：service worker 里没有「当前窗口」
+          //   的概念，currentWindow 在后台上下文里不可靠；lastFocusedWindow 才是明确的语义。
+          //   为什么必须吞 lastError：活跃标签页可能是 edge://newtab、扩展商店、PDF 阅读器等
+          //   没有注入内容脚本的页面，sendMessage 会抛 "Receiving end does not exist"。
+          chrome.tabs.query({ active: true, lastFocusedWindow: true }, function (tabs) {
             void chrome.runtime.lastError;
             (tabs || []).forEach(function (t) {
-              if (t && t.id != null) safeTabMsg(t.id, { type: 'sf-cloud-lists-updated', black: nb, white: nw });
+              if (t && t.id != null) {
+                safeTabMsg(t.id, { type: 'sf-cloud-lists-updated', black: nb, white: nw, updated: upd });
+              }
             });
           });
         } catch (e) {}

@@ -215,12 +215,19 @@
   //   后台注入只影响后台，页面判定用的是内容脚本自己这份 —— 两边都得注入。
   // 时机：必须在第一次 analyze 之前完成，所以挂在 getSettings 上（所有分析流程都先取设置）。
   let _cloudListsPromise = null;
+  // ★ 2026-11-22（四）：本页「已注入名单」的版本号（= storage 里 sfCloudListMeta.black.updated）。
+  //   用途：页面被切回前台时，拿它和云端最新版本比对 —— 比云端旧才提示「建议重判」。
+  //   为什么要一个显式版本号：标签页可能是在同步之前打开的，也可能在后台待了很久，
+  //   唯一能判断「本页结论是否过期」的依据就是「注入的那份名单是不是最新那份」。
+  let _cloudAuthRev = 0;
+  let _cloudListsLoaded = false;
   function ensureCloudLists() {
     if (_cloudListsPromise) return _cloudListsPromise;
     _cloudListsPromise = new Promise((resolve) => {
-      const done = () => resolve();
+      const done = () => { _cloudListsLoaded = true; resolve(); };
       try {
-        chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [] }, (o) => {
+        // 一并取 meta：这里读的是「刚刚注入的那份名单的版本」，用来给 _cloudAuthRev 打锚点。
+        chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [], sfCloudListMeta: null }, (o) => {
           try {
             const w = (o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite : [];
             const b = (o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack : [];
@@ -231,6 +238,8 @@
             // ★ 2026-11-12：云端「品牌词 → 正确官网」补录（whitelist.json 的 correct_sites）。
             //   与上面两份名单同源同步、同样整体覆盖；空数组＝云端没有补录，内置表照常生效。
             if (SF.registerCloudCorrect) SF.registerCloudCorrect((o && Array.isArray(o.sfCloudCorrect)) ? o.sfCloudCorrect : []);
+            const m = o && o.sfCloudListMeta;
+            _cloudAuthRev = (m && m.black && m.black.updated) || 0;
           } catch (e) {}
           done();
         });
@@ -3477,6 +3486,10 @@
     paintCountdown();
     cdTimer = setInterval(function () {
       if (!banner.isConnected) { clearInterval(cdTimer); cdTimer = null; return; }
+      // ★ 2026-11-22（四）：页面被切到后台 → 倒计时原地冻结（不递减、不到点）。
+      //   否则用户切走后 30 秒到点，仍会对一个没人看的页面跑一遍重判 —— 正是要避免的负载。
+      //   切回前台后自然继续倒数，剩余秒数原样保留（不重置），不会因为切走而被无限延后。
+      try { if (document.hidden) return; } catch (e) {}
       cdLeft--;
       if (cdLeft > 0) { paintCountdown(); return; }
       // 到点：忙 → 顺延一轮（只一次）；否则（或已顺延过）无条件执行
@@ -3609,6 +3622,71 @@
     }
   }
 
+  // ★ 2026-11-22（四）：「只在用户正在看的页面提示重判」的三个配件。
+  //   背景：原来后台一同步就把消息广播给所有标签页，几十个页面同时挂横幅、同时倒计时重判，
+  //   浏览器要同时跑几十次 analyze → 卡顿甚至无响应。改成两条互补的路径：
+  //     ① 后台只发给「焦点窗口的活跃标签页」（见 background.js notifyCloudListsUpdated）；
+  //     ② 本脚本在页面被切到前台（visibilitychange / focus / pageshow）时惰性自查：
+  //        本页注入的名单版本比云端旧，才提示一次。
+  //   ① 负责「当下正在看的那一页立刻知道」，② 负责「其它标签页等被真正看到时再说」。
+  let _cloudPendingUpdate = null;     // 页面隐藏期间收到的更新，切回前台再消费
+  let _cloudRevCheckedAt = 0;         // 版本自查节流时间戳
+  let _cloudLazyHooked = false;
+
+  // 真正「消费」一次更新：作废本页名单副本 → 重新注入 → 挂横幅。
+  //   为什么必须先作废：本页 analyzer 的名单集合是页面加载时灌进去的，
+  //   只弹横幅不换名单，用户点「确认」也还是拿旧名单重判，等于白重判。
+  //   仍然不自动重判：重判会清掉本页现有的拦截/解锁状态，必须由用户显式点「确认」触发。
+  function applyCloudUpdateHint(info) {
+    try { _cloudListsPromise = null; ensureCloudLists(); } catch (e) {}
+    try { showCloudUpdatedBanner(info || {}); } catch (e) {}
+  }
+
+  // 惰性自查：本页名单版本 vs 云端最新版本。
+  //   节流 3 秒：切换标签页很频繁，而 storage.get 虽便宜，也没必要每次焦点变化都读一遍。
+  const CLOUD_REV_CHECK_MIN_MS = 3000;
+  function checkCloudListsRevision() {
+    if (!_cloudListsLoaded) return;              // 名单还没注入完，先不动（避免误判成「本页过期」）
+    const now = Date.now();
+    if (now - _cloudRevCheckedAt < CLOUD_REV_CHECK_MIN_MS) return;
+    _cloudRevCheckedAt = now;
+    try {
+      chrome.storage.local.get({ sfCloudListMeta: null, sfCloudBlack: [], sfCloudWhite: [] }, function (o) {
+        void chrome.runtime.lastError;
+        const m = o && o.sfCloudListMeta;
+        const rev = (m && m.black && m.black.updated) || 0;
+        // 云端没版本号（从未同步过），或本页已经是最新 → 无事可做，绝不再打扰用户
+        if (!rev || rev <= _cloudAuthRev) return;
+        // 横幅已在（说明已提示过），只需刷新副行条数，不重复提示
+        applyCloudUpdateHint({
+          black: (o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack.length : 0,
+          white: (o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite.length : 0,
+          updated: rev
+        });
+      });
+    } catch (e) {}
+  }
+
+  function installCloudUpdateLazyWatch() {
+    if (_cloudLazyHooked) return;
+    _cloudLazyHooked = true;
+    const wake = function () {
+      try { if (document.visibilityState !== 'visible') return; } catch (e) { return; }
+      // 后台明确发过、但当时页面在后台 → 优先消费那份（条数最准，且对应本次同步）
+      if (_cloudPendingUpdate) {
+        const info = _cloudPendingUpdate;
+        _cloudPendingUpdate = null;
+        applyCloudUpdateHint(info);
+        return;
+      }
+      checkCloudListsRevision();
+    };
+    try { document.addEventListener('visibilitychange', wake, true); } catch (e) {}
+    try { window.addEventListener('focus', wake, true); } catch (e) {}
+    // bfcache 恢复：pageshow 时 visibilitychange 未必触发，补一个入口
+    try { window.addEventListener('pageshow', wake, true); } catch (e) {}
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'sf-getStatus') { sendResponse(lastResult); return true; }
     if (msg && msg.type === 'sf-download-blocked') { showDownloadBlocked(location.hostname, { url: msg.url || '', fromBackground: true }); }
@@ -3618,14 +3696,26 @@
     if (msg && msg.type === 'sf-resolver-hit') {
       try { showToast('🔎 已识别隐藏分发域名：' + (msg.host || '') + '，已加入下载黑名单'); } catch (e) {}
     }
-    // ★ 2026-11-22：云端名单同步完成（后台广播）→ 作废本页的旧名单副本，并挂一条「建议重判」横幅。
+    // ★ 2026-11-22：云端名单同步完成 → 作废本页的旧名单副本，并挂一条「建议重判」横幅。
     //   为什么要在这里作废缓存：本页的 analyzer 名单集合是页面加载时灌进去的，
     //   只弹横幅不换名单的话，用户点「确认」也还是拿旧名单重判，等于白重判。
     //   注意这里只换名单、不自动重判 —— 重判会清掉本页现有的拦截/解锁状态，
     //   必须由用户显式点「确认（重判）」触发（自动重判的效果与代价见 README 讨论）。
+    //   ★ 2026-11-22（四）：页面在后台时不再就地挂横幅 —— 只记下待处理，等它被真正
+    //   看到（visibilitychange / focus）时再由 installCloudUpdateLazyWatch 消费。
+    //   这样「打开了但没在看」的标签页不会产生任何横幅和重判负载。
+    // 旧：if (msg && msg.type === 'sf-cloud-lists-updated') {
+    // 旧：  try { _cloudListsPromise = null; ensureCloudLists(); } catch (e) {}
+    // 旧：  try { showCloudUpdatedBanner(msg); } catch (e) {}
+    // 旧：}
     if (msg && msg.type === 'sf-cloud-lists-updated') {
-      try { _cloudListsPromise = null; ensureCloudLists(); } catch (e) {}
-      try { showCloudUpdatedBanner(msg); } catch (e) {}
+      let visible = true;
+      try { visible = (document.visibilityState === 'visible'); } catch (e) { visible = true; }
+      if (!visible) {
+        _cloudPendingUpdate = { black: msg.black, white: msg.white, updated: msg.updated || 0 };
+      } else {
+        applyCloudUpdateHint(msg);
+      }
     }
   });
 
@@ -3745,6 +3835,8 @@
 
   // 启动：document_start 时先装硬钩子（此时 body 可能未就绪，run 等 DOM）
   installHardGuards();
+  // ★ 2026-11-22（四）：装「切回前台才提示重判」的惰性监听（只装一次）
+  installCloudUpdateLazyWatch();
   // SPA 路由监听（只装一次；与后台 onHistoryStateUpdated 互为双保险）
   installSpaRouteWatch();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
