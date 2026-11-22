@@ -394,6 +394,15 @@
   //   两个字段最终都会进 CORRECT_DOMAIN_MAP[品牌词].sites，顺序即说明页展示顺序；
   //   `.domain` 仍保留为「第一个主机名级站点」，供只需要一个域名的旧调用方使用。
   //
+  // ★ 2026-11-22：新增**可选的第 5 个字段「关联品牌词」**（rel）—— 一个品牌词带出同一产品的其他版本：
+  //   ['qBittorrent', 'qbittorrent', ['qbittorrent.org'], '…', ['qbittorrent-enhanced']]
+  //   合并时会把对方条目**自己的**站点追加到本条目末尾，并打上 group（对方产品名）；说明页据此
+  //   渲染成「相关：qBittorrent Enhanced Edition」小节，标题仍是本条目产品名。
+  //   · 双向生效：A 写了 B，B 也自动认 A —— 只补一边不会出现「点 A 看得到 B、点 B 看不到 A」。
+  //   · 去重与上限不变：按 url 去重，合并后仍受 8 条上限，自己条目的站点永远排在前面。
+  //   · 用途边界：只连「同一产品的不同发行版 / 官方分支」。同公司不同产品（如 uTorrent 与
+  //     BitTorrent）不要连 —— 那会让页面标题和列表自相矛盾，用户反而更容易点错。
+  //
   // 品牌词匹配规则（analyzer.js 的 resolveCorrectDomain 实现）：
   //   1) 主机名小写、去掉前导 www. 后，逐个品牌词做**子串查找**；
   //   2) 品牌词左侧必须是「标签边界」（开头 / `.` / `-` / `_`），避免 myhuorong.com 这类前缀粘连；
@@ -870,10 +879,17 @@
         { url: 'ezbsystems.com', label: '开发商 EZB Systems' }
       ], ''],
       ['Free Download Manager', 'freedownloadmanager', 'freedownloadmanager.org', ''],
-      ['qBittorrent', 'qbittorrent', 'qbittorrent.org', ''],
+      // 旧（单域名，2026-11-12）：只列官方原版，命中增强版仿冒站时看不到 qBEE 的真入口
+      // ['qBittorrent', 'qbittorrent', 'qbittorrent.org', ''],
+      // 新（2026-11-22）：官方原版 + 关联「增强版」条目（第 5 个字段，双向生效）
+      //   背景：qBittorrent 是仿冒站重灾区，且仿冒站把「原版 / 增强版」两个名字混着用
+      //   （qbittorrent.org.cn、qbittorrent-enhanced.cc …）。原版用户想装增强版、增强版
+      //   用户想回原版都很常见，两个入口一次给全，比让用户自己再搜一遍安全得多。
+      ['qBittorrent', 'qbittorrent', ['qbittorrent.org'], '官方原版；增强版（qBEE）是社区分支，入口见下方「相关」小节', ['qbittorrent-enhanced']],
       // 旧（单域名，2026-11-12）：该项目**没有主机名意义上的官网**，旧值 qbittorrent-enhanced.org
       //   并非官方持有（社区镜像常用名），会把用户送到第三方站。
       // ['qBittorrent Enhanced Edition', 'qbittorrent-enhanced', 'qbittorrent-enhanced.org', ''],
+      // 新（2026-11-22）：与 qBittorrent 的关联写在上面那行（双向生效），本行站点与顺序不变
       // 新（2026-11-18）：链接级官网 —— 官方唯一的发布渠道是 GitHub Releases
       ['qBittorrent Enhanced Edition', 'qbittorrent-enhanced', [
         { url: 'https://github.com/c0re100/qBittorrent-Enhanced-Edition/releases', label: 'GitHub 发布页' },
@@ -2139,7 +2155,9 @@
     return { index: index, order: order };
   }
   */
-  // 新（2026-11-18）：支持多站点 / 链接级站点
+  // 旧（2026-11-18）：支持多站点 / 链接级站点
+  //   2026-11-22 停用：不认识第 5 个字段「关联品牌词」，换成下面那版。
+  /*
   function _flattenCorrectSites(catalog) {
     const index = Object.create(null);
     const order = [];
@@ -2173,10 +2191,101 @@
     }
     return { index: index, order: order };
   }
+  */
+  // 新（2026-11-22）：支持多站点 / 链接级站点 / 关联品牌词（第 5 个字段，见文件头说明）
+  function _flattenCorrectSites(catalog) {
+    const index = Object.create(null);
+    const order = [];
+    const entries = [];              // 去重后的条目（关联合并以条目为单位，而不是以品牌词为单位）
+    for (let i = 0; i < catalog.length; i++) {
+      const cat = catalog[i][0];
+      const items = catalog[i][1] || [];
+      for (let j = 0; j < items.length; j++) {
+        const product = String(items[j][0] || '');
+        const brands = String(items[j][1] || '').toLowerCase().split(/\s+/);
+        const sites = normalizeCorrectSites(items[j][2]);
+        if (!sites.length) continue;                       // 一条站点都没有 → 这条映射没有意义
+        // .domain 兼容字段 = 第一个「主机名级」站点；全是链接级时退回第一个站点的主机名
+        let domain = '';
+        for (let s = 0; s < sites.length; s++) {
+          if (sites[s].kind === 'host') { domain = sites[s].host; break; }
+        }
+        if (!domain) domain = sites[0].host;
+        // 第 5 个字段：关联品牌词（空格分隔字符串，或字符串数组）；写错只跳过、不抛异常
+        const relRaw = items[j][4];
+        const relList = Array.isArray(relRaw)
+          ? relRaw
+          : String(relRaw == null ? '' : relRaw).split(/\s+/);
+        const rel = [];
+        for (let r = 0; r < relList.length; r++) {
+          const t = String(relList[r] == null ? '' : relList[r]).trim().toLowerCase();
+          if (t && rel.indexOf(t) === -1) rel.push(t);
+        }
+        const entry = { domain: domain, sites: sites, product: product, cat: cat, brands: [], rel: rel };
+        entries.push(entry);
+        for (let k = 0; k < brands.length; k++) {
+          const b = brands[k].trim();
+          if (!b) continue;
+          if (index[b]) {
+            if (typeof console !== 'undefined' && console.warn) {
+              console.warn('[SF_IOCS] 正确官网映射的品牌词重复，已忽略后出现的条目: ' + b);
+            }
+            continue;
+          }
+          index[b] = entry;
+          entry.brands.push(b);
+          order.push(b);
+        }
+      }
+    }
+    _applyCorrectRelations(entries, index);
+    return { index: index, order: order };
+  }
+  // 关联品牌词 → 双向追加站点（2026-11-22 新增）
+  //   · 双向：A 声明 B，则 B 也认 A —— 一边漏写不会造成「单向可见」
+  //   · 只追加「对方条目自己的」站点，且按 url 去重：自己条目永远排在前面，不会被顶掉
+  //   · 追加进来的站点带 group = 对方产品名，说明页据此分段展示；对方无产品名时 group 为空
+  //   · 合并后仍受 CORRECT_SITE_MAX 限制，超出部分丢弃并在控制台告警（宁可少一条，不要刷屏）
+  function _applyCorrectRelations(entries, index) {
+    const pairs = [];
+    for (let i = 0; i < entries.length; i++) {
+      const from = entries[i];
+      for (let r = 0; r < from.rel.length; r++) {
+        const to = index[from.rel[r]];
+        if (!to || to === from) continue;
+        pairs.push([from, to]);
+        pairs.push([to, from]);        // 反向也认
+      }
+    }
+    for (let p = 0; p < pairs.length; p++) {
+      const from = pairs[p][0];
+      const to = pairs[p][1];
+      const merged = from.sites.slice();
+      const seen = Object.create(null);
+      for (let s = 0; s < merged.length; s++) seen[merged[s].url] = 1;
+      let overflow = 0;
+      for (let s = 0; s < to.sites.length; s++) {
+        const src = to.sites[s];
+        if (seen[src.url]) continue;
+        if (merged.length >= CORRECT_SITE_MAX) { overflow++; continue; }
+        seen[src.url] = 1;
+        merged.push({
+          url: src.url, host: src.host, label: src.label, kind: src.kind,
+          group: src.group || to.product || ''      // 链式关联时沿用它原来的分组名
+        });
+      }
+      from.sites = merged;
+      if (overflow && typeof console !== 'undefined' && console.warn) {
+        console.warn('[SF_IOCS] 关联官网合并超出 ' + CORRECT_SITE_MAX + ' 条上限，已丢弃 ' + overflow + ' 条: ' + (from.product || ''));
+      }
+    }
+  }
   const _CORRECT_FLAT = _flattenCorrectSites(CORRECT_SITE_CATALOG);
   // 品牌词 → { domain, sites, product, cat }
   //   .domain 第一个主机名级站点（兼容「只想要一个域名」的旧调用方）
+  //   .group  仅「关联品牌词」带出来的站点才有：值为来源条目的产品名，说明页据此分段
   //   .sites  [{ url, host, label, kind }]，顺序即说明页展示顺序
+  //   .sites[].group（2026-11-22）：仅「关联品牌词」带出来的站点才有，值为来源条目的产品名
   const CORRECT_DOMAIN_MAP = _CORRECT_FLAT.index;
   // 品牌词列表（按长度降序：长词优先命中，sogoubrowser 先于 sogou）
   const CORRECT_BRANDS = _CORRECT_FLAT.order.slice().sort(function (a, b) {

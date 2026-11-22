@@ -124,6 +124,15 @@
     if (!sites.length) return false;
 
     const product = (res.product || '').trim();
+
+    // 分组统计（2026-11-22）：无 group 的是本条目自己的站点，有 group 的按来源产品各自编号；
+    // 这样「官网1 / 官网2」永远只数本产品的入口，不会把关联版本的站点算进去。
+    const mainCount = sites.filter(function (x) { return !(x && x.group); }).length;
+    const groupTotal = Object.create(null);
+    sites.forEach(function (x) {
+      const g = (x && x.group) ? String(x.group) : '';
+      if (g) groupTotal[g] = (groupTotal[g] || 0) + 1;
+    });
     const title = product ? '「' + product + '」的官方页面' : '已收录的官方页面';
 
     const titleEl = $('title');
@@ -152,17 +161,33 @@
     if (list) {
       // 先清空（重绘时不会叠加）；childNodes 快照，边删边遍历不可靠
       while (list.firstChild) list.removeChild(list.firstChild);
+      let lastGroup = '';
+      let mainSeen = 0;
+      const groupSeen = Object.create(null);
       for (let i = 0; i < sites.length; i++) {
         const s = sites[i] || {};
         const url = String(s.url || '');
         if (!url) continue;
+
+        // 关联品牌词：换组时先插一条小标题，用户一眼能看出「这是另一个产品」
+        const g = s.group ? String(s.group) : '';
+        if (g && g !== lastGroup) {
+          const head = document.createElement('li');
+          head.className = 'site-group';
+          head.textContent = '相关：' + g;
+          list.appendChild(head);
+        }
+        lastGroup = g;
 
         const li = document.createElement('li');
         li.className = 'site';
 
         const lab = document.createElement('span');
         lab.className = 'site-label';
-        lab.textContent = labelOf(s, i, sites.length);
+        // 编号用「本产品自己的站点数」，关联版本的站点只在各自分组里编号
+        const idxInGroup = g ? (groupSeen[g] = (groupSeen[g] || 0) + 1) : -1;
+        const totalInGroup = g ? groupTotal[g] : mainCount;
+        lab.textContent = labelOf(s, g ? idxInGroup - 1 : (mainSeen++), totalInGroup);
 
         const a = document.createElement('a');
         a.className = 'site-url';
@@ -188,6 +213,10 @@
     const foot = $('foot');
     if (foot) {
       foot.textContent = '列表来自扩展内置表与云端补录，可能没有覆盖全部官方入口。'
+        // 有关联版本时补一句口径说明，避免用户以为「相关」里是第三方改版站
+        + (sites.some(function (x) { return x && x.group; })
+          ? '「相关」小节是同一产品的其他官方发行版（如社区增强版），同样是官方入口。'
+          : '')
         + '请勿在当前页面下载或安装任何程序。';
     }
     return true;

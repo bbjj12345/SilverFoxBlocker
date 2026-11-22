@@ -160,6 +160,24 @@ h1 {
 }
 .site + .site { margin-top: 8px; }
 
+/* 关联品牌词的小标题（2026-11-22）：比站点行淡一档，右侧一条虚线，避免被当成可点条目 */
+.site-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  text-align: left;
+}
+.site-group::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 1px dashed var(--line);
+}
+.sites > .site-group:first-child { margin-top: 0; }
+
 .site-label {
   flex: 0 0 auto;
   min-width: 62px;

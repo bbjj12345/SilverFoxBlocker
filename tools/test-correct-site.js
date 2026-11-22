@@ -325,15 +325,42 @@ function runSites() {
   t('WinRAR 三条都是主机名级', ws.every(function (s) { return s.kind === 'host'; }));
   t('WinRAR .domain 取第一个主机名级站点', !!w && w.domain === ws[0].host, w && w.domain);
 
-  // 2) qBittorrent EE：没有主机名官网，唯一入口是 GitHub Releases（链接级）
+  // 旧（2026-11-18）：qBEE 只有自己的 2 个站点
+  //   2026-11-22 起与 qBittorrent 互相关联，站点数变成 3（多出原版官网），断言随之更新。
+  /*
   const q = A.resolveCorrectSite('qbittorrent-enhanced.cc');
   const qs = (q && q.sites) || [];
   t('qBittorrent EE 列出 2 个站点（发布页 + 镜像）', qs.length === 2, qs.length);
+  */
+  // 2) qBittorrent EE：没有主机名官网，唯一入口是 GitHub Releases（链接级）；
+  //    2026-11-22 起与 qBittorrent 互相「关联品牌词」，所以还会带出原版官网。
+  const q = A.resolveCorrectSite('qbittorrent-enhanced.cc');
+  const qs = (q && q.sites) || [];
+  t('qBittorrent EE 列出 3 个站点（发布页 + 镜像 + 关联的原版官网）', qs.length === 3, qs.length);
   t('qBittorrent EE 指向 Releases 链接',
     !!qs[0] && qs[0].url === 'https://github.com/c0re100/qBittorrent-Enhanced-Edition/releases',
     qs[0] && qs[0].url);
   t('qBittorrent EE 判定为链接级', !!qs[0] && qs[0].kind === 'link', qs[0] && qs[0].kind);
   t('qBittorrent EE 带「GitHub 发布页」文案', !!qs[0] && qs[0].label === 'GitHub 发布页', qs[0] && qs[0].label);
+  t('qBittorrent EE 自己那两条没有分组名', !qs[0].group && !qs[1].group, (qs[0] && qs[0].group) || '');
+  t('qBittorrent EE 关联出原版官网（group=qBittorrent）',
+    !!qs[2] && qs[2].url === 'https://qbittorrent.org' && qs[2].group === 'qBittorrent',
+    qs[2] && (qs[2].url + ' | ' + qs[2].group));
+
+  // 2b) 反方向：原版条目的仿冒站也要能看到增强版入口（这正是用户报的问题）
+  const qo = A.resolveCorrectSite('qbittorrent.org.cn');
+  const qos = (qo && qo.sites) || [];
+  t('qBittorrent 列出 3 个站点（原版官网 + 增强版两条）', qos.length === 3, qos.length);
+  t('qBittorrent 首条是原版官网且无分组', !!qos[0] && qos[0].url === 'https://qbittorrent.org' && !qos[0].group,
+    qos[0] && qos[0].url);
+  t('qBittorrent 带出增强版 GitHub 发布页',
+    !!qos[1] && qos[1].url === 'https://github.com/c0re100/qBittorrent-Enhanced-Edition/releases',
+    qos[1] && qos[1].url);
+  t('关联站点都打了 group=qBittorrent Enhanced Edition',
+    !!qos[1] && qos[1].group === 'qBittorrent Enhanced Edition' &&
+    !!qos[2] && qos[2].group === 'qBittorrent Enhanced Edition',
+    qos[1] && qos[1].group);
+  t('关联合并后无重复 url', new Set(qos.map(function (x) { return x.url; })).size === qos.length);
 
   // 3) WorkBuddy：两个官网，第二个是挂在 codebuddy.cn 的链接级页面
   const b = A.resolveCorrectSite('workbuddy-cn.com');
