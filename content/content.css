@@ -348,3 +348,190 @@
   font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
 }
 
+/* ★ 2026-11-22：分析中横幅改为与「（不推荐）继续访问，仍拦截下载」按钮同一套深红。
+   旧配色（深蓝底 + 蓝色左边框）保留在上方原规则里备查，这里用同选择器 + !important 覆盖：
+   目的是让「现在还没分析完、别急着点」在视觉上与「危险」同级别，压掉按钮看起来能点的错觉。 */
+.sf-analyzing {
+  border: 1px solid rgba(255,120,130,.38) !important;
+  border-left: 3px solid #ff8a96 !important;
+  background: linear-gradient(180deg, #7d1f2a, #5c1520) !important;
+  box-shadow: 0 10px 30px rgba(125,31,42,.45), inset 0 1px 0 rgba(255,255,255,.10) !important;
+  color: #fff5f6 !important;
+}
+.sf-analyzing .sf-az-t { color: #ffffff !important; -webkit-text-fill-color: #ffffff !important; }
+.sf-analyzing .sf-az-d { color: #ffd9dd !important; -webkit-text-fill-color: #ffd9dd !important; }
+
+
+/* ===== 高危文件「暂停 + 询问」确认条（2026-11-24）=====
+   场景：大站（本身在信任/白名单里）挂机若干秒后静默推 exe 安装包。
+   表现：右下角非阻塞条，说明「来自[域名]的[文件]不是你的点击触发的，已先暂停」，
+        两个出口 —— 保持拦截 / 继续下载；30s 后自动收起（下载保持取消，不会自己重来）。
+   为什么单独做一套样式而不复用 .sf-card：这不是「危险站弹窗」，是「一次待确认的下载」，
+   视觉上应与「已判定危险」区分开（琥珀色，而不是深红），且不能遮挡页面。 */
+.sf-exe-bar {
+  position: fixed !important;
+  right: 18px !important;
+  bottom: 18px !important;
+  z-index: 2147483647 !important;
+  width: min(360px, calc(100vw - 32px)) !important;
+  box-sizing: border-box !important;
+  padding: 12px 14px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(255,186,90,.42) !important;
+  border-left: 3px solid #ffb547 !important;
+  background: linear-gradient(180deg, rgba(58,42,18,.98), rgba(38,27,12,.98)) !important;
+  box-shadow: 0 12px 34px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.08) !important;
+  color: #fdf3e2 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+  font-size: calc(13px * var(--sf-scale, 1)) !important;
+  line-height: 1.6 !important;
+  text-align: left !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  animation: sf-fade .22s ease both !important;
+}
+.sf-exe-bar.sf-font-smiley {
+  font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+}
+.sf-exe-bar .sf-xb-t {
+  margin: 0 0 4px 0 !important;
+  font-size: calc(13.5px * var(--sf-scale, 1)) !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+.sf-exe-bar .sf-xb-d {
+  margin: 0 0 10px 0 !important;
+  font-size: calc(12px * var(--sf-scale, 1)) !important;
+  color: #ffe6c2 !important;
+  -webkit-text-fill-color: #ffe6c2 !important;
+  word-break: break-all !important;
+}
+.sf-exe-bar .sf-xb-row {
+  display: flex !important;
+  gap: 10px !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+}
+.sf-exe-bar .sf-xb-btn {
+  all: unset !important;
+  box-sizing: border-box !important;
+  padding: 7px 14px !important;
+  border-radius: 8px !important;
+  font-size: calc(12.5px * var(--sf-scale, 1)) !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  cursor: pointer !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+}
+.sf-exe-bar .sf-xb-no {
+  color: #ffe9c8 !important;
+  -webkit-text-fill-color: #ffe9c8 !important;
+  background: rgba(255,255,255,.10) !important;
+  border: 1px solid rgba(255,214,150,.42) !important;
+}
+.sf-exe-bar .sf-xb-no:hover { background: rgba(255,255,255,.18) !important; }
+.sf-exe-bar .sf-xb-ok {
+  color: #2a1a06 !important;
+  -webkit-text-fill-color: #2a1a06 !important;
+  background: linear-gradient(180deg, #ffc76b, #f2a63a) !important;
+  border: 1px solid rgba(255,214,150,.65) !important;
+}
+.sf-exe-bar .sf-xb-ok:hover { background: linear-gradient(180deg, #ffd489, #f7b453) !important; }
+/* 抗页面样式覆盖（含 * { color: ... } 之类的全局规则） */
+.sf-exe-bar, .sf-exe-bar * { box-sizing: border-box !important; }
+
+/* ★ 2026-11-23：确认条里的「下载器接管」提示（纯静态说明，非检测结果）。
+   单独一行、更小更淡，避免和正文抢注意力；设置页可关（dlManagerNotice）。 */
+.sf-exe-bar .sf-xb-note {
+  margin: 0 0 10px 0 !important;
+  padding-top: 8px !important;
+  border-top: 1px dashed rgba(255,214,150,.30) !important;
+  font-size: calc(11.5px * var(--sf-scale, 1)) !important;
+  line-height: 1.5 !important;
+  color: #e8c79a !important;
+  -webkit-text-fill-color: #e8c79a !important;
+  word-break: break-all !important;
+}
+
+/* ===== 「放行轻提示」条（2026-11-23）=====
+   场景：下载被判定为「用户意图」而放行（点了下载按钮 / 点下载后跳转感谢页再开始下载）。
+   与另外两块 UI 的区分：
+     · 深红横幅 / 判危弹窗 = 拦住了，危险；
+     · 琥珀色确认条（.sf-exe-bar，右下）= 暂停了，等你决定；
+     · 这条（青色，左下）= 没拦，只是告诉你「我看见你点了」。
+   位置放左下，避免和右下角的确认条叠在一起（两者可能同时存在）。
+   10 秒自动关闭，「知道了」按钮可提前关；倒计时在按钮右侧。 */
+.sf-allow-note {
+  position: fixed !important;
+  left: 18px !important;
+  bottom: 18px !important;
+  z-index: 2147483647 !important;
+  width: min(340px, calc(100vw - 32px)) !important;
+  box-sizing: border-box !important;
+  padding: 11px 13px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(110,220,200,.34) !important;
+  border-left: 3px solid #35c9ab !important;
+  background: linear-gradient(180deg, rgba(16,38,36,.97), rgba(10,26,25,.97)) !important;
+  box-shadow: 0 12px 34px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.07) !important;
+  color: #e6fbf6 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+  font-size: calc(13px * var(--sf-scale, 1)) !important;
+  line-height: 1.6 !important;
+  text-align: left !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  pointer-events: auto !important;
+  animation: sf-fade .22s ease both !important;
+}
+.sf-allow-note.sf-font-smiley {
+  font-family: "SmileySans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+}
+.sf-allow-note .sf-an-t {
+  margin: 0 0 3px 0 !important;
+  font-size: calc(13px * var(--sf-scale, 1)) !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+.sf-allow-note .sf-an-d {
+  margin: 0 0 9px 0 !important;
+  font-size: calc(12px * var(--sf-scale, 1)) !important;
+  color: #bfe8df !important;
+  -webkit-text-fill-color: #bfe8df !important;
+  word-break: break-all !important;
+}
+.sf-allow-note .sf-an-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  justify-content: flex-end !important;
+}
+.sf-allow-note .sf-an-ok {
+  all: unset !important;
+  box-sizing: border-box !important;
+  padding: 5px 13px !important;
+  border-radius: 8px !important;
+  font-size: calc(12.5px * var(--sf-scale, 1)) !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  color: #06231e !important;
+  -webkit-text-fill-color: #06231e !important;
+  background: linear-gradient(180deg, #6fe3c9, #35c9ab) !important;
+  border: 1px solid rgba(160,255,240,.55) !important;
+}
+.sf-allow-note .sf-an-ok:hover {
+  background: linear-gradient(180deg, #8beeD8, #46d8ba) !important;
+}
+/* 倒计时：始终在「知道了」右侧，不参与点击 */
+.sf-allow-note .sf-an-cd {
+  font-size: calc(11.5px * var(--sf-scale, 1)) !important;
+  color: #8fc9bf !important;
+  -webkit-text-fill-color: #8fc9bf !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+}

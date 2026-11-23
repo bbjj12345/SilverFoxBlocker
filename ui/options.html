@@ -95,7 +95,9 @@
       <!-- 拦截行为 -->
       <section class="sec" id="behavior" data-page-node-id="QkcILvJtKCWOc2F9L3ZmQV">
         <div class="card" data-page-node-id="NK4E36GvTPuS0Q5pMjIJyN">
-          <p class="sec-desc" data-page-node-id="sfAnalyzingNote">分析期间（通常 1–3 秒，最长约 10 秒）本页默认不信任，且该默认拒绝<b>不受「自动拦截下载」开关影响</b>：页面顶部会常驻一条提示横幅，点击下载入口会先被拦下；已进入浏览器的下载也会先挂起。判定安全后横幅自动消失、下载入口恢复，挂起的下载自动重新开始；判定有风险则保持拦截并说明原因。</p>
+          <!-- 旧文案（2026-11-23 起失效：判定安全后不再自动重下）：
+               <p class="sec-desc">分析期间（通常 1–3 秒，最长约 10 秒）本页默认不信任，且该默认拒绝<b>不受「自动拦截下载」开关影响</b>：页面顶部会常驻一条提示横幅，点击下载入口会先被拦下；已进入浏览器的下载也会先挂起。判定安全后横幅自动消失、下载入口恢复，挂起的下载自动重新开始；判定有风险则保持拦截并说明原因。</p> -->
+          <p class="sec-desc" data-page-node-id="sfAnalyzingNote">分析期间（通常 1–3 秒，最长约 10 秒）本页默认不信任，且该默认拒绝<b>不受「自动拦截下载」开关影响</b>：页面顶部会常驻一条提示横幅，下载入口在此期间会置灰、点击会先被拦下；已进入浏览器的下载也会先挂起。判定安全后横幅自动消失、入口恢复，但<b>被拦下的下载不会自动重试，需要重新点击一次</b>；判定有风险则保持拦截并说明原因。</p>
           <div class="row" data-page-node-id="8KD4KX8QfjSxhhIsh5bE1C">
             <div class="rl" data-page-node-id="RE0eCvtRreR3xLCt97rJsA"><div class="rt" data-page-node-id="a6AzFj0z9OK7iqoZLf5dBK">弹出警告浮层</div><div class="rd" data-page-node-id="68KQ9QC6gsQi8Kck3hdeXQ">命中风险时，在页面上弹出美观的警告提示</div></div>
             <label class="switch" data-page-node-id="oKKDR23f2d6hsFhzC28EGw"><input type="checkbox" id="showWarning" data-page-node-id="j6NuxR00MsCKK5fwAGGwL6"><span class="slider" data-page-node-id="BCMZZvEw28Zyp1sE9P4CTa"></span></label>
@@ -103,6 +105,18 @@
           <div class="row" data-page-node-id="ZdETCnVc3IbQ4UGgEF6CSI">
             <div class="rl" data-page-node-id="1B8BTc76Kij1ODLueKVAxz"><div class="rt" data-page-node-id="1xthWSHHZsZuDwoQUbTc9A">自动禁用下载/跳转链接</div><div class="rd" data-page-node-id="trVZlAJ5Vikdj1jkrlFdhm">命中风险后，禁用页面全部下载与重定向链接（推荐保持开启）</div></div>
             <label class="switch" data-page-node-id="UOnCCyis8KLY5ZoMMsmoBw"><input type="checkbox" id="autoBlockDownloads" data-page-node-id="tQGJEttsEvdFXb1zQZmaCg"><span class="slider" data-page-node-id="Pwp6AuRhLPVsxVdJyaBjHL"></span></label>
+          </div>
+          <div class="row" data-page-node-id="SF_AUTODL_ROW">
+            <div class="rl" data-page-node-id="SF_AUTODL_RL"><div class="rt" data-page-node-id="SF_AUTODL_RT">拦截「无手势」的自动下载</div><div class="rd" data-page-node-id="SF_AUTODL_RD">没有你的点击、页面自己开始的下载一律拦下（高速下载站常用这种手段自动分发 .exe/.zip 文件，包括 meta refresh、直接跳文件这类页面上看不到来源的写法）。<br><b>可执行文件/压缩包/网盘类文件不再享受白名单豁免：</b>即使来自华军软件园这类受信任的大站，只要检测不到对应的点击，也会先挂起下载进程，并弹出一条不阻塞页面的提示，由你选择「继续下载」或「保持拦截」。<br><b>每站第一次下载必须确认（优先级最高）：</b>同一站点（按注册域计，www.、dl. 等子域算同一站）在这台电脑上第一次下载可执行/压缩/网盘类文件时，<b>即使检测到你点了下载按钮</b>，也会先暂停并询问一次——因为流氓站正是用假的「下载」按钮骗取这一次点击。确认后同一站点不再重复询问；该记录保存在本机，180 天后重新询问一次。点「保持拦截」不会记账，站点再试还会再问。<br><b>「用户意图」判定：</b>只认「强手势」——点击链接或按钮（窗口期 2.5 秒、与下载来源同站）；滚动页面、点击空白处、在别的标签页操作都不计入。对于点击“下载”后站点跳到「感谢下载」页再开始下载的，只要 10 秒内点击的链接和文件同名/同站，视为用户意图，直接放行。<br>本页确认过一次后，本页后续下载不再重复询问；刷新或跳转后授权立即失效。新标签页（点击下载后弹出的窗口）若与父页同站，会继承父页的授权。<br><b>放行轻提示：</b>判定为「用户意图」而放行时，左下角会出现一条不拦截的提示（10 秒后自动关闭，也可点「知道了」提前关闭），让你知道扩展看到了这次下载；若不是你要的文件，可到浏览器下载列表里取消。<br>非高危文件（图片、视频等）不受影响；黑名单命中的下载不会给「是否允许」的选择，直接拦截。</div></div>
+            <label class="switch" data-page-node-id="SF_AUTODL_SW"><input type="checkbox" id="autoDownloadGuard" data-page-node-id="SF_AUTODL_CB"><span class="slider" data-page-node-id="SF_AUTODL_SL"></span></label>
+          </div>
+          <div class="row" data-page-node-id="SF_DLMGR_ROW">
+            <div class="rl" data-page-node-id="SF_DLMGR_RL"><div class="rt" data-page-node-id="SF_DLMGR_RT">显示「下载器接管」提示（IDM / 迅雷）</div><div class="rd" data-page-node-id="SF_DLMGR_RD">在拦截/询问下载时，若本机装了 IDM、迅雷等下载器，它可能在点击的瞬间就把链接交给了自己的进程，字节不经过浏览器。本扩展无法拦截，也无法取消，请到下载器里检查并取消任务。<br>浏览器扩展无法枚举其它扩展或原生进程。这不会影响任何拦截逻辑，默认开启。</div></div>
+            <label class="switch" data-page-node-id="SF_DLMGR_SW"><input type="checkbox" id="dlManagerNotice" data-page-node-id="SF_DLMGR_CB"><span class="slider" data-page-node-id="SF_DLMGR_SL"></span></label>
+          </div>
+          <div class="row" data-page-node-id="SF_RESOLVER_ROW">
+            <div class="rl" data-page-node-id="SF_RESOLVER_RL"><div class="rt" data-page-node-id="SF_RESOLVER_RT">运行时取链探测（解析器跟随）</div><div class="rd" data-page-node-id="SF_RESOLVER_RD">对<b>已判定危险、下载入口已被禁用</b>的页面，用一个<b>不激活的后台标签页</b>重跑它自己的同源跳转端点（<code>download.php?id=…</code>、<code>/go/…</code> 这类把真实载荷藏在 302 里的地址），看最终落到哪个域名，命中后写入本机「自动学习的下载黑名单」。每页最多 2 个目标、5 秒超时、同一地址 1 分钟内只探一次；<b>只读请求 URL 与最终落点，不阻断、不改写、不注入请求头</b>，探测的是该页自己的地址（与你自己点一下链接等价），不新增任何第三方请求、不携带任何本地数据。关闭后该功能完全停止，不再打开任何后台标签页（代价：「运行时取链」这一路的隐藏分发域学不到）。</div></div>
+            <label class="switch" data-page-node-id="SF_RESOLVER_SW"><input type="checkbox" id="resolverFollow" data-page-node-id="SF_RESOLVER_CB"><span class="slider" data-page-node-id="SF_RESOLVER_SL"></span></label>
           </div>
           <div class="row" data-page-node-id="asjUb6kPzi7o1BzJgJElLf">
             <div class="rl" data-page-node-id="94fTv5JrgV6fEUREZLGqwP"><div class="rt" data-page-node-id="btUxFFXfB8yq6Hn0qR5AHY">Windows 系统弹窗提醒</div><div class="rd" data-page-node-id="JzYnRX6mcZZJ13mLwffXXG">命中风险时在 Windows 右下角弹出系统通知（toast），更易引起注意（默认开启）</div></div>

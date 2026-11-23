@@ -38,6 +38,9 @@ const DEFAULTS = {
   enabledGlobal: true,
   showWarning: true,
   autoBlockDownloads: true,
+  autoDownloadGuard: true,   // 增强：拦截「无用户手势」的自动下载（2026-11-23）
+  dlManagerNotice: true,     // 拦截/询问下载时，附一行「IDM/迅雷 可能已接管」的静态提示（2026-11-23）
+  resolverFollow: true,      // 运行时取链探测（解析器跟随）：已判危页面上用后台标签页重跑同源跳转端点（2026-11-23）
   notify: true,
   icpApiVerify: true,   // ICP 备案权威核验（只发域名给公开备案接口，且仅在核验有价值时发起）
   // 敏感度：设置页已无对应控件（2026-11-11），固定 'medium'；引擎仍读它做阈值/组合升级分档
@@ -1036,6 +1039,9 @@ function bindControls(settings) {
 
   $('showWarning').checked = !!settings.showWarning;
   $('autoBlockDownloads').checked = !!settings.autoBlockDownloads;
+  if ($('autoDownloadGuard')) $('autoDownloadGuard').checked = settings.autoDownloadGuard !== false;
+  if ($('dlManagerNotice')) $('dlManagerNotice').checked = settings.dlManagerNotice !== false;
+  if ($('resolverFollow')) $('resolverFollow').checked = settings.resolverFollow !== false;
   $('notify').checked = !!settings.notify;
   if ($('icpApiVerify')) $('icpApiVerify').checked = settings.icpApiVerify !== false;
 
@@ -1618,6 +1624,9 @@ async function collectSettings() {
     enabledGlobal: (window.__sfSettings ? !!window.__sfSettings.enabledGlobal : true),
     showWarning: $('showWarning').checked,
     autoBlockDownloads: $('autoBlockDownloads').checked,
+    autoDownloadGuard: ($('autoDownloadGuard') ? $('autoDownloadGuard').checked : true),
+    dlManagerNotice: ($('dlManagerNotice') ? $('dlManagerNotice').checked : true),
+    resolverFollow: ($('resolverFollow') ? $('resolverFollow').checked : true),
     notify: $('notify').checked,
     icpApiVerify: ($('icpApiVerify') ? $('icpApiVerify').checked : true),
     // 灵敏度：设置页已无对应控件，固定 medium（引擎阈值 35/70、组合升级 3 项中风险）。

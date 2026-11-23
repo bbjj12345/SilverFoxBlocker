@@ -364,6 +364,197 @@
     toastTimer = setTimeout(() => { if (toastEl) toastEl.style.display = 'none'; }, 2600);
   }
 
+  // ===== 高危文件「暂停 + 询问」确认条（2026-11-24）=====
+  // ★ 2026-11-23：下载器接管提示的开关（设置页「显示下载器接管提示」，默认开）。
+  //   ⚠️ 这里只做「静态提示」，不做「检测到下载器」的判定 —— IDM / 迅雷 走
+  //   native messaging，字节根本不经过浏览器，扩展既看不到它的请求，也无法取消它。
+  //   所以文案只能是「若你安装了…请到下载器里检查」，不能写成「已检测到下载器」。
+  let dlMgrNoticeOn = true;
+  try {
+    chrome.storage.sync.get({ dlManagerNotice: true }, function (s) {
+      if (s && s.dlManagerNotice === false) dlMgrNoticeOn = false;
+    });
+  } catch (e) {}
+  // 后台 confirmHighRiskDownload() 取消下载后推 sf-exe-confirm；这里挂一条**不阻塞页面**的
+  // 确认条（对齐截图里的策略一：先暂停，再让用户决定），两个出口：
+  //   · 继续下载 → 走 sf-allow-download 让后台重新发起（会先登记放行名单，避免二次拦截）；
+  //   · 保持拦截 → 只收起提示，下载已取消，不重试。
+  // 为什么不做全屏蒙版：场景是「用户本来在浏览大站、后台偷偷推了个安装包」，
+  //   蒙版反而打断阅读；一条能看清来源域名的轻提示足够，且不会让用户以为页面坏了。
+  let exeBarEl = null, exeBarTimer = null;
+  function _removeExeBar() {
+    if (exeBarTimer) { clearTimeout(exeBarTimer); exeBarTimer = null; }
+    const el = exeBarEl;
+    exeBarEl = null;
+    if (!el) return;
+    try { NATIVE.rm ? NATIVE.rm(el) : el.remove(); } catch (e) { try { el.remove(); } catch (e2) {} }
+  }
+  function showExeConfirmBar(info) {
+    info = info || {};
+    // 已有旧条（连续多个自动下载）→ 先撤掉，避免叠罗汉
+    _removeExeBar();
+    const host = String(info.host || '未知站点');
+    const fname = String(info.filename || '').slice(0, 120) || '一个可执行/压缩文件';
+    const url = String(info.url || '');
+    try {
+      const bar = document.createElement('div');
+      bar.id = 'sf-exe-confirm';
+      bar.className = 'sf-exe-bar' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+
+      const t = document.createElement('div');
+      t.className = 'sf-xb-t';
+      t.textContent = '已暂停一个可执行文件下载';
+
+      const d = document.createElement('div');
+      d.className = 'sf-xb-d';
+      // ★ 2026-11-23：文案改为「可能不是」——点击→跳转「感谢下载」页→由新页面开始下载这种正规链路
+      //   也会走到这里（新页面拿不到上一页的点击手势），一口咬定「不是你的点击」会让用户觉得扩展在瞎判。
+      //   reason==='analysis' 时补一句「还在分析中」，避免用户以为下载没反应。
+      //   ★ 2026-11-23（每站首次确认）：siteFirst 场景下「是不是用户点的」无法确定（可能确实是用户点的），
+      //     所以不再断言「不是你的点击」，改用中性说法并直接给出两条出路。
+      const head = '来自 ' + host + ' 的「' + fname + '」';
+      if (info.siteFirst) {
+        d.textContent = head + '已先暂停。这是你在本机第一次从该站点下载可执行文件，扩展先暂停并询问一次；'
+          + '若这次下载是你主动点击的，点「继续下载」即可，确认后同一站点不再重复询问。'
+          + (info.reason === 'analysis' ? '（当前页面还在安全分析中。）' : '')
+          + '注意：若该链接需要登录/鉴权，重新发起可能失效，此时请回到页面手动点击一次。';
+      } else {
+        d.textContent = head + '可能不是由你的点击触发的（页面自己开始下载），已先暂停。'
+          + (info.reason === 'analysis' ? '当前页面还在安全分析中。' : '')
+          + '本页的第一次下载需要你确认；确认后本页不再重复询问（刷新页面后重新生效）。'
+          + '注意：若该链接需要登录/鉴权，重新发起可能失效，此时请回到页面手动点击一次。';
+      }
+
+      const row = document.createElement('div');
+      row.className = 'sf-xb-row';
+
+      const no = document.createElement('button');
+      no.type = 'button';
+      no.className = 'sf-xb-btn sf-xb-no';
+      no.textContent = '保持拦截';
+      no.addEventListener('click', function (e) {
+        try { e.preventDefault(); e.stopPropagation(); } catch (e2) {}
+        _removeExeBar();
+        try {
+          chrome.runtime.sendMessage({ type: 'sf-exe-deny' }, function () {
+            try { void chrome.runtime.lastError; } catch (e3) {}
+          });
+        } catch (e3) {}
+        showToast('已保持拦截，该文件不会下载');
+      }, true);
+
+      const ok = document.createElement('button');
+      ok.type = 'button';
+      ok.className = 'sf-xb-btn sf-xb-ok';
+      ok.textContent = '继续下载';
+      ok.addEventListener('click', function (e) {
+        try { e.preventDefault(); e.stopPropagation(); } catch (e2) {}
+        _removeExeBar();
+        if (!url) { showToast('拿不到下载地址，请回到页面手动点击一次下载'); return; }
+        try {
+          chrome.runtime.sendMessage(
+            // grantPage：用户已确认「本页可以下载」→ 后台记一条页面授权，
+            // 本页后续下载不再逐条询问（直到刷新/导航）。
+            { type: 'sf-allow-download', url: url, hostname: host, origin: String(location.origin || ''), grantPage: true, tempMs: 15000 },
+            function () { try { void chrome.runtime.lastError; } catch (e3) {} }
+          );
+        } catch (e3) {}
+        showToast('已放行本次下载，正在重新开始…');
+      }, true);
+
+      const put = NATIVE.appendChild;
+      // ★ 2026-11-23：下载器接管提示（静态说明，非检测结果）。只在用户装了 IDM/迅雷 时才有意义，
+      //   但扩展无法枚举其它扩展，只能给「若你安装了…」的条件式文案，避免误导。
+      let note = null;
+      if (dlMgrNoticeOn) {
+        note = document.createElement('div');
+        note.className = 'sf-xb-note';
+        note.textContent = '提示：若你安装了 IDM / 迅雷 等下载器，它可能在点击瞬间就已接管该链接；本扩展无法拦截原生下载器，请到下载器里检查并取消。';
+      }
+      if (put) { put.call(row, no); put.call(row, ok); }
+      else { row.appendChild(no); row.appendChild(ok); }
+      if (put) { put.call(bar, t); put.call(bar, d); if (note) put.call(bar, note); put.call(bar, row); }
+      else { bar.appendChild(t); bar.appendChild(d); if (note) bar.appendChild(note); bar.appendChild(row); }
+      (document.body || document.documentElement).appendChild(bar);
+      exeBarEl = bar;
+      // 30 秒后自动收起：下载保持「已取消」，不会自己重来。
+      exeBarTimer = setTimeout(_removeExeBar, 30000);
+    } catch (e) {}
+  }
+
+  // ===== 「放行轻提示」条（2026-11-23）=====
+  // 场景：下载被判定为「用户意图」而放行（点了下载按钮 / 点下载后跳转感谢页再开始下载）。
+  //   这类放行是**静默**的 —— 用户既看不到拦截，也看不到「扩展看见了」，一旦是流氓站骗到一次点击，
+  //   就完全没有提示。这条只告知、不拦截：10 秒自动关闭，也可点「知道了」提前关；
+  //   倒计时显示在「知道了」右侧（按用户要求）。
+  // 为什么不做成 toast：toast 2.6s 就消失、且 pointer-events:none 点不掉；这条需要能读完、能主动关。
+  let allowNoteEl = null, allowNoteTimer = null, allowNoteTick = null;
+  let allowNoteKey = '', allowNoteAt = 0;
+  const ALLOW_NOTE_MS = 10000;
+  function _removeAllowNote() {
+    if (allowNoteTimer) { clearTimeout(allowNoteTimer); allowNoteTimer = null; }
+    if (allowNoteTick) { clearInterval(allowNoteTick); allowNoteTick = null; }
+    const el = allowNoteEl;
+    allowNoteEl = null;
+    if (!el) return;
+    try { NATIVE.rm ? NATIVE.rm(el) : el.remove(); } catch (e) { try { el.remove(); } catch (e2) {} }
+  }
+  function showAllowNote(info) {
+    info = info || {};
+    const host = String(info.host || '').slice(0, 80);
+    const fname = String(info.filename || '').slice(0, 120);
+    // 同一「站点+文件」3 秒内重复（分卷、302 多跳、重试）不叠罗汉，只保留最新一条
+    const key = host + '|' + fname;
+    const now = Date.now();
+    if (key === allowNoteKey && now - allowNoteAt < 3000) return;
+    allowNoteKey = key;
+    allowNoteAt = now;
+    _removeAllowNote();
+    try {
+      const el = document.createElement('div');
+      el.id = 'sf-allow-note';
+      el.className = 'sf-allow-note' + (currentFontMode === 'smiley' ? ' sf-font-smiley' : '');
+
+      const t = document.createElement('div');
+      t.className = 'sf-an-t';
+      t.textContent = '已按你的点击放行下载';
+
+      const d = document.createElement('div');
+      d.className = 'sf-an-d';
+      d.textContent = (host ? host + ' 的' : '') + '「' + (fname || '一个文件') + '」已开始下载，扩展没有拦截。'
+        + '若不是你要的文件，请到浏览器的下载列表里取消。';
+
+      const row = document.createElement('div');
+      row.className = 'sf-an-row';
+
+      const ok = document.createElement('button');
+      ok.type = 'button';
+      ok.className = 'sf-an-ok';
+      ok.textContent = '知道了';
+      ok.addEventListener('click', function (e) {
+        try { e.preventDefault(); e.stopPropagation(); } catch (e2) {}
+        _removeAllowNote();
+      }, true);
+
+      const cd = document.createElement('span');
+      cd.className = 'sf-an-cd';
+      let left = Math.round(ALLOW_NOTE_MS / 1000);
+      cd.textContent = left + ' 秒后自动关闭';
+
+      const put = NATIVE.appendChild;
+      if (put) { put.call(row, ok); put.call(row, cd); put.call(el, t); put.call(el, d); put.call(el, row); }
+      else { row.appendChild(ok); row.appendChild(cd); el.appendChild(t); el.appendChild(d); el.appendChild(row); }
+      (document.body || document.documentElement).appendChild(el);
+      allowNoteEl = el;
+      allowNoteTimer = setTimeout(_removeAllowNote, ALLOW_NOTE_MS);
+      allowNoteTick = setInterval(function () {
+        left--;
+        if (left <= 0) { _removeAllowNote(); return; }
+        cd.textContent = left + ' 秒后自动关闭';
+      }, 1000);
+    } catch (e) {}
+  }
+
   // ===== 「分析中默认不信任」状态 + 轻提示横幅 =====
   // 设计取舍（2026-11-11，v2）：
   //   · 仍不做全屏蒙版 —— 会挡住首屏阅读，收益只是「告知」；
@@ -413,7 +604,9 @@
       t1.textContent = '为了您的安全，在分析结束前，我们默认不信任该页面。';
       const t2 = NATIVE.mk('div') || document.createElement('div');
       t2.className = 'sf-az-d';
-      t2.textContent = '分析期间本页的下载与下载跳转一律先被阻止（不依赖「自动拦截下载」开关）。分析通常 1–3 秒完成（最长约 10 秒）；判定安全后横幅自动消失、下载入口恢复，重新点击即可；判定有风险则继续拦截并弹窗说明原因。';
+      // t2.textContent = '分析期间本页的下载与下载跳转一律先被阻止（不依赖「自动拦截下载」开关）。分析通常 1–3 秒完成（最长约 10 秒）；判定安全后横幅自动消失、下载入口恢复，重新点击即可；判定有风险则继续拦截并弹窗说明原因。';
+      // ★ 2026-11-22：明确说明「被取消的下载不会自动重来」，避免用户以为关掉横幅文件就会自己下来。
+      t2.textContent = '分析期间本页的下载一律先被拦截（不依赖「自动拦截下载」开关）。分析通常 1–3 秒完成（最长约 10 秒）；判定安全后横幅自动消失、下载入口恢复，但刚才被拦下的下载不会自动重试，请重新点击一次；判定有风险则继续拦截并弹窗说明原因。';
       const put = NATIVE.appendChild;
       if (put) { put.call(bar, t1); put.call(bar, t2); }
       else { bar.appendChild(t1); bar.appendChild(t2); }
@@ -434,12 +627,83 @@
     }, wait);
   }
 
+  // ===== 分析期间「下载入口置灰」（2026-11-23）=====
+  // 目的：这段时间点击本来就会被 globalClickGuard 拦下并弹横幅，但按钮看起来「很鲜艳、能点」，
+  //   用户手快就会反复点、以为扩展坏了。这里只做视觉层（不摘 href、不禁用事件），
+  //   判定结束就原样撤回 —— 真正的安全边界仍是点击拦截 + 后台下载闸门。
+  // 只作用在 isDownloadEntry() 认得出的入口上，避免把整页链接都灰掉。
+  const _dimEls = [];
+  let _dimTimer = null;
+  let _dimObs = null;
+  const DIM_MAX = 200;
+
+  function _dimOne(el) {
+    try {
+      if (!el || el.nodeType !== 1) return;
+      if (el.dataset && (el.dataset.sfDimmed || el.dataset.sfBlocked)) return;
+      if (isSfUiElement(el)) return;
+      if (!isDownloadEntry(el) && !findDownloadAncestor(el)) return;
+      el.dataset.sfDimmed = '1';
+      el.style.opacity = '0.42';
+      el.style.filter = 'grayscale(0.9)';
+      el.style.cursor = 'not-allowed';
+      _dimEls.push(el);
+    } catch (e) {}
+  }
+  function dimDownloadEntries() {
+    if (!analyzing) return;
+    try {
+      if (_dimEls.length >= DIM_MAX) return;
+      const els = NATIVE.qsAll(document, 'a[href], button, [role="button"], input[type="button"], input[type="submit"]');
+      for (let i = 0; i < els.length && _dimEls.length < DIM_MAX; i++) _dimOne(els[i]);
+      // 进度条/下载图标这类非 a/button 的容器：只扫带下载语义的小范围类名，避免全页遍历
+      const more = NATIVE.qsAll(document, '[class*="download"], [id*="download"], [data-download]');
+      for (let i = 0; i < more.length && _dimEls.length < DIM_MAX; i++) _dimOne(more[i]);
+    } catch (e) {}
+  }
+  function _scheduleDim() {
+    if (_dimTimer) return;
+    _dimTimer = setTimeout(function () { _dimTimer = null; dimDownloadEntries(); }, 250);
+  }
+  function startAnalyzingDim() {
+    if (_dimObs) return;
+    try {
+      // DOM 可能还没建好：readyState 未完成时等 DOMContentLoaded 再扫
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () { if (analyzing) dimDownloadEntries(); }, { once: true });
+      } else {
+        dimDownloadEntries();
+      }
+      _dimObs = new MutationObserver(function () { if (analyzing) _scheduleDim(); });
+      _dimObs.observe(document.documentElement, { childList: true, subtree: true });
+    } catch (e) {}
+  }
+  function stopAnalyzingDim() {
+    if (_dimObs) { try { _dimObs.disconnect(); } catch (e) {} _dimObs = null; }
+    if (_dimTimer) { clearTimeout(_dimTimer); _dimTimer = null; }
+    for (let i = _dimEls.length - 1; i >= 0; i--) {
+      const el = _dimEls[i];
+      try {
+        el.style.opacity = '';
+        el.style.filter = '';
+        el.style.cursor = '';
+        if (el.dataset) delete el.dataset.sfDimmed;
+      } catch (e) {}
+    }
+    _dimEls.length = 0;
+  }
+
   function setAnalyzing(v) {
     analyzing = !!v;
     if (!analyzing) {
       if (analyzingGuardTimer) { clearTimeout(analyzingGuardTimer); analyzingGuardTimer = null; }
       if (analyzingShowTimer) { clearTimeout(analyzingShowTimer); analyzingShowTimer = null; }
       hideAnalyzingHint();
+      // ★ 2026-11-23：判定结束 → 撤掉置灰，入口恢复常态
+      stopAnalyzingDim();
+    } else {
+      // ★ 2026-11-23：重新进入分析中 → 立刻置灰（DOM 还没好时由 MutationObserver 补）
+      startAnalyzingDim();
     }
   }
 
@@ -448,6 +712,7 @@
   //   新一轮的 analyzing 误置为 false（新路由刚加载就被判「已分析完」）。
   function beginAnalyzing() {
     analyzing = true;
+    startAnalyzingDim();   // ★ 2026-11-23：SPA 重新进入分析中时同样置灰
     if (analyzingGuardTimer) { clearTimeout(analyzingGuardTimer); analyzingGuardTimer = null; }
     if (analyzingShowTimer) { clearTimeout(analyzingShowTimer); analyzingShowTimer = null; }
     try { analyzingGuardTimer = setTimeout(function () { setAnalyzing(false); }, ANALYZING_MAX_MS); } catch (e) {}
@@ -1489,7 +1754,17 @@
   // 只在「已判危 + 下载入口被禁用」之后触发，每页一次、最多两个目标，避免打扰与放大请求。
   // 判定条件很保守：同注册域、不是文件直链、路径/参数里带跳转特征词。
   let _resolverProbedOnce = false;
+  // ★ 2026-11-23：用户可关（设置 → 拦截行为 → 运行时取链探测，默认开）。
+  //   这是唯一一处「扩展主动打开一个后台标签页」的行为，虽然只访问该页自己的地址、
+  //   不新增第三方、不阻断不改写，仍应给用户一个明确的关闭开关（商店审核与隐私政策都以此为准）。
+  let resolverFollowOn = true;
+  try {
+    chrome.storage.sync.get({ resolverFollow: true }, function (s) {
+      if (s && s.resolverFollow === false) resolverFollowOn = false;
+    });
+  } catch (e) {}
   function probeHiddenDownloadResolvers() {
+    if (!resolverFollowOn) return;
     if (_resolverProbedOnce) return;
     _resolverProbedOnce = true;
     try {
@@ -2298,6 +2573,8 @@
       '<button class="sf-btn sf-btn-continue" id="sf-dl-allow" data-sf-act="dl-allow" type="button">仍要下载</button>' +
       '</div>' +
       '<p class="sf-foot">仅当您明确信任该文件来源时才选择「仍要下载」。</p>' +
+      // ★ 2026-11-23：下载器接管提示（有条件显示，设置页可关）。见 showExeConfirmBar 上方说明。
+      (dlMgrNoticeOn ? '<p class="sf-foot">若已安装 IDM / 迅雷 等下载器，它可能在点击瞬间就接管了该链接；本扩展无法拦截原生下载器，请到下载器里检查并取消对应任务。</p>' : '') +
       '</div>';
     let overlayRef = null;
     const mounted = sfMountOverlay({
@@ -3692,6 +3969,43 @@
     if (msg && msg.type === 'sf-download-blocked') { showDownloadBlocked(location.hostname, { url: msg.url || '', fromBackground: true }); }
     if (msg && msg.type === 'sf-dl-ext-blocked') { showExtDlConfirm(location.hostname, { url: msg.url || '', filename: msg.filename || '' }); }
     if (msg && msg.type === 'sf-download-allow-failed') { showToast('⚠️ 请手动在站内点击下载，已临时放行该链接'); }
+    // ★ 2026-11-23：分析期间有一个下载被暂时按住了 —— 先给个「正在检查」的回执，
+    //   避免用户以为点了下载毫无反应（旧实现是静默取消，等 11s 超时后什么都不弹）。
+    if (msg && msg.type === 'sf-dl-checking') {
+      try {
+        const f = msg.filename ? ('「' + String(msg.filename).slice(0, 80) + '」') : '一个下载';
+        showToast('⏳ 已暂停' + f + '，正在做安全检查（通常 1–3 秒），完成后会给出结果。');
+      } catch (e) {}
+    }
+    // ★ 2026-11-23：后台拦截了「没有用户手势却自己开始」的自动下载
+    if (msg && msg.type === 'sf-auto-dl-blocked') {
+      try {
+        const f = msg.filename ? ('「' + String(msg.filename).slice(0, 80) + '」') : '该文件';
+        const why = (msg.reason === 'analysis') ? '（页面还在安全分析中）' : '';
+        showToast('🛑 已拦截自动下载' + why + '：' + f + ' 可能不是由你的点击触发的。如确需下载，请回到页面手动点击一次。');
+      } catch (e) {}
+    }
+    // ★ 2026-11-24：高危文件「暂停 + 询问」——后台已取消本次下载，这里挂非阻塞确认条。
+    //   为什么不是 toast：toast 2.6s 就消失、也没法点；这个场景必须留出「继续下载」的出口，
+    //   同时把来源域名与文件名摆明，让用户自己判断是不是页面在偷推安装包。
+    if (msg && msg.type === 'sf-exe-confirm') {
+      try {
+        showExeConfirmBar({ url: msg.url || '', host: msg.host || location.hostname, filename: msg.filename || '', reason: msg.reason || 'guard', siteFirst: !!msg.siteFirst });
+      } catch (e) {}
+    }
+    // ★ 2026-11-23：判定为「用户意图」而放行 → 只告知、不拦截的轻提示（10s 自动关，可点「知道了」）
+    if (msg && msg.type === 'sf-allow-note') {
+      try {
+        showAllowNote({ host: msg.host || '', filename: msg.filename || '', reason: msg.reason || '' });
+      } catch (e) {}
+    }
+    // ★ 2026-11-22：分析期间被取消的下载不会自动恢复，明确告知用户要重新点击
+    if (msg && msg.type === 'sf-held-dropped') {
+      try {
+        const n = Number(msg.count) || 0;
+        showToast('分析已完成，刚才被拦下的 ' + n + ' 个下载已取消，不会自动重试；如仍需下载请重新点击。');
+      } catch (e) {}
+    }
     // ★ 2026-11-20：后台跟随跳转端点后推回的「隐藏分发域」，已同时写入自动学习黑名单
     if (msg && msg.type === 'sf-resolver-hit') {
       try { showToast('🔎 已识别隐藏分发域名：' + (msg.host || '') + '，已加入下载黑名单'); } catch (e) {}
@@ -3833,8 +4147,111 @@
     } catch (e) {}
   }
 
+  // ★ 2026-11-23：把「用户真实手势」上报给后台（节流 300ms）。
+  //   后台据此区分「用户点的下载」与「页面自己开始的自动下载」，见 background.js 的 checkAutoDownload。
+  //   只发时间戳，不发任何页面内容；pointerdown 覆盖鼠标/触摸，keydown 覆盖键盘回车/空格。
+  // ★ 2026-11-24：手势分「强 / 弱」两级上报（对应截图里的 strongGesture / weakGesture）：
+  //   strong —— 点击/回车真的落在链接或按钮上（<a href> / <button> / [role=button] /
+  //             [download] / 提交按钮），附带该链接的绝对 URL、主机名、文件名；
+  //   weak   —— 其它一切（点空白处、普通按键、滚页面时顺手点的非链接区域）。
+  //   后台只认 strong 为高危下载背书：滚一下页面、点一下空白处不再给静默下载「作证」。
+  let _gestureSentAt = 0;
+  const GESTURE_STRONG_SEL = 'a[href], button, [role="button"], [download], input[type="submit"], input[type="button"]';
+  function _gesturePayload(ev) {
+    // ★ 必须是 let：下面识别到「点在链接/按钮上」时要把它整体换成 strong。
+    //   （曾误写成 const，结果赋值抛 TypeError 被 catch 吞掉，所有强手势被静默降级为弱手势。）
+    let payload = { type: 'sf-gesture', strength: 'weak' };
+    try {
+      let el = null;
+      const t = ev && ev.target;
+      if (ev && ev.type === 'keydown') {
+        // 键盘：以当前焦点元素为准（在链接/按钮上按回车=强），否则算弱
+        const ae = document.activeElement;
+        if (ae && ae.closest) el = ae.closest(GESTURE_STRONG_SEL);
+      } else if (t && t.closest) {
+        el = t.closest(GESTURE_STRONG_SEL);
+        // ★ 很多正规站的下载按钮是 <div class="btn-download"> / <span> 而不是 <a>/<button>，
+        //   只认标签会把它们判成弱手势、导致高危文件被多问一次。这里复用页面上已有的
+        //   isDownloadEntry()（包含「下载」文案、download 类名、文件后缀链接等判据），
+        //   向上最多找 4 层，命中就按强手势处理。注意：只提高「点对了地方」的识别率，
+        //   不给「滚页面 / 点空白」开口子。
+        if (!el) {
+          let n = t, hop = 0;
+          while (n && hop < 4) {
+            try { if (n !== document.body && isDownloadEntry(n)) { el = n; break; } } catch (e) {}
+            n = n.parentElement; hop++;
+          }
+        }
+      }
+      if (!el) return payload;
+      let href = '';
+      try { href = el.getAttribute('href') || el.getAttribute('data-href') || ''; } catch (e) {}
+      // 容器型入口（div/span）本身没有 href：向上/向下找一层真正的链接
+      if (!href) {
+        try {
+          const near = (el.closest && el.closest('a[href]')) || (el.querySelector && el.querySelector('a[href]'));
+          if (near) href = near.getAttribute('href') || '';
+        } catch (e) {}
+      }
+      let abs = '', host = '', file = '';
+      if (href && !/^\s*(javascript:|#)/i.test(href)) {
+        try {
+          const u = new URL(href, location.href);
+          abs = u.href;
+          host = String(u.hostname || '').toLowerCase();
+          const seg = u.pathname.split('/');
+          file = String(seg[seg.length - 1] || '').toLowerCase();
+        } catch (e) {}
+      }
+      // ★ 2026-11-23：给一个「这次点的是不是下载入口」的标记（download 属性 / 文件后缀 /
+      //   isDownloadEntry 判据）。后台只在带这个标记时，才把「点击后发生的跳转」当作
+      //   「用户点下载 → 跳感谢页 → 新页面自动开始下载」的意图依据；普通链接点击不算。
+      let isDl = false;
+      try {
+        if (el.hasAttribute && el.hasAttribute('download')) isDl = true;
+        if (!isDl && href && /\.(exe|msi|zip|rar|7z|dmg|pkg|apk|tar|gz)([?#]|$)/i.test(href)) isDl = true;
+        if (!isDl && typeof isDownloadEntry === 'function' && isDownloadEntry(el)) isDl = true;
+        if (!isDl && el.textContent && /下载|download/i.test(String(el.textContent).slice(0, 40))) isDl = true;
+      } catch (e) {}
+      payload = { type: 'sf-gesture', strength: 'strong', url: abs, host: host, file: file, origin: String(location.origin || ''), dl: isDl };
+    } catch (e) {}
+    return payload;
+  }
+  function installGestureBeacon() {
+    const ping = function (ev) {
+      // ★ 只认「真实用户产生」的事件（isTrusted）。页面脚本自己 a.click() / dispatchEvent
+      //   合成的事件也会冒泡到这里，如果算作手势，流氓站只要先伪造一次点击就能给自己的
+      //   静默下载"背书"（注意：这不会骗过浏览器，isTrusted 恒为 false）。
+      if (ev && ev.isTrusted === false) return;
+      const now = Date.now();
+      if (now - _gestureSentAt < 300) return;
+      _gestureSentAt = now;
+      try {
+        if (chrome.runtime && chrome.runtime.sendMessage) {
+          const payload = _gesturePayload(ev);
+          // click 之后再补一条"强"上报：pointerdown 时某些站的链接还没就位（懒加载/AJAX 换 href），
+          // 而 click 时 href 已是最终值，能提高「同文件」匹配率；节流会自然合并高频点击。
+          chrome.runtime.sendMessage(payload, function () {
+            try { void chrome.runtime.lastError; } catch (e) {}
+          });
+        }
+      } catch (e) {}
+    };
+    try { window.addEventListener('pointerdown', ping, true); } catch (e) {}
+    try { window.addEventListener('click', ping, true); } catch (e) {}
+    try {
+      window.addEventListener('keydown', function (e) {
+        if (e && (e.key === 'Enter' || e.key === ' ')) ping(e);
+      }, true);
+    } catch (e) {}
+  }
+
   // 启动：document_start 时先装硬钩子（此时 body 可能未就绪，run 等 DOM）
   installHardGuards();
+  // ★ 2026-11-23：手势信标（后台自动下载拦截的依据）
+  installGestureBeacon();
+  // ★ 2026-11-23：进入页面即为「分析中」→ 立刻开始给下载入口置灰（DOM 未就绪时自行等 DOMContentLoaded）
+  startAnalyzingDim();
   // ★ 2026-11-22（四）：装「切回前台才提示重判」的惰性监听（只装一次）
   installCloudUpdateLazyWatch();
   // SPA 路由监听（只装一次；与后台 onHistoryStateUpdated 互为双保险）

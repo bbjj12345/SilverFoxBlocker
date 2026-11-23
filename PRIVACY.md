@@ -2,7 +2,7 @@
 
 **SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期：2026-11-21　|　适用版本：v1.9.6（本次修订：**权限与数据范围均无变化**，仍为 7 项 API 权限 + 1 项主机权限；改动仅限「访问正确的页面」官网映射表的数据——补齐同一产品的区域版 / 国际版关联（飞书 ↔ Lark、Steam ↔ 蒸汽平台、抖音 ↔ TikTok、支付宝 ↔ 支付宝国际、银联 ↔ 银联国际）、补全 17 个品牌词的英文/国际版写法（chrome / react / skywork / kwai / wetv / temu / photoshop 等），并合并 8 条同产品重复条目（Aria2、小米商城、微信支付商户、网易 163 邮箱等）。以上全部只是字符串数据，不新增任何网络请求、不改变数据收集范围、不改变拦截判定）
+生效日期：2026-11-23　|　适用版本：v1.10.6（本次修订：**权限没有增减**，仍为 7 项 API 权限 + 1 项主机权限，也没有新增任何第三方、没有新增任何数据外发；变化集中在**下载处置**与一处**本地存储**：① 分析结束且判定安全后，被拦下的下载**不再自动重下**（需你自己重新点一次），分析期间页面上的下载入口会置灰、顶部横幅改为深红警示色；② 新增「每站首次确认」——每个站点第一次下载可执行/压缩/网盘类文件时必须人工确认一次，为此在本机 `storage.local` 新增一份站点名单（`sfSiteFirstSeen`，只有注册域名与时间戳，不上传、180 天过期）；③ 页内授权、强手势时间戳与「待确认下载」改用 `storage.session` 保存（关闭浏览器即清空），仍然只在本机；④ 判定为「用户意图」而放行时，页面左下角显示一条 10 秒自动关闭的轻提示（纯本地 UI）；⑤ 「运行时取链探测」此前只在已判危页面自动运行、**没有开关**，现在补上显式开关（设置 → 拦截行为，默认开），与本文 3.1④ 的「可关闭」表述一致）
 
 ---
 ## 一、概述
@@ -21,6 +21,9 @@
 - 官方域名表、恶意域名、可疑 TLD、话术词表等内置特征库（`rules/iocs.js`）；
 - **六类名单的查表比对**（云端 / 扩展内置 / 自定义，各有黑、白两份）——包括优先级判断、域名后缀回溯、通配符与「主机名/路径」匹配。云端名单同步是一次性 GET，同步之后的判定全在本地；
 - 下载拦截、跳转链追踪、拦截浮层与提示；
+- **下载授权与「用户手势」判定**（2026-11-23 起）：内容脚本在你真实点击 / 回车时向本扩展后台发一条消息（只含「发生了一次点击」的时间戳，以及被点元素上的链接地址、主机名、文件名——用于判断这次下载是不是你点的），后台只在内存 / `storage.session` 里做比对，**不写日志、不上传、不落盘**；页面脚本用 `a.click()` 合成的事件不算手势；
+- **「每站首次确认」名单**（2026-11-23 起）：只在本机记「哪些站点的第一次可执行文件下载已经问过」，见第五节；
+- 判定为「用户意图」而放行时的左下角轻提示（纯本地 UI，10 秒自动关闭）；
 - 社区黑名单的比对（名单下载是一次性的 GET，比对本身全在本地）；
 - 防护统计、界面设置、配置导入导出；
 - 情报查询结果与评分结果的短期内存缓存（10 分钟）；
@@ -41,14 +44,14 @@
 **③ 页面自身的资源解析**
 为识别脚本跳转、内嵌直链、`.txt` 隐藏地址、meta refresh 等伪装投递，扩展会在**你所访问页面的上下文内**，对该页面已引用的资源发起有限的读取（同源或该页面原本就会访问的地址）。这类请求：只用于本地判定；不发往本扩展的运营方；跨域时不携带 Cookie / 登录凭据；不收集、不上传任何信息。
 
-**④ 解析器跟随（「运行时取链」维度，2026-11-20 起，仅对已判危页面）**
+**④ 解析器跟随（「运行时取链探测」，2026-11-20 起，仅对已判危页面，可在设置中关闭）**
 银狐常见的投递方式是「同源跳转端点」：页面上的下载按钮指向本站一个 `/go/`、`download.php?id=…` 之类的地址，真正的载荷域藏在它的 302 跳转里，DOM 上看不到、hover 也看不到。为验证这类端点，扩展会在**已判定为危险、且下载入口已被禁用**的页面上，用一个**不激活的后台标签页**重新打开该端点（每页最多 2 个、5 秒超时、同一地址 1 分钟内只探一次），只观察它最终跳到哪个域名、请求了哪些文件，命中后写入本机「自动学习下载黑名单」。
 
 - **没有新增任何第三方**：请求发往的仍是**该页面自己（同注册域）**的地址，与你自己点一下那个按钮等价；若它跳转到别的域名，那个域名收到的也只是一次普通页面 / 文件请求，扩展不额外附带参数、标识或本地数据。
 - **扩展不上传任何东西**：结果只写进本机 `chrome.storage.local`，不发给作者，也不进任何请求体。
-- **可关闭**：在「设置 → 检测维度」关掉「运行时取链」后，不再创建任何后台标签页、不再发生这类请求。
+- **可关闭**：在「设置 → 拦截行为」关掉「运行时取链探测」后，不再创建任何后台标签页、不再发生这类请求（内容脚本与后台各判一次该开关）。
 
-> 命中任意一份名单时会直接短路判定，上述 RDAP / ICP 请求**不会发生**；④ 只在页面**已判危**之后才触发，关掉「运行时取链」即完全停止。
+> 命中任意一份名单时会直接短路判定，上述 RDAP / ICP 请求**不会发生**；④ 只在页面**已判危**之后才触发，关掉「运行时取链探测」开关即完全停止。
 
 ### 3.2 默认关闭（需要手动开启）
 
@@ -154,6 +157,8 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 | `chrome.storage.sync` | 开关、权重、灵敏度、自定义关键词、界面偏好、情报源配置 | 由**浏览器账号**同步机制决定是否跨设备同步，**不经过作者服务器**；卸载扩展后本机副本被清除 |
 | `chrome.storage.sync` | VirusTotal / Google Safe Browsing / FoxAPI 的 API Key（均为 **AES-GCM 密文**，含随机 salt 与 IV） | 明文只在后台 Service Worker 内短暂解密，内容脚本拿不到；设置页只显示圆点掩码，不回显明文或密文。v1.6.1 及更早版本明文保存的 VT Key 会在打开一次设置页时自动加密迁移（迁移前后台仍兼容明文查询）。三者都只用于向对应服务鉴权，绝不发给作者 |
 | `chrome.storage.local` | 防护统计（拦截/告警计数、近期记录）、OpenPhish 域名数组、PhishDestroy 域名文本、社区名单元数据、自动学习的下载黑名单、连坐域名集合 | 仅本机 |
+| `chrome.storage.local` | 「每站首次确认」名单 `sfSiteFirstSeen`：注册域名 + 最近一次确认时间 | 仅本机。只用来决定「该站这次下载是否要先问一次」，**不含链接、文件名或访问记录**；180 天未再确认自动失效，最多保留 2000 条 |
+| `chrome.storage.session` | 页面级下载授权、「强手势」时间戳（最多 12 条、只留 10 秒内的）、待确认下载队列、本会话的危险标签页 | 存在浏览器的**会话存储**里，关闭浏览器即清空，不落盘、不跨设备、不上传 |
 | `chrome.storage.local` | 自定义信任域名白名单 / 自定义恶意域名黑名单（2026-11-12 起以本地为准） | `storage.sync` 单键上限 8KB（约 550 个域名），超出会**静默写入失败**，故名单改存本地；体积小于 8KB 时仍镜像一份到 sync 以保留跨设备同步，超过则只存本机 |
 | `chrome.storage.local` | `sfCloudWhite` / `sfCloudBlack`（云端名单快照）、`sfCloudListMeta`（同步时间、条数、被丢弃条目及原因）、自定义主题与背景 | 仅本机；由你手动同步产生，云端名单不含任何关于你的信息 |
 | IndexedDB（`sfLocalLists`） | 三份布隆过滤器位图：HaGeZi TIF（约 4.8 MB）、uBlock Badware（约 7 KB）、Dandelion Sprout（约 24 KB） | 仅本机；不含明文域名，离线无法还原名单 |
@@ -209,7 +214,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 | 权限 | 用来做什么 | 为什么必须 | 不授予会怎样 |
 |---|---|---|---|
-| `storage` | `storage.sync`：设置、权重、自定义关键词、三个情报源 API Key（VirusTotal / GSB / FoxAPI，**AES-GCM 密文**）；`storage.local`：自定义黑白名单（默认本地，小体积镜像回 sync）、防护统计、云端名单快照、社区名单、下载黑名单；`storage.session`：本会话内危险标签页与已放行域名 | MV3 的 Service Worker 空闲 30 秒即被回收，所有状态必须落到 storage；否则「记住你的每一次开关」无从实现 | 重启即恢复默认，名单与统计全部丢失 |
+| `storage` | `storage.sync`：设置、权重、自定义关键词、三个情报源 API Key（VirusTotal / GSB / FoxAPI，**AES-GCM 密文**）；`storage.local`：自定义黑白名单（默认本地，小体积镜像回 sync）、防护统计、云端名单快照、社区名单、下载黑名单；`storage.session`：本会话内的危险标签页、页面级下载授权、「强手势」时间戳与待确认下载队列（关闭浏览器即清空） | MV3 的 Service Worker 空闲 30 秒即被回收，所有状态必须落到 storage；否则「记住你的每一次开关」无从实现 | 重启即恢复默认，名单与统计全部丢失 |
 | `unlimitedStorage` | 云端名单镜像、社区名单（PhishDestroy 域名表、HaGeZi 布隆位图、uBlock / Dandelion 位图）、自定义背景 | 这些数据超过扩展默认配额；超限时 `storage.local.set` 会**静默失败**，用户会看到「同步成功但名单没变」 | 开启社区名单后可能写盘失败 |
 | `downloads` | ① 命中黑名单 / 载荷特征时 `chrome.downloads.cancel` 真正阻断下载；② 「银狐急救」中你点击工具时发起下载并指定文件名 | 仅靠页面提示拦不住已经开始的高危下载；急救工具也需要可信下载入口 | 只能提示、不能阻断；急救工具需自行去官网找 |
 | `webNavigation` | 只在顶层框架 `onCommitted` 记录时序：页面开始加载即进入「检测中」，并把「危险页 → 新域名」串成跳转链 | 银狐常见「落地页再跳一次才自动下载」，只有导航事件能追上；等到 DOM 就绪已经晚了 | 瞬间自动下载漏拦、跳转链断裂 |
@@ -249,13 +254,13 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 | Permission | Justification | 中文 |
 |---|---|---|
-| `storage` | Persists user settings, custom allow/block lists, statistics, and the cloud-list snapshot. MV3 service workers are terminated when idle, so state cannot live in memory. No personal data is stored off-device. | 保存设置、自定义名单、统计与云端名单快照（MV3 后台会被回收，状态必须落盘） |
+| `storage` | Persists user settings, custom allow/block lists, statistics, the cloud-list snapshot, and the per-site first-download confirmation list (registrable domain + timestamp only); per-page download grants, gesture timestamps and pending downloads live in session storage and are cleared when the browser closes. MV3 service workers are terminated when idle, so state cannot live in memory. No personal data is stored off-device. | 保存设置、自定义名单、统计、云端名单快照与「每站首次确认」名单（仅注册域名 + 时间戳）；页面授权 / 手势 / 待确认下载存会话存储，关浏览器即清（MV3 后台会被回收，状态必须落盘） |
 | `unlimitedStorage` | Blocklist data (≈140k domains plus a ~4.8 MB Bloom-filter bitmap) exceeds the default storage quota; without it, writes fail silently. | 社区黑名单体积超过默认配额，超限会静默写入失败 |
 | `downloads` | Cancels high-risk downloads (`.exe`/`.msi` payloads) after local detection, and downloads cleanup tools from official vendor domains only when the user clicks. | 取消高危下载；仅在用户点击时从官方域名下载查杀工具 |
 | `webNavigation` | Reads top-level navigation timing to detect a page as soon as it starts loading and to follow redirect chains; used only for local decisions. | 读取顶级导航时序，页面开始加载即检测并追踪跳转链，仅用于本地判定 |
 | `notifications` | Shows a native warning when a risky page or download is blocked, in case the tab is closed or in the background. | 风险页 / 下载被拦时发系统通知，防止标签页已关闭或处于后台 |
 | `alarms` | Schedules the daily refresh of the 5 optional community blocklists (4 alarm groups); MV3 service workers cannot keep timers. | 为可选的社区名单安排每日更新（MV3 无法常驻定时器） |
-| `webRequest` | Read-only, **non-blocking** observation (`onBeforeRequest`, no `webRequestBlocking`) of the single hidden probe tab the extension opens on an already-blocked page, to see which domain a same-origin download redirect endpoint finally lands on. It never blocks, rewrites, or injects headers, and no third-party request is added: the probe loads the page own endpoint, exactly as if the user had clicked it. | 只读、非阻塞地观察扩展自己开的取链探测标签页，看同源跳转端点最终落到哪个域名；不阻断、不改写、不注入请求头，也不新增第三方 |
+| `webRequest` | Read-only, **non-blocking** observation (`onBeforeRequest`, no `webRequestBlocking`) of the single hidden probe tab the extension opens on an already-blocked page, to see which domain a same-origin download redirect endpoint finally lands on. It never blocks, rewrites, or injects headers, and no third-party request is added: the probe loads the page own endpoint, exactly as if the user had clicked it. Can be disabled entirely in Settings → Behavior. | 只读、非阻塞地观察扩展自己开的取链探测标签页，看同源跳转端点最终落到哪个域名；不阻断、不改写、不注入请求头，也不新增第三方 |
 | `host_permissions: <all_urls>` | The content script must analyze any http(s) page the user opens, because phishing domains rotate daily and cannot be enumerated in advance. The permission also lets the extension read public blocklist endpoints that do not send CORS headers. No requests are made because of the permission alone. | 内容脚本需在任意页面实时检测（投放域名每天更换、无法预先枚举），并读取不带 CORS 头的公开名单；权限本身不产生任何请求 |
 | `web_accessible_resources` | Exposes a bundled font (used by the in-page warning overlay) and a static credits JSON to pages; no user data. | 仅暴露打包内的字体与静态鸣谢文件，不含用户数据 |
 | `content_security_policy` | Enforces `script-src 'self'` / `object-src 'self'` (no remote code) and allows HTTPS connections required by the documented endpoints. | 强制不加载远程代码，并允许访问文档中列出的 HTTPS 接口 |
@@ -288,9 +293,11 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## English Summary
 
-**SilverFoxBlocker v1.8.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
+**SilverFoxBlocker v1.10.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
 
 **Automatic requests (on by default, disableable):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`); limited reads of resources already referenced by the page you are visiting for download discovery. Any list hit short-circuits these lookups.
+
+**Download handling (v1.10.x):** high-risk files (`.exe`/`.msi`/`.zip`/`.dmg` and cloud-disk share links) are **not** exempted by allowlists any more. A download that starts without a matching user gesture is paused and a small non-blocking bar offers "keep blocked / continue"; one confirmation authorizes the rest of that page (revoked on navigation or reload), and the **first** executable download from each site must be confirmed once (registrable domain + timestamp kept locally, 180-day expiry, ≤2,000 entries, never uploaded; declining does not record it). Page grants, gesture timestamps and pending downloads live in `chrome.storage.session` and are cleared when the browser closes. When a download is allowed as user intent, a 10-second dismissible notice appears in the bottom-left corner. After a **safe** verdict, previously held downloads are **not** restarted automatically — you click again. The resolver-follow probe (dangerous pages only) now has an explicit on/off switch (Settings → Behavior, on by default).
 
 **Optional requests (off by default):** VirusTotal receives base64url domain/URL IDs; Google Safe Browsing receives the **full page URL** (v4 Lookup); FoxAPI receives the **domain**. All three use your own API key, stored **only as AES-GCM ciphertext** (`v1.salt.iv.ciphertext`); plaintext exists only briefly inside the background service worker, never in storage or page scripts. FoxAPI results never render a banner — they only adjust the local score (`official:false` adds 45 points), and calls are throttled to 1/second with a 10-minute per-domain cache. URLhaus receives domain + page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF, uBlock Origin Badware risks, Dandelion Sprout Anti-Malware) are downloaded as one-way GETs from jsDelivr/GitHub mirrors; the two AdBlock-format lists are reduced to `||domain^` host rules only — IPs, paths, regexes, cosmetic and exception rules are discarded and never executed. VT keys saved as plaintext by older versions are automatically re-encrypted once you open the options page; until then the background still accepts them.
 
@@ -298,9 +305,9 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 **User-initiated uploads:** posting feedback, or clicking "发送白/黑名单到作者邮箱", sends only the text you typed (feedback body + optional contact, or just your domain list; 2000-character cap) to the same Worker, which emails it to the author via Brevo. Those emails include the source **IP**; a Cloudflare KV key (`rate_limit_{IP}_{date}`, 60/day, 24h TTL) is used for rate limiting. Feedback text is not stored in a database, but it is retained by the mail provider and the author's mailbox. Browsing history, page URLs, settings, API keys and statistics are never included. Do not click these buttons if you do not want to share that content.
 
-**Other user-initiated requests:** the version-row "检查更新" button reads only the public latest tag — first from `github.com/…/releases/latest` (via the post-redirect URL), then `api.github.com`, then the `gh-proxy.com` mirror — and compares it locally; nothing is uploaded and no installer is downloaded. Also rescue-tool downloads from 360 / Huorong / Kaspersky (KVRT) / Malwarebytes (AdwCleaner) official hosts, plus ordinary external links (Lanzou update mirror with a clipboard-copied extraction code, SoftcnKiller share page, 123pan, GitHub, GitHub Issues, Afdian) opened in new tabs without injected parameters.
+**Other user-initiated requests:** the version-row "检查更新" button reads only the public latest tag — first from `github.com/…/releases/latest` (via the post-redirect URL), then `api.github.com`, then the `gh-proxy.com` mirror — and compares it locally; nothing is uploaded and no installer is downloaded. Also rescue-tool downloads from 360 / Huorong / Kaspersky (KVRT) / Malwarebytes (AdwCleaner) official hosts, plus ordinary external links (Lanzou update mirror with a clipboard-copied extraction code, SoftcnKiller share page, SilverFoxCleaner share page, 123pan, GitHub, GitHub Issues, Afdian) opened in new tabs without injected parameters.
 
-**Local storage:** settings and custom lists in `chrome.storage.sync` (browser-account sync only, never via our servers), including the three API keys (VirusTotal, Google Safe Browsing, FoxAPI) as AES-GCM ciphertext; statistics, downloaded lists, cloud-list snapshot and metadata in `chrome.storage.local`; HaGeZi's Bloom-filter bitmap (~4.8 MB) plus two much smaller bitmaps for the uBlock and Dandelion lists in IndexedDB. No remote code is loaded; the MV3 CSP is `script-src 'self'; object-src 'self'; connect-src 'self' https:` — note that `connect-src` **allows any HTTPS host** rather than a domain allowlist, so actual destinations are governed by the fixed list in code.
+**Local storage:** settings and custom lists in `chrome.storage.sync` (browser-account sync only, never via our servers), including the three API keys (VirusTotal, Google Safe Browsing, FoxAPI) as AES-GCM ciphertext; statistics, downloaded lists, cloud-list snapshot and metadata, plus the per-site first-download confirmation list, in `chrome.storage.local`; HaGeZi's Bloom-filter bitmap (~4.8 MB) plus two much smaller bitmaps for the uBlock and Dandelion lists in IndexedDB. No remote code is loaded; the MV3 CSP is `script-src 'self'; object-src 'self'; connect-src 'self' https:` — note that `connect-src` **allows any HTTPS host** rather than a domain allowlist, so actual destinations are governed by the fixed list in code.
 
 **Permissions.** The extension requests only `storage`, `unlimitedStorage`, `downloads`, `webNavigation`, `notifications`, `alarms`, `webRequest` (read-only, non-blocking observation of the extension own probe tab) and `<all_urls>` — nothing else (no `cookies`, `history`, `tabs`, `bookmarks`, `declarativeNetRequest`/`webRequestBlocking`, `scripting`, `nativeMessaging`). Each permission maps to a user-visible feature: persisting settings and lists; storing blocklists that exceed the default quota; cancelling malicious downloads; reading top-level navigation timing; showing a native warning; scheduling daily community-list refreshes; and injecting the detection content script into any http(s) page (required because phishing domains are rotated daily). A ready-to-paste justification for every permission is in section 8.5 above.
 
