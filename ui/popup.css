@@ -394,3 +394,42 @@ html:not(.theme-pixel).theme-light body::before { opacity: .5; filter: blur(2px)
 .site-reasons { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
 .site-reasons .reason { font-size: calc(11px * var(--sf-scale)); opacity: .72; line-height: 1.4; }
 .site-reasons .reason.more { opacity: .5; }
+
+/* ============================================================
+   个性化 · 明暗模式（2026-11-23，与设置页共用 theme-mode.js）
+   弹窗较窄：四个按钮横排一行，字号略小；语义色（防护中/高危/可疑）不参与反转。
+   ============================================================ */
+.mode-switch { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mode-btn {
+  padding: 7px 2px; border-radius: 9px; cursor: pointer;
+  font-family: inherit; font-size: calc(10.5px * var(--sf-scale)); font-weight: 700; line-height: 1;
+  color: rgba(196,206,224,.72);
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.10);
+  transition: background .16s var(--sf-ease-out), color .16s var(--sf-ease-out), border-color .16s, transform .12s;
+}
+.mode-btn:hover { background: rgba(125,180,255,.12); color: #eaf2ff; border-color: rgba(125,180,255,.32); }
+.mode-btn:active { transform: scale(.97); }
+.mode-btn.active { color: #06101f; border-color: transparent; background: linear-gradient(135deg, #7db4ff, #a08cff); box-shadow: 0 6px 16px rgba(125,160,255,.26); }
+
+/* 浅色补漏：浅底上过淡的文字（状态色本身不动） */
+html.theme-light .sub { color: rgba(27,35,51,.62); }
+html.theme-light .site-label { color: rgba(27,35,51,.68); }
+html.theme-light .site-score.skip { color: #5a6b88; -webkit-text-fill-color: #5a6b88; }
+html.theme-light .site-level.lvl-unknown { color: #5a6b88; }
+html.theme-light .recent-list li { border: 1px solid rgba(20,34,64,.06); }
+html.theme-light .recent-list .s { color: rgba(27,35,51,.62); }
+html.theme-light .recent-more { color: rgba(27,35,51,.68); }
+html.theme-light .recent .sec-title { color: rgba(27,35,51,.7); }
+html.theme-light .settings-btn { color: #fff; }
+html.theme-light .mode-btn { color: rgba(27,35,51,.72); background: rgba(20,34,64,.05); border-color: rgba(20,34,64,.12); }
+html.theme-light .mode-btn:hover { color: #1b2333; background: rgba(58,123,240,.10); border-color: rgba(58,123,240,.30); }
+html.theme-light .mode-btn.active { color: #fff; background: linear-gradient(135deg, #3a7bf0, #7a5cff); }
+
+/* 2026-11-23 浅色补漏：底部「一键上报网站」与展开后的类型菜单（原样式是白字 + 白色半透明底，
+   在浅色背景上几乎不可见） */
+html.theme-light .report-btn { color: #3a4a66; background: rgba(20,34,64,.05); border-color: rgba(20,34,64,.14); }
+html.theme-light .report-btn:hover { color: #1b2333; background: rgba(58,123,240,.10); border-color: rgba(58,123,240,.32); }
+html.theme-light .report-menu { background: rgba(255,255,255,.92); border-color: rgba(20,34,64,.12); box-shadow: 0 12px 30px rgba(40,60,110,.14); }
+html.theme-light .report-menu-title { color: rgba(27,35,51,.7); }
+html.theme-light .report-item { color: #fff; }

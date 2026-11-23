@@ -64,6 +64,14 @@
         </button>
       </nav>
 
+      <!-- ★ 2026-11-23：个性化 · 明暗模式（四个文字按钮；黑暗为默认，明亮/跟随系统/反转系统见 theme-mode.js） -->
+      <div class="mode-switch" id="modeSwitch" role="group" aria-label="界面明暗模式">
+        <button type="button" class="mode-btn" data-mode="dark" aria-pressed="true">黑暗</button>
+        <button type="button" class="mode-btn" data-mode="light" aria-pressed="false">明亮</button>
+        <button type="button" class="mode-btn" data-mode="system" aria-pressed="false">跟随系统</button>
+        <button type="button" class="mode-btn" data-mode="system-invert" aria-pressed="false">反转系统</button>
+      </div>
+
       <div class="side-foot" data-page-node-id="IO99sfsOJDzMqQ4peye3zi">
         <span class="mini-pill on" id="masterPill" data-page-node-id="Dyp9jDnKs1TJRRvRDxaR86">防护中</span>
         <span class="ver" id="verTop" data-page-node-id="xuNk59EQj77jDSZgBCbNGk">v1.0.0</span>
@@ -153,7 +161,7 @@
                 <svg viewBox="0 0 24 24" data-page-node-id="u9GzjPliij5vouQdkN3LVq"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" data-page-node-id="ZWHrTsY5rpN5PfpdIPKcfj"/><path d="M7.5 7.5l9 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" data-page-node-id="C2p1KFP2cQ8cb64Rs7jDvc"/></svg>
               </span>
               <span class="rc-t" data-page-node-id="BpmzdKrswQSD2aYIMcziG7">自定义恶意域名黑名单</span>
-              <span class="rc-d" data-page-node-id="WbYsBTlFwPiOeoI5UuYdSK">命中直接判危</span>
+              <span class="rc-d" data-page-node-id="WbYsBTlFwPiOeoI5UuYdSK">命中直接判危；同页可设「例外」放行被误伤的站点</span>
             </button>
           </div>
         </div>
@@ -479,6 +487,12 @@
             <div class="hint list-mail-note" data-page-node-id="SF_MAIL_BLACK_NOTE">只发送上方输入框里的域名（每行一个），不会上传浏览记录。作者复核后会择优并入云端黑名单。</div>
             <div class="hint list-mail-msg" id="mailBlackMsg" hidden></div>
           </div>
+          <!-- ★ 2026-11-23：用户自定义「黑名单例外」 -->
+          <div class="field">
+            <label>自定义黑名单例外（命中的域名即便在上面的自定义黑名单里也不拦截；支持 <code>*</code> 与 <code>?</code> 通配符）</label>
+            <textarea id="exceptionDomains" placeholder="每行一个域名，例如：&#10;bbs.example.com"></textarea>
+            <div class="hint">用来拯救「被自己填错的黑名单误伤」的站点，写得比黑名单更具体即可。优先级：云端例外 &gt; 云端黑名单 &gt; 扩展内置例外 &gt; 扩展内置黑名单 &gt; <b>自定义例外</b> &gt; 自定义黑名单 &gt; 三档白名单。<strong>因此它只能推翻自定义黑名单</strong>：命中云端或扩展内置黑名单的站点，自定义例外不生效（防止钓鱼站诱导用户点一次「信任」就突破防线）。写法与白名单一致：精确域名 / 后缀（子域）/ 通配，<code>*.foo.com</code> 等价于 <code>foo.com</code>，不能通配顶级域；不限条数。</div>
+          </div>
         </div>
       </section>
 
@@ -679,7 +693,7 @@
                以前只在控制台 console.warn 里出现，等于对用户静默；这里把原文 + 原因直接列出来，
                让用户/作者能照着自己改名单。默认隐藏，无丢弃时不占位。 -->
           <div class="about-row" id="cloudDropRow" data-page-node-id="SF_CLOUD_DROP_ROW" style="display:none"><span class="ak">未生效条目</span><span class="av" id="cloudDropDetail" data-page-node-id="SF_CLOUD_DROP" style="font-weight:400;opacity:.75;word-break:break-all"></span></div>
-          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75"><b>云端黑名单、云端白名单</b>，以及「规则与名单」里的<b>两个自定义名单</b>都支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配。<b>顶级域通配</b>目前只对<b>云端黑名单</b>开放（<code>*-deepseek-*.*</code> 这类），并要求「除 TLD 外至少保留 4 个字面字符」，<code>*.*</code> / <code>*a*.*</code> / <code>foo.*</code> 仍会被丢弃；TLD 位的 <code>*</code> 同时覆盖多级后缀（<code>com.cn</code> / <code>co.uk</code>），所以 <code>*.*deepseek-*.*</code> 能拦 <code>app.vip-deepseek-offical.com.cn</code>；云端白名单、内置名单、两个自定义名单维持禁止。<br>另支持<b>路径条目</b>（云端黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；<b>路径条目也不限条数</b>。<br><b>官网映射</b>（<code>correct_sites</code>，只服务「访问正确的页面」按钮）不支持通配：官网必须是一个确定的主机名，写 <code>*</code> 或 <code>?</code> 会被丢弃。<br>2026-11-18 起，一条映射可以写<b>多个站点</b>（<code>sites</code> 数组，单条最多 8 个），也支持<b>链接级页面</b>（带路径的地址，如 GitHub Releases）与每个站点的自定义文案：拦截后统一先进说明页，由说明页把这些入口逐条列出。</span></div>
+          <div class="about-row" data-page-node-id="SF_CLOUD_WILD_ROW"><span class="ak">通配支持</span><span class="av" style="font-weight:400;opacity:.75"><b>云端黑名单、云端白名单</b>，以及「规则与名单」里的<b>三份自定义名单（白名单 / 黑名单 / 例外）</b>都支持通配符 <code>*</code> 与 <code>?</code>（如 <code>*web.cdn-deepseek.com</code>）。写法：<code>*</code> 匹配同一级域名内的任意字符（<code>*web.cdn-deepseek.com</code> 可命中 729web/893web），<code>*.foo.com</code> 等价于 <code>foo.com</code>；不支持跨级通配。<b>顶级域通配</b>目前只对<b>云端黑名单</b>开放（<code>*-deepseek-*.*</code> 这类），并要求「除 TLD 外至少保留 4 个字面字符」，<code>*.*</code> / <code>*a*.*</code> / <code>foo.*</code> 仍会被丢弃；TLD 位的 <code>*</code> 同时覆盖多级后缀（<code>com.cn</code> / <code>co.uk</code>），所以 <code>*.*deepseek-*.*</code> 能拦 <code>app.vip-deepseek-offical.com.cn</code>；云端白名单、云端例外、内置名单、三份自定义名单维持禁止。<br>另支持<b>路径条目</b>（云端黑白名单都可用）：写 <code>wwavz.lanzout.com/b01gigjayb</code> 表示只对该链接及其子路径生效（前缀须落在 <code>/</code> 边界，<code>/b01gigjayb2</code> 不命中），只比对 pathname、忽略 <code>?</code> 与 <code>#</code>；<b>路径条目也不限条数</b>。<br><b>官网映射</b>（<code>correct_sites</code>，只服务「访问正确的页面」按钮）不支持通配：官网必须是一个确定的主机名，写 <code>*</code> 或 <code>?</code> 会被丢弃。<br><b>三层例外</b>（2026-11-23）：云端例外 &gt; 云端黑名单 &gt; 扩展内置例外 &gt; 扩展内置黑名单 &gt; 自定义例外 &gt; 自定义黑名单 &gt; 三档白名单。例外同样支持精确 / 后缀 / 通配 / 路径（云端例外），但<b>不能通配顶级域</b>——它是放行侧，一条写宽的例外等于给半个互联网免检。<br>2026-11-18 起，一条映射可以写<b>多个站点</b>（<code>sites</code> 数组，单条最多 8 个），也支持<b>链接级页面</b>（带路径的地址，如 GitHub Releases）与每个站点的自定义文案：拦截后统一先进说明页，由说明页把这些入口逐条列出。</span></div>
         </div>
 
         <!-- 反馈与建议：两个通道 —— 打开预填的 GitHub Issues 新建页，或经自建 Worker 代发邮件到作者邮箱。
@@ -809,6 +823,8 @@
   <script src="../rules/liststore.js"></script>
   <script src="../crypto-helper.js"></script>
   <script src="feedback-config.js?v=20261102"></script>
+  <!-- ★ 2026-11-23：明暗模式控制器需先于 options.js 执行（applyAppearance 会读取 isLight） -->
+  <script src="theme-mode.js?v=20261123"></script>
   <script src="options.js?v=20261122b"></script>
 </body>
 </html>

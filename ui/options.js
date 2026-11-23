@@ -47,6 +47,10 @@ const DEFAULTS = {
   sensitivity: 'medium',
   fontMode: 'system',   // 'system' | 'smiley'
   theme: 'dark',        // 'dark' | 'light'（旧字段，兼容升级；新逻辑以 themePalette + themeLight 为准）
+  // ★ 2026-11-23：明暗模式（四选一）——由 theme-mode.js 统一接管并落到 <html class="theme-light">。
+  //   'dark' 黑暗（默认，沿用既有深色）｜'light' 明亮｜'system' 跟随系统｜'system-invert' 反转系统。
+  //   与 themeLight 的关系：colorMode 优先，applyAppearance() 以 SFThemeMode.isLight() 为准。
+  colorMode: 'dark',
   themePalette: 'classic', // 'classic' | 'gold' | 'neon' | 'mist' | 'space' | 'pixel'(隐藏彩蛋)
   pixelUnlocked: false,   // Pixel 主题为隐藏彩蛋，解锁后才在主题网格显示/生效
   material: 'frosted',  // 'frosted'(磨砂玻璃，默认) | 'liquid'(琉声液态玻璃)；Pixel 主题下强制 frosted
@@ -95,7 +99,9 @@ const DEFAULTS = {
     execDownload: true, cloudDiskDist: true, obfuscatedJs: true, vmDetection: true,
     socialEngineering: true, fakeOfficial: true, redirectIframe: true, domainStructure: true
   },
-  allowlist: [], customKeywords: [], customBadDomains: []
+  allowlist: [], customKeywords: [], customBadDomains: [],
+  // ★ 2026-11-23：用户自定义「黑名单例外」（只能推翻自定义黑名单）
+  exceptionDomains: []
 };
 
 // Google Safe Browsing Key 加密存储相关 UI 状态
@@ -209,7 +215,10 @@ function applyAppearance(instant) {
   const root = document.documentElement;
   const activeFont = (document.querySelector('.font-opt.active') || {}).dataset;
   const fontMode = (activeFont && activeFont.font) || 'system';
-  let themeLight = ($('themeLight') && $('themeLight').checked) || false;
+  // 2026-11-23：原实现只读一个页面上并不存在的 themeLight 复选框（恒为 false），在此保留作兜底分支。
+  // let themeLight = ($('themeLight') && $('themeLight').checked) || false;
+  let themeLight = ($('themeLight') && $('themeLight').checked) ||
+    ((window.SFThemeMode && SFThemeMode.isLight) ? SFThemeMode.isLight() : false);
   // 外观主题：经典保持无额外类（沿用 :root 默认配色）；其余调色板挂对应 html.theme-* 类
   const activeTheme = (document.querySelector('.theme-opt.active') || { dataset: {} }).dataset;
   const palette = (activeTheme && activeTheme.palette) || 'classic';
@@ -221,7 +230,10 @@ function applyAppearance(instant) {
   const customTheme = customMatch ? customThemes.find(function (x) { return String(x.id) === customMatch; }) : null;
   const ct = (customTheme && customTheme.theme) ? customTheme.theme : null;
   root.classList.toggle('font-smiley', fontMode === 'smiley');
-  root.classList.toggle('theme-light', themeLight || (ct && !!ct.themeLight));
+  // 2026-11-23：旧行——themeLight 与自定义主题的 themeLight 二选一，无法表达「跟随系统」。
+  // root.classList.toggle('theme-light', themeLight || (ct && !!ct.themeLight));
+  // 新逻辑：明暗模式（colorMode）优先级最高；只有控制器缺席时才回退到旧的自定义主题开关。
+  root.classList.toggle('theme-light', themeLight || (!(window.SFThemeMode) && ct && !!ct.themeLight));
   root.classList.toggle('theme-gold', palette === 'gold');
   root.classList.toggle('theme-neon', palette === 'neon');
   root.classList.toggle('theme-mist', palette === 'mist');
@@ -237,7 +249,11 @@ function applyAppearance(instant) {
   // 自定义背景：写入 body 固定背景层（Pinned 背景，模糊压暗保证文字可读；Pixel 主题下也生效）
   const bg = (settings && settings.bgImage) || '';
   if (bg) {
-    document.body.style.backgroundImage = 'linear-gradient(rgba(8,12,24,.55), rgba(8,12,24,.55)), url(' + bg + ')';
+    // 2026-11-23：旧行固定用深色蒙层，浅色模式下会把页面压回深色；改为按当前明暗取值。
+    // document.body.style.backgroundImage = 'linear-gradient(rgba(8,12,24,.55), rgba(8,12,24,.55)), url(' + bg + ')';
+    const _bgMask = (window.SFThemeMode && SFThemeMode.isLight && SFThemeMode.isLight())
+      ? 'rgba(255,255,255,.62)' : 'rgba(8,12,24,.55)';
+    document.body.style.backgroundImage = 'linear-gradient(' + _bgMask + ', ' + _bgMask + '), url(' + bg + ')';
     document.body.style.backgroundSize = 'cover';
     document.body.style.backgroundPosition = 'center';
     document.body.style.backgroundAttachment = 'fixed';
@@ -1324,6 +1340,8 @@ function bindControls(settings) {
   $('allowlist').value = (settings.allowlist || []).join('\n');
   $('customKeywords').value = (settings.customKeywords || []).join('\n');
   $('customBadDomains').value = (settings.customBadDomains || []).join('\n');
+  // ★ 2026-11-23：例外名单文本框（旧版 HTML 里没有该控件时跳过，避免空引用）
+  if ($('exceptionDomains')) $('exceptionDomains').value = (settings.exceptionDomains || []).join('\n');
 
   applyAppearance(true);
 }
@@ -1688,7 +1706,9 @@ async function collectSettings() {
     weights,
     allowlist: splitLines($('allowlist').value),
     customKeywords: splitLines($('customKeywords').value),
-    customBadDomains: splitLines($('customBadDomains').value)
+    customBadDomains: splitLines($('customBadDomains').value),
+    // ★ 2026-11-23：例外名单（只能推翻自定义黑名单）
+    exceptionDomains: $('exceptionDomains') ? splitLines($('exceptionDomains').value) : []
   };
 }
 
@@ -1784,7 +1804,8 @@ function bindRulesIO() {
     //   只读 sync 会导出「升级前的那份旧名单」（甚至空数组）。
     getSettings().then((s) => {
       const payload = { app: 'silverfox-guard', type: 'rules', version: '1.5.3', exportedAt: Date.now(),
-        allowlist: s.allowlist || [], customKeywords: s.customKeywords || [], customBadDomains: s.customBadDomains || [] };
+        allowlist: s.allowlist || [], customKeywords: s.customKeywords || [], customBadDomains: s.customBadDomains || [],
+        exceptionDomains: s.exceptionDomains || [] };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1806,8 +1827,10 @@ function bindRulesIO() {
           if (Array.isArray(data.allowlist)) patch.allowlist = data.allowlist;
           if (Array.isArray(data.customKeywords)) patch.customKeywords = data.customKeywords;
           if (Array.isArray(data.customBadDomains)) patch.customBadDomains = data.customBadDomains;
+          // ★ 2026-11-23：例外名单随规则一起导出 / 导入
+          if (Array.isArray(data.exceptionDomains)) patch.exceptionDomains = data.exceptionDomains;
           if (!Object.keys(patch).length) { alert('文件中没有可导入的白名单 / 规则数据。'); return; }
-          if (!confirm('导入将覆盖当前「自定义信任域名白名单 / 自定义风险关键词 / 自定义恶意域名黑名单」三项内容，确定继续？')) return;
+          if (!confirm('导入将覆盖当前「自定义信任域名白名单 / 自定义风险关键词 / 自定义恶意域名黑名单 / 自定义黑名单例外」四项内容，确定继续？')) return;
           // ★ 2026-11-12：导入同样要把域名名单写进 storage.local（sync 单键 8KB 会截断大名单）
           if (hasStorage()) {
             const all = Object.assign({}, patch);
@@ -1823,6 +1846,7 @@ function bindRulesIO() {
               if ($('allowlist') && Array.isArray(all.allowlist)) $('allowlist').value = all.allowlist.join('\n');
               if ($('customKeywords') && Array.isArray(patch.customKeywords)) $('customKeywords').value = patch.customKeywords.join('\n');
               if ($('customBadDomains') && Array.isArray(all.customBadDomains)) $('customBadDomains').value = all.customBadDomains.join('\n');
+              if ($('exceptionDomains') && Array.isArray(all.exceptionDomains)) $('exceptionDomains').value = all.exceptionDomains.join('\n');
               showToast();
             };
             const writeSync = function () { chrome.storage.sync.set(patch, after); };
@@ -2793,6 +2817,10 @@ const SF_CLOUD_KEY_BLACK = 'sfCloudBlack';
 //   供拦截浮层的「访问正确的页面」按钮使用。与黑白名单分开存：它不参与任何放行/拦截判定，
 //   结构也不同（对象数组，不是字符串数组），混在 sfCloudWhite 里会把 analyze 端的名单洗坏。
 const SF_CLOUD_KEY_CORRECT = 'sfCloudCorrect';
+// ★ 2026-11-23：云端「例外」（whitelist.json 的 exceptions）——优先级最高的放行层。
+//   与 correct_sites 一样是随白名单一起下发的附加字段，但它**参与判定**（可推翻云端黑名单），
+//   所以单独一个键，注入给 analyzer 的 registerCloudException（整体覆盖，空数组＝没有例外）。
+const SF_CLOUD_KEY_EXCEPTION = 'sfCloudException';
 const SF_CLOUD_META_KEY = 'sfCloudListMeta';
 
 // ---------------------------------------------------------------------------
@@ -2874,7 +2902,7 @@ const CLOUD_DROP_REASON = {
   'suffix-malformed': '`*.` 后缀写法不合法',
   'need-two-labels': '至少要有两级域名',
   // 2026-11-12：云端黑名单已放开 TLD 通配，本原因码现在只出现在另外五份名单上。
-  'tld-wildcard': '该名单不允许通配顶级域（仅云端黑名单支持）',
+  'tld-wildcard': '该名单不允许通配顶级域（仅云端黑名单支持；例外属放行侧，一律不支持）',
   'bad-length': '长度不合法',
   'empty-label': '存在空标签',
   'bad-syntax': '无法编译为正则',
@@ -3068,7 +3096,10 @@ function setCloudStatus(text) {
 // 旧：// 2026-11-22：末尾新增 wildSuffixB —— 黑名单里「被归一为整站后缀」的通配条数，
 // 旧：//   只用于括号内的双口径说明（通配 5 条 = 4 条通配符 + 1 条「*.」整站后缀）。
 // 旧：function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source, correctN, wildSuffixB) {
-function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source, correctN) {
+// function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source, correctN) {
+// ★ 2026-11-23：新增第 11 个参数 excN（云端例外条数）；旧的第 11 个参数 wildSuffixB 早在
+//   2026-11-22 口径合并时就已删除，这里正好占用同一个位置，调用方改动最小。
+function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, source, correctN, excN) {
   // 通配条目单独点出来：否则用户写完 `*web.cdn-deepseek.com` 只看到"黑名单 1 条"，
   // 无法判断那条到底是被当成普通域名（永不命中）还是被当成规则收录了。
   // 2026-11-09：路径条目（主机名/路径）同理——只对特定链接生效，必须让用户看得见。
@@ -3094,6 +3125,9 @@ function cloudCountsText(w, b, bw, ignoredW, ignoredB, unchanged, pathB, pathW, 
   if (ignoredW) s += '；已忽略白名单 ' + ignoredW + ' 条（格式不合法）';
   // 官网补录单独报一条：它既不是域名也不是路径，混进黑白条数里会让人以为名单凭空变多
   if (correctN) s += '；云端官网映射 ' + correctN + ' 条';
+  // ★ 2026-11-23：云端例外同理单列 —— 它是「可推翻黑名单的放行规则」，与白名单语义不同，
+  //   混进白名单条数会让用户以为只是普通信任域名。
+  if (excN) s += '；云端例外 ' + excN + ' 条';
   // 只有走了备用通道才标注来源：默认直连时不必让用户看到技术细节
   if (source && source !== '云端接口') s += '（数据源：' + source + '）';
   return s;
@@ -3156,16 +3190,18 @@ function refreshCloudListStatus() {
   const dropRow = $('cloudDropRow');
   const hideDrops = function () { if (dropRow) dropRow.style.display = 'none'; };
   if (!hasStorageLocal()) { el.textContent = '未同步（当前环境无扩展存储）'; hideDrops(); return; }
-  chrome.storage.local.get({ [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_KEY_CORRECT]: [], [SF_CLOUD_META_KEY]: {} }, (o) => {
+  chrome.storage.local.get({ [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_KEY_CORRECT]: [], [SF_CLOUD_KEY_EXCEPTION]: [], [SF_CLOUD_META_KEY]: {} }, (o) => {
     const w = (o[SF_CLOUD_KEY_WHITE] || []).length;
     // 官网补录条数：老快照没有这个键时退回 0，不影响黑白名单的既有展示
     const cN = (o[SF_CLOUD_KEY_CORRECT] || []).length;
+    // ★ 2026-11-23：云端例外条数（老快照没有这个键时同样退回 0）
+    const eN = (o[SF_CLOUD_KEY_EXCEPTION] || []).length;
     const b = (o[SF_CLOUD_KEY_BLACK] || []).length;
     const m = o[SF_CLOUD_META_KEY] || {};
     const t = Math.max((m.white && m.white.updated) || 0, (m.black && m.black.updated) || 0);
     // 两份名单都为空但存在同步元数据 → 云端确实同步过、只是内容为空，
     //   报「未同步」会让用户以为没生效（尤其此时还可能有被忽略的条目要展示）。
-    if (!w && !b && !cN && !t) { el.textContent = '未同步'; hideDrops(); return; }
+    if (!w && !b && !cN && !eN && !t) { el.textContent = '未同步'; hideDrops(); return; }
     const mb = m.black || {};
     const mw = m.white || {};
     // 通配数 / 忽略数优先取同步时记下的元数据；老快照没有这两个字段时回退到现场统计。
@@ -3184,9 +3220,11 @@ function refreshCloudListStatus() {
       // 刷新后也要看得出上次是走备用通道拿到的（否则用户以为一直直连成功）
       (mw.source && mw.source !== '云端接口') ? mw.source
         : ((mb.source && mb.source !== '云端接口') ? mb.source : ''),
-      (mw.correct != null ? mw.correct : cN)
+      (mw.correct != null ? mw.correct : cN),
       // 旧（2026-11-22 早先版本）：第 11 个实参是 mb.wildSuffix（整站后缀条数），已随口径合并删除。
       // 旧：(mb.wildSuffix || 0)
+      // ★ 2026-11-23：第 11 个实参改为「云端例外条数」
+      (mw.exceptions != null ? mw.exceptions : eN)
     );
     // 未生效条目的明细（原文 + 原因）直接列在下面：此前只在 console 里，用户看不到
     // 旧：白名单里含 * / ? 的条目一律列为「不会生效」的杂项；2026-11-11 起白名单也支持通配，
@@ -3332,6 +3370,13 @@ async function fetchCloudList(type) {
       // ★ 2026-11-12：白名单 JSON 除 domains 外还可带 correct_sites（品牌词 → 正确官网），
       //   两份数组互不影响：extractCloudArray 只认 domains，这里单独抽官网补录。
       const correct = isWhite ? normalizeCloudCorrect(json && json.correct_sites) : [];
+      // ★ 2026-11-23：白名单 JSON 还可带 exceptions（云端例外，可推翻云端黑名单）。
+      //   与 domains 走同一套清洗（sanitizeCloudDomains），但独立一份结果：
+      //   例外条目全被丢弃时不中止同步 —— 它只是「少了一层兜底」，不该拖累黑白名单落盘。
+      const excRes = isWhite
+        ? normalizeCloudListEx({ domains: (json && Array.isArray(json.exceptions)) ? json.exceptions : [] },
+          { allowWild: true, listKind: 'cloudException' })
+        : { list: [], dropped: [], wild: [] };
       const raws = extractCloudArray(json);
       // 结构都认不出来（例如 Worker 返回了 {error:...}）→ 换通道，别写空名单
       if (!raws) throw new Error('返回的结构无法识别（找不到域名数组）');
@@ -3350,6 +3395,9 @@ async function fetchCloudList(type) {
       // 原本就是空数组 → 允许（例如白名单暂时清空），状态行会显示 0 条，不会被误解
       r.source = c.name;
       r.correct = correct;
+      // 云端例外：真正生效的条目 + 被丢弃明细（与白名单同源）
+      r.exceptions = excRes.list || [];
+      r.excDropped = excRes.dropped || [];
       // Worker 会在响应头里注明这份名单最终取自 GitHub 还是 Gitee 镜像，
       // 转发到状态行（「数据源：云端接口·Gitee」），否则源站切换了用户完全看不出来。
       if (c.name === '云端接口') {
@@ -3398,7 +3446,7 @@ async function updateCloudLists(btn) {
     const black = lists[1];
     const cur = await new Promise((resolve) => {
       chrome.storage.local.get({
-        [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_KEY_CORRECT]: [], [SF_CLOUD_META_KEY]: {}
+        [SF_CLOUD_KEY_WHITE]: [], [SF_CLOUD_KEY_BLACK]: [], [SF_CLOUD_KEY_CORRECT]: [], [SF_CLOUD_KEY_EXCEPTION]: [], [SF_CLOUD_META_KEY]: {}
       }, resolve);
     });
     // 镜像覆盖：云端这份直接替换旧快照（不是并集），云端删掉的条目才会真正失效
@@ -3422,6 +3470,8 @@ async function updateCloudLists(btn) {
     // 官网补录是对象数组，sameList 只比字符串；用「序列化后逐字比较」等价实现，
     //   顺序也算变化（云端重排同样没必要写盘，与黑白名单口径一致）。
     const sameC = JSON.stringify(cur[SF_CLOUD_KEY_CORRECT] || []) === JSON.stringify(white.correct || []);
+    // ★ 2026-11-23：云端例外同样按「序列化逐字比较」（字符串数组，顺序也算变化）
+    const sameE = JSON.stringify(cur[SF_CLOUD_KEY_EXCEPTION] || []) === JSON.stringify(white.exceptions || []);
     const dw = diff(cur[SF_CLOUD_KEY_WHITE], white.list);
     const db = diff(cur[SF_CLOUD_KEY_BLACK], black.list);
     const now = Date.now();
@@ -3435,6 +3485,8 @@ async function updateCloudLists(btn) {
       added: dw.added, removed: dw.removed, wild: white.wild.length, dropped: white.dropped.length,
       paths: white.paths || 0, drops: white.dropped.slice(0, 40),
       correct: (white.correct || []).length,
+      // ★ 2026-11-23：云端例外条数（状态行展示用；0 时不显示）
+      exceptions: (white.exceptions || []).length,
       source: white.source || '云端接口'
     };
     meta.black = {
@@ -3451,6 +3503,8 @@ async function updateCloudLists(btn) {
     if (!sameW) payload[SF_CLOUD_KEY_WHITE] = white.list;
     // 官网补录与白名单同源同批，但独立成键：任何一份名单单独变化都不影响另一份的落盘判断
     if (!sameC) payload[SF_CLOUD_KEY_CORRECT] = white.correct || [];
+    // ★ 2026-11-23：云端例外与白名单同源同批，同样独立成键（单独变化不影响其它名单落盘）
+    if (!sameE) payload[SF_CLOUD_KEY_EXCEPTION] = white.exceptions || [];
     if (!sameB) payload[SF_CLOUD_KEY_BLACK] = black.list;
     await new Promise((resolve) => {
       chrome.storage.local.set(payload, resolve);
@@ -3472,6 +3526,8 @@ async function updateCloudLists(btn) {
       (white.correct || []).length
       // 旧（2026-11-22 早先版本）：第 11 个实参是 black.wildSuffix，口径合并后删除。
       // 旧：black.wildSuffix || 0
+      // ★ 2026-11-23：第 11 个实参改为云端例外条数
+      , (white.exceptions || []).length
     ));
     // 旧（2026-11-22 早先版本）：曾额外打印「其中整站后缀 N」；口径合并后回到单一通配数。
     // 旧：console.log('[云端名单] 黑', black.list.length, '条（通配', black.wild.length,

@@ -18,6 +18,7 @@
   // 判定语义（与派生前完全一致）：
   //   WHITELIST_CATALOG → OFFICIAL_DOMAINS → 精确 + 子域后缀命中即「早期退出」判安全，永不拦截
   //   BLACKLIST_CATALOG → KNOWN_BAD_DOMAINS → 命中即判 danger，永不豁免
+  //   EXCEPTION_DOMAINS → 内置「黑名单例外」→ 可推翻内置黑名单，不能推翻云端黑名单（2026-11-23）
   //
   // ============ 通配符写法（2026-11-11 新增）============
   // 两个目录的域名串里都可以直接写通配，由 analyzer.js 的 _splitBuiltinList 编译成主机名正则：
@@ -2457,6 +2458,20 @@
   const OFFICIAL_DOMAINS = _catalogFlatten(WHITELIST_CATALOG, [], DOMAIN_CATALOG_INDEX);
   const KNOWN_BAD_DOMAINS = _catalogFlatten(BLACKLIST_CATALOG, [], Object.create(null));
 
+  // ---------- 内置「黑名单例外」（2026-11-23）----------
+  // 三层例外中的第二层，判定优先级（自高到低）：
+  //   ① 云端例外  ② 云端黑名单  ③ 内置例外  ④ 内置黑名单  ⑤ 用户例外  ⑥ 用户自定义黑名单
+  // 语义：命中本表的主机名，即便同时命中**内置黑名单**也放行；但**不能**推翻云端黑名单
+  //   （云端黑名单是远端可变数据，优先级更高；要推翻它只能用云端例外，由作者在云端下发）。
+  // 用途：内置黑名单（BLACKLIST_CATALOG）里出现「误伤已知正规站」的硬冲突时，把它写在这里，
+  //   随发版一起生效，不必等云端下发。日常为空数组即为「当前没有已知冲突」。
+  // 写法与内置白名单一致：精确主机名或子域后缀；可写 `*` / `?`（护栏同 builtinWhite）：
+  //   `*` 只吃同一标签内的字符，`?` 吃单个非点字符，`*.foo.com` 归一为后缀条目，
+  //   TLD 位禁通配（`*.com` 不生效）。条目会在 analyzer 里编译成与黑名单同构的匹配表。
+  const EXCEPTION_DOMAINS = [
+    // 例：'download.example-official.com',
+  ];
+
   // 域名 → { cat, item }（精确或父域命中）；未收录返回 null。
   // ⚠️ 通配条目在本索引里只是一个字面 key，实际命中的子域查不到分类（返回 null）。
   //   这是有意的：分类只用于设置页展示与误报排查，通配条目本身没有「唯一品牌归属」。
@@ -2938,6 +2953,8 @@
     TRUSTED_PLATFORMS,
     TRUSTED_DOWNLOAD_HOSTS,
     KNOWN_BAD_DOMAINS,
+    // 2026-11-23：内置「黑名单例外」（可推翻内置黑名单，不能推翻云端黑名单）
+    EXCEPTION_DOMAINS,
     KNOWN_BAD_FILENAMES,
     SUSPICIOUS_DOWNLOAD_NAME_PATTERNS,
     BRAND_KEYWORDS,

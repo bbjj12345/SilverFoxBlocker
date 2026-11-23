@@ -49,7 +49,15 @@
     </div>
     <button class="settings-btn sf-rise" id="openSettings" style="--d:3">打开控制面板</button>
     <button class="report-btn sf-rise" id="openReport" style="--d:4">一键上报网站</button>
+    <!-- ★ 2026-11-23：个性化 · 明暗模式（与设置页同一套控制器与存储键） -->
+    <div class="mode-switch" role="group" aria-label="界面明暗模式">
+      <button type="button" class="mode-btn" data-mode="dark" aria-pressed="true">黑暗</button>
+      <button type="button" class="mode-btn" data-mode="light" aria-pressed="false">明亮</button>
+      <button type="button" class="mode-btn" data-mode="system" aria-pressed="false">跟随系统</button>
+      <button type="button" class="mode-btn" data-mode="system-invert" aria-pressed="false">反转系统</button>
+    </div>
   </div>
+  <script src="theme-mode.js?v=20261123"></script>
   <script src="popup.js"></script>
 </body>
 </html>

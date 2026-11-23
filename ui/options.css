@@ -573,7 +573,15 @@ html.theme-light .ver, html.theme-light .brand .b2, html.theme-light .about-row 
 html.theme-light .card { background: linear-gradient(160deg, rgba(255,255,255,.92), rgba(255,255,255,.68)); border: 1px solid rgba(20,34,64,.12); box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 18px 44px rgba(40,60,110,.14); }
 html.theme-light .row { border-top: 1px solid rgba(20,34,64,.07); }
 html.theme-light .weight { background: rgba(20,34,64,.08); color: rgba(27,35,51,.6); }
-html.theme-light .switch .slider { background: rgba(20,34,64,.16); border: 1px solid rgba(20,34,64,.18); }
+/* ★ 2026-11-23：旧行——不加限定地把浅色轨道刷成灰，会连「已开启」状态一起盖掉。
+   它与 `.switch input:checked + .slider`（第 321 行）特异性相同（0,3,1），又排在后面，
+   于是开/关在浅色下长得一模一样，只能靠滑块位置猜。现收窄为「仅未选中时用灰轨道」。 */
+/* html.theme-light .switch .slider { background: rgba(20,34,64,.16); border: 1px solid rgba(20,34,64,.18); } */
+html.theme-light .switch input:not(:checked) + .slider { background: rgba(20,34,64,.16); border: 1px solid rgba(20,34,64,.18); }
+/* ★ 2026-11-23：开启态在浅色下显式补回绿色轨道（与深色同一组绿，语义不变），
+   避免后续任何浅色规则再次覆盖；特异性 0,4,2 高于上面那条，也高于 pixel 主题之外的同类规则。 */
+html.theme-light .switch input:checked + .slider { background: linear-gradient(135deg,#3ddc84,#2bb673); border-color: transparent; }
+html.theme-light .switch input:focus-visible + .slider { box-shadow: 0 0 0 3px rgba(43,182,115,.30), inset 0 1px 2px rgba(0,0,0,.12); }
 html.theme-light .seg { background: rgba(20,34,64,.06); border: 1px solid rgba(20,34,64,.12); }
 html.theme-light .seg-glider { background: linear-gradient(135deg,#3a7bf0,#7a5cff); box-shadow: 0 6px 18px rgba(58,123,240,.30); }
 html.theme-light .seg button { color: #5a6b88; }
@@ -1931,3 +1939,37 @@ html.theme-light .list-mail .btn-sec { background: rgba(47,111,237,.1); color: #
 html.theme-light .list-mail .btn-sec:hover { background: rgba(47,111,237,.18); }
 .list-mail-note { margin-top: 8px; }
 .list-mail-msg { opacity: 1; margin-top: 6px; }
+
+/* ============================================================
+   个性化 · 明暗模式四按钮（2026-11-23）
+   按钮位于侧边栏底部「防护中」上方；只切换明暗，不改变任何状态色
+   （防护中=绿、高危=红、可疑=黄、情报横幅、页面内 toast 均不参与反转）。
+   ============================================================ */
+.mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 4px 2px; }
+.mode-btn {
+  padding: 8px 4px; border-radius: 9px; cursor: pointer;
+  font-family: inherit; font-size: calc(11.5px * var(--sf-scale)); font-weight: 700; line-height: 1;
+  color: rgba(196,206,224,.72);
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.10);
+  transition: background .16s var(--sf-ease), color .16s var(--sf-ease),
+              border-color .16s var(--sf-ease), transform .12s var(--sf-snap);
+}
+.mode-btn:hover { background: rgba(125,180,255,.12); color: #eaf0fa; border-color: rgba(125,180,255,.32); }
+.mode-btn:active { transform: scale(.97); }
+.mode-btn.active {
+  color: #06101f; border-color: transparent;
+  background: linear-gradient(135deg, #7db4ff, #a08cff);
+  box-shadow: 0 6px 16px rgba(125,160,255,.26);
+}
+html.theme-light .mode-btn { color: rgba(27,35,51,.72); background: rgba(20,34,64,.05); border-color: rgba(20,34,64,.12); }
+html.theme-light .mode-btn:hover { color: #1b2333; background: rgba(58,123,240,.10); border-color: rgba(58,123,240,.30); }
+html.theme-light .mode-btn.active { color: #fff; background: linear-gradient(135deg, #3a7bf0, #7a5cff); box-shadow: 0 6px 16px rgba(58,123,240,.24); }
+html.reduce-motion .mode-btn { transition: none !important; }
+
+/* 浅色补漏：插件/彩蛋类浮层维持深色玻璃（不随页面反色），此处只修「浅色底上过淡」的文字 */
+html.theme-light .nav-group-label { color: rgba(27,35,51,.5); }
+html.theme-light .side-foot .ver { color: rgba(27,35,51,.62); }
+html.theme-light .back-btn { color: #4a5876; border-color: rgba(20,34,64,.14); background: rgba(20,34,64,.04); }
+html.theme-light .back-btn:hover { color: #1b2333; background: rgba(58,123,240,.10); border-color: rgba(58,123,240,.32); }
+html.theme-light .mode-switch { border-top: 0; }

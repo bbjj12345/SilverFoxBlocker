@@ -40,7 +40,12 @@
     // 2026-11-09：路径级条目（主机名/路径）。单列两条是为了让用户一眼看出
     //   「放行/拦截的只是这个链接」，而不是以为整站被放行或整站被封。
     cloudBlackPath: { label: '云端黑名单（链接级）', detail: '该页面链接命中云端黑名单的路径条目，已强制判定为危险并拦截。' },
-    cloudWhitePath: { label: '云端白名单（链接级）', detail: '该页面链接命中云端白名单的路径条目，未进入评分引擎（同站其它链接照常检测）。' }
+    cloudWhitePath: { label: '云端白名单（链接级）', detail: '该页面链接命中云端白名单的路径条目，未进入评分引擎（同站其它链接照常检测）。' },
+    // ★ 2026-11-23：三层「例外」（可推翻黑名单的放行）。与白名单的区别见下方 priorityOf 注释：
+    //   白名单只在「所有黑名单都没命中」时才生效；例外则按优先级矩阵**主动**推翻对应层级的黑名单。
+    cloudException: { label: '云端例外', detail: '该域名命中云端下发的例外规则，已跳过拦截（即使同时命中云端黑名单）。' },
+    builtinException: { label: '扩展内置例外', detail: '该域名在扩展内置的例外名单中，已跳过拦截（可推翻扩展内置黑名单，但云端黑名单仍然优先）。' },
+    customException: { label: '自定义例外', detail: '该域名在自定义例外名单中，已跳过拦截（可推翻自定义黑名单，但云端与内置黑名单仍然优先）。' }
   };
   // 生成 reasons 条目（label + detail 分开，供浮层「粗体标题 + 说明」两行结构使用）
   function listReason(key, weight) {
@@ -165,7 +170,14 @@
     cloudBlack: Object.assign({}, WILD_POLICY, { tldWildcard: true, tldMultilevel: true }),
     cloudWhite: Object.assign({}, WILD_POLICY),
     customBlack: Object.assign({}, WILD_POLICY),
-    customWhite: Object.assign({}, WILD_POLICY)
+    customWhite: Object.assign({}, WILD_POLICY),
+    // ★ 2026-11-23：三层「例外」各持一份策略，目前与默认策略逐位相同（即：不放宽任何一条）。
+    //   为什么不跟云端黑名单一样放开 TLD 通配：例外是**放行侧**，一条写宽的例外等于给半个互联网
+    //   开免检通道（`*.*deepseek*.*` 能放行所有带 deepseek 的域名）。放行侧的风险本来就比拦截侧大，
+    //   所以云端下发的例外也只允许「精确 / 后缀 / 标签内通配」。
+    builtinException: Object.assign({}, WILD_POLICY),
+    cloudException: Object.assign({}, WILD_POLICY),
+    customException: Object.assign({}, WILD_POLICY)
   };
   function wildPolicyOf(kind) { return LIST_WILD_POLICY[kind] || WILD_POLICY; }
   function _hasWild(s) { return s.indexOf('*') !== -1 || s.indexOf('?') !== -1; }
@@ -207,6 +219,13 @@
   const _OFFICIAL_BUILTIN = _splitBuiltinList(IOCS.OFFICIAL_DOMAINS, wildPolicyOf('builtinWhite'));
   const OFFICIAL_SET = _OFFICIAL_BUILTIN.exact;
   const OFFICIAL_WILD = _OFFICIAL_BUILTIN.wild;
+  // ★ 2026-11-23：内置「黑名单例外」（iocs.js 的 EXCEPTION_DOMAINS）。
+  //   与内置白名单同构（精确 Set + 通配桶），但**判定位置不同**：白名单只在黑名单全落空后才看，
+  //   而例外要排在「对应层级的黑名单」之前（内置例外 > 内置黑名单，但仍 < 云端黑名单）。
+  //   策略用 builtinWhite 那份：放行侧不放开 TLD 通配。
+  const _EXCEPTION_BUILTIN = _splitBuiltinList(IOCS.EXCEPTION_DOMAINS, wildPolicyOf('builtinException'));
+  const EXCEPTION_SET = _EXCEPTION_BUILTIN.exact;
+  const EXCEPTION_WILD = _EXCEPTION_BUILTIN.wild;
   // 只给「派生品牌词 / 通用词 / 品牌后缀」这几个静态索引用的精确条目快照。
   //   为什么单列：这些派生逻辑要取「紧邻 TLD 的标签」当品牌词，通配条目（`*media.foo.com`）
   //   的该标签是 `*media`，纯噪声，还会让 getRegistrableDomain 返回无法解析的串。
@@ -518,6 +537,12 @@
     //   归因必须与判定一致，否则下载侧的「内置黑名单」理由会与页面级结论对不上。
     return _suffixHit(BAD_SET, h) || _wildListHit(BAD_WILD, h);
   }
+  // ★ 2026-11-23：内置「黑名单例外」（iocs.js 的 EXCEPTION_DOMAINS）。
+  //   只用于推翻**内置**黑名单；云端黑名单优先级更高，调用方必须先判云端例外/云端黑名单。
+  function isBuiltinException(hostname) {
+    const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    return _suffixHit(EXCEPTION_SET, h) || _wildListHit(EXCEPTION_WILD, h);
+  }
   // 云端白名单命中（仅云端那份，不含内置 OFFICIAL_SET）。
   // 单独抽出来是因为判定流程要「先看云端名单，命中即据此处理」——
   // 内置白名单还有上千条，对它们没必要走快速通道，结果本来就一样。
@@ -738,6 +763,13 @@
   //   （仿冒判定、下载可信源、_memoHost 缓存），改成吃 URL 会污染全部调用点。
   const EXTRA_OFFICIAL_PATH = [];  // [{ src, host, path }]
   const EXTRA_BAD_PATH = [];       // [{ src, host, path, re }]（re 仅主机名带通配时存在）
+  // ★ 2026-11-23：云端「例外」的三张表（主机名 Set / 通配桶 / 路径表），结构与云端黑名单同构，
+  //   但语义相反：命中它＝放行。优先级最高（可推翻云端黑名单），因此先用它过滤再判黑。
+  //   数据来自云端 whitelist.json 的 exceptions 数组 → storage.local 的 sfCloudException。
+  const EXTRA_EXCEPTION_SET = new Set();
+  const EXTRA_EXCEPTION_WILD = _wildBag();
+  const EXTRA_EXCEPTION_PATH = [];  // [{ src, host, path, re }]
+  let _wildExceptionSkipped = [];
   // 旧：const PATH_MAX = 500;            // 路径条目上限：每条都要线性扫一遍，防止名单把页面判定拖慢
   // ★ 2026-11-12：取消 500 条上限。路径表只在「页面 URL / 下载 URL」上各扫一次（不是每个链接都扫），
   //   几千条的量级代价可忽略；若日后涨到数万条，再给这两张表加「按主机名分桶」的索引即可，
@@ -964,6 +996,121 @@
     const added = replace ? after : after - before;
     if (replace || added) _badCache.clear();
     return added;
+  }
+
+  // ★ 2026-11-23：云端「例外」的注入入口（whitelist.json 的 exceptions）。
+  //   结构与 registerCloudBad 完全同构（同一条目既能写纯主机名，也能写 `主机名/路径`，
+  //   还能写 `*` / `?` 通配），差别只有两点：
+  //     1) 通配策略取 cloudException（放行侧，不放开 TLD 通配）；
+  //     2) 命中后是**放行**，因此这里不维护任何「已判危」缓存，只需在替换时清空相关查询缓存。
+  //   覆盖语义同云端其它名单：storage 是云端镜像，每次同步整体替换（云端删掉的例外必须失效）。
+  function registerCloudException(arr, opts) {
+    const replace = !!(opts && opts.replace);
+    const pol = wildPolicyOf('cloudException');
+    const before = EXTRA_EXCEPTION_SET.size + EXTRA_EXCEPTION_WILD.items.length + EXTRA_EXCEPTION_PATH.length;
+    const skipped = [];
+    if (replace) {
+      EXTRA_EXCEPTION_SET.clear();
+      _wildBagClear(EXTRA_EXCEPTION_WILD);
+      EXTRA_EXCEPTION_PATH.length = 0;
+    }
+    if (Array.isArray(arr)) {
+      for (const d of arr) {
+        const ex = _normCloudEntryEx(d, { allowWild: true });
+        if (!ex.value) {
+          if (typeof d === 'string' && /[*?]/.test(d)) skipped.push(d.trim());
+          continue;
+        }
+        if (ex.path) {
+          if (!ex.wild) {
+            EXTRA_EXCEPTION_PATH.push({ src: ex.value, host: ex.host, path: ex.path, re: null });
+            continue;
+          }
+          const c = _compileBadWild(ex.host, pol);
+          if (!c.kind) { skipped.push(ex.value); continue; }
+          EXTRA_EXCEPTION_PATH.push({
+            src: c.value + ex.path,
+            host: c.kind === 'suffix' ? c.value : '',
+            path: ex.path,
+            re: c.kind === 'suffix' ? null : c.re
+          });
+          continue;
+        }
+        if (ex.wild) {
+          const c = _compileBadWild(ex.host, pol);
+          if (c.kind === 'suffix') { EXTRA_EXCEPTION_SET.add(c.value); continue; }
+          if (c.kind !== 'wild' && c.kind !== 'suffix-wild') { skipped.push(ex.value); continue; }
+          _wildBagAdd(EXTRA_EXCEPTION_WILD, c.value, c.re);
+          continue;
+        }
+        EXTRA_EXCEPTION_SET.add(ex.host);
+      }
+    }
+    _wildExceptionSkipped = skipped;
+    const after = EXTRA_EXCEPTION_SET.size + EXTRA_EXCEPTION_WILD.items.length + EXTRA_EXCEPTION_PATH.length;
+    const added = replace ? after : after - before;
+    // 例外变化会让「已判危 / 已判安全」的缓存结论过期，统一清空（成本极低，只在同步时发生）。
+    if (replace || after !== before) {
+      _badCache.clear();
+      _officialCache.clear();
+    }
+    return added;
+  }
+
+  // 云端例外：整站命中（主机名/通配），返回 true/false
+  function isCloudException(hostname) {
+    const h = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    if (!h) return false;
+    return _suffixHit(EXTRA_EXCEPTION_SET, h) || _wildListHit(EXTRA_EXCEPTION_WILD, h);
+  }
+  // 云端例外：路径条目命中（返回条目原文，未命中返回 ''）。与云端黑/白的路径条目同一语义。
+  function matchCloudExceptionUrl(url) {
+    if (!EXTRA_EXCEPTION_PATH.length) return '';
+    const u = _urlHostPath(url);
+    if (!u) return '';
+    for (let i = 0; i < EXTRA_EXCEPTION_PATH.length; i++) {
+      const r = EXTRA_EXCEPTION_PATH[i];
+      const hostOk = r.re ? r.re.test(u.host) : _hostHit(u.host, r.host);
+      if (hostOk && _pathPrefixHit(u.path, r.path)) return r.src;
+    }
+    return '';
+  }
+  function isCloudExceptionUrl(url) { return !!matchCloudExceptionUrl(url); }
+
+  // ★ 2026-11-23：**三层「例外」优先矩阵的唯一定义处**（内容脚本 / 下载拦截都调它）。
+  //   参数：
+  //     host  — 主机名；url — 当前页面或下载的完整 URL（可为空，路径条目需要它）；
+  //     settings — 用户设置（读 allowlist / customBadDomains / exceptionDomains）；
+  //     extraOfficial — 内容脚本侧额外的「可信分发域名」判定结果（analyzer 不认识那份名单）。
+  //   返回 { kind: 'exc' | 'bad' | 'white' | '', key }：
+  //     exc   — 命中例外 → 放行（只推翻**对应层级**的黑名单）
+  //     bad   — 命中黑名单 → 判危
+  //     white — 白名单 → 跳过评分（只在黑名单全落空时才看得到）
+  //   顺序（自高到低，与设置页说明、README 完全一致）：
+  //     ① 云端例外（含路径级） ② 云端黑名单（含路径级） ③ 内置例外 ④ 内置黑名单
+  //     ⑤ 用户例外 ⑥ 用户自定义黑名单 ⑦ 云端白名单（路径级→整站）→ 内置白名单 → 用户白名单
+  //   为什么云端例外最高：它是作者下发的最终意志，也是「云端通配误伤」的唯一热修手段。
+  //   为什么用户例外排在两级黑名单之后：否则钓鱼站只要诱导用户点一次「信任」就能突破云端防线。
+  function resolveListTier(host, url, settings, extraOfficial) {
+    const h = (host || '').toLowerCase().replace(WWW_RE, '');
+    const s = settings || {};
+    // ① 云端例外
+    if ((url && matchCloudExceptionUrl(url)) || isCloudException(h)) return { kind: 'exc', key: 'cloudException' };
+    // ② 云端黑名单
+    if (url && matchCloudBadUrl(url)) return { kind: 'bad', key: 'cloudBlackPath' };
+    if (isCloudBad(h)) return { kind: 'bad', key: 'cloudBlack' };
+    // ③ 内置例外 → ④ 内置黑名单
+    if (isBuiltinException(h)) return { kind: 'exc', key: 'builtinException' };
+    if (isBuiltinBad(h)) return { kind: 'bad', key: 'builtinBlack' };
+    // ⑤ 用户例外 → ⑥ 用户自定义黑名单
+    if (matchHostList(h, s.exceptionDomains, 'customException')) return { kind: 'exc', key: 'customException' };
+    if (matchHostList(h, s.customBadDomains, 'customBlack')) return { kind: 'bad', key: 'customBlack' };
+    // ⑦ 白名单（顺序同为 云端路径 > 云端 > 内置 > 自定义）
+    if (url && matchCloudWhiteUrl(url)) return { kind: 'white', key: 'cloudWhitePath' };
+    if (isCloudOfficial(h)) return { kind: 'white', key: 'cloudWhite' };
+    if (isOfficialDomain(h) || extraOfficial) return { kind: 'white', key: 'builtinWhite' };
+    if (matchHostList(h, s.allowlist, 'customWhite')) return { kind: 'white', key: 'customWhite' };
+    return { kind: '', key: '' };
   }
 
   // 诊断用：当前生效的通配条目 / 后缀条目 / 路径条目 / 被护栏拒掉的条目
@@ -3507,6 +3654,14 @@
     registerCloudCorrect,
     getCloudCorrectSites,
     registerCloudBad,
+    // ★ 2026-11-23：三层「例外」（云端 / 内置 / 自定义里，前两层在这里；自定义由 matchHostList 匹配）
+    registerCloudException,
+    isCloudException,
+    matchCloudExceptionUrl,
+    isCloudExceptionUrl,
+    isBuiltinException,
+    // ★ 2026-11-23：三层「例外」优先矩阵（唯一实现，内容脚本与测试都走这里）
+    resolveListTier,
     sanitizeCloudDomains,
     // 2026-11-12：通配符「放行策略」——六份名单共用一张表，设置页/测试脚本据此生成说明与预检
     WILD_POLICY,

@@ -33,6 +33,11 @@ function applyCloudLists(o) {
     if (SF.registerCloudBad) {
       SF.registerCloudBad((o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack : [], { replace: true });
     }
+    // ★ 2026-11-23：云端「例外」（whitelist.json 的 exceptions）——优先级最高的放行层。
+    //   与黑白名单同源同批同步，同样整体覆盖；空数组＝云端没有例外规则。
+    if (SF.registerCloudException) {
+      SF.registerCloudException((o && Array.isArray(o.sfCloudException)) ? o.sfCloudException : [], { replace: true });
+    }
     // ★ 2026-11-12：云端「品牌词 → 正确官网」补录（whitelist.json 的 correct_sites）。
     //   仅服务拦截弹窗的「访问正确的页面」按钮，不参与放行/拦截判定；
     //   与上面两份名单的 replace 语义无关（内置表始终保留，云端只补空缺）。
@@ -50,7 +55,7 @@ let _cloudReady = Promise.resolve();
 function reloadCloudLists() {
   try {
     _cloudReady = new Promise(function (resolve) {
-      chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [] }, function (o) {
+      chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [], sfCloudException: [] }, function (o) {
         applyCloudLists(o);
         resolve();
       });
@@ -62,7 +67,7 @@ function cloudReady() { return _cloudReady; }
 reloadCloudLists();
 try {
   chrome.storage.onChanged.addListener(function (ch, area) {
-    if (area === 'local' && (ch.sfCloudWhite || ch.sfCloudBlack || ch.sfCloudCorrect)) {
+    if (area === 'local' && (ch.sfCloudWhite || ch.sfCloudBlack || ch.sfCloudCorrect || ch.sfCloudException)) {
       reloadCloudLists();
       // ★ 2026-11-22：名单落地后广播给所有标签页 —— 已打开的页面需要「云端名单已更新，建议重判」提示
       //   （内容脚本的名单副本是页面加载时灌进去的，不广播的话用户只能靠手动刷新）。
@@ -490,12 +495,20 @@ function _isHardBadDownload(item, settings) {
   try {
     const host = parseHost(item.url);
     const srcHost = downloadSourceHost(item);
+    // 旧（2026-11-09 定版）：任意黑名单命中即硬拦，没有「例外」这一层。
+    /*
     if (isCloudBadHost(host) || isCloudBadUrl(item.url)) return true;
     if (srcHost && (isCloudBadHost(srcHost) || isCloudBadUrl(downloadSourceUrl(item)))) return true;
     if (isBuiltinBadHost(host)) return true;
     if (srcHost && isBuiltinBadHost(srcHost)) return true;
     if (settings && hostMatch(host, settings.customBadDomains)) return true;
     if (settings && srcHost && hostMatch(srcHost, settings.customBadDomains)) return true;
+    */
+    // 新（2026-11-23）：逐主机按「例外优先矩阵」判定 —— 命中例外的那一侧直接跳过黑名单，
+    //   另一侧仍独立判定（例外不该连带豁免另一个主机名）。
+    const srcUrl = downloadSourceUrl(item);
+    if (_dlListTier(host, item.url, settings) === 'bad') return true;
+    if (srcHost && _dlListTier(srcHost, srcUrl, settings) === 'bad') return true;
     if (isKnownBadFilename(item.filename) || isKnownBadFilename(item.url)) return true;
     if (dlBlacklistHas(host)) return true;
   } catch (e) {}
@@ -846,6 +859,8 @@ const DEFAULTS = {
     socialEngineering: true, domainStructure: true, redirectIframe: true
   },
   allowlist: [], customKeywords: [], customBadDomains: [],
+  // ★ 2026-11-23：用户自定义「黑名单例外」（可推翻自定义黑名单，不能推翻云端/内置黑名单）
+  exceptionDomains: [],
   // 威胁情报 API（可选）：默认关闭；启用后扩展用用户自有 Key 实时查询当前域名在第三方情报库的判定。
   // 框架化设计：providers 下可动态增加更多情报源；VT / GSB 两个需 Key 的源均以密文存储。
   threatIntel: {
@@ -2587,7 +2602,8 @@ if (chrome.storage && chrome.storage.onChanged) {
     // ★ 2026-11-12：自定义名单已挪到 storage.local（见 rules/liststore.js），
     //   设置页保存名单只会触发 local 变更；这里必须一并失效，否则后台仍用旧名单判定下载。
     //   只认这两个键：云端名单 / 统计也写在 local，若不加判断会每次同步都丢掉设置缓存。
-    if (area === 'local' && _settingsCache && changes && (changes.allowlist || changes.customBadDomains)) _settingsCache = null;
+    //   2026-11-23：新增 exceptionDomains（例外名单）同样要失效。
+    if (area === 'local' && _settingsCache && changes && (changes.allowlist || changes.customBadDomains || changes.exceptionDomains)) _settingsCache = null;
     // 社区名单总开关被关掉 → 立即释放常驻内存（OpenPhish/PhishDestroy 的 Set 与 HaGeZi 位图）
     if (area === 'sync' && changes.communityLists) {
       const cl = changes.communityLists.newValue || {};
@@ -2671,6 +2687,32 @@ function isCloudBadUrl(url) {
 }
 function isCloudWhiteUrl(url) {
   try { return !!(SF.matchCloudWhiteUrl && SF.matchCloudWhiteUrl(url)); } catch (e) { return false; }
+}
+// ★ 2026-11-23：三层「例外」（下载侧）。与页面级 content.js 的 resolveListTier 同一套优先矩阵：
+//   云端例外 > 云端黑名单 > 内置例外 > 内置黑名单 > 用户例外 > 用户黑名单。
+//   这里按「单个主机名 + 它的 URL」返回 'exc' / 'bad' / ''，因为一次下载有「下载地址」与
+//   「来源页地址」两个主机：例外只豁免它自己那一侧，另一侧命中云端黑名单时照样取消。
+function isCloudExceptionHost(h) {
+  try { return !!(SF.isCloudException && SF.isCloudException((h || '').toLowerCase())); } catch (e) { return false; }
+}
+function isCloudExceptionUrl(url) {
+  try { return !!(SF.matchCloudExceptionUrl && SF.matchCloudExceptionUrl(url)); } catch (e) { return false; }
+}
+function isBuiltinExceptionHost(h) {
+  try { return !!(SF.isBuiltinException && SF.isBuiltinException((h || '').toLowerCase())); } catch (e) { return false; }
+}
+function _dlListTier(h, url, settings) {
+  // ① 云端例外（主机名 / 路径级）
+  if ((url && isCloudExceptionUrl(url)) || (h && isCloudExceptionHost(h))) return 'exc';
+  // ② 云端黑名单（主机名 / 路径级）
+  if ((url && isCloudBadUrl(url)) || (h && isCloudBadHost(h))) return 'bad';
+  // ③ 内置例外 → ④ 内置黑名单
+  if (h && isBuiltinExceptionHost(h)) return 'exc';
+  if (h && isBuiltinBadHost(h)) return 'bad';
+  // ⑤ 用户例外 → ⑥ 用户自定义黑名单
+  if (h && settings && hostMatch(h, settings.exceptionDomains, 'customException')) return 'exc';
+  if (h && settings && hostMatch(h, settings.customBadDomains)) return 'bad';
+  return '';
 }
 // 来源页完整 URL：优先 referrer/initiator，回退到本标签最近一次顶级导航（与 downloadSourceHost 同源逻辑）
 function downloadSourceUrl(item) {
@@ -4352,6 +4394,8 @@ if (chrome.downloads && chrome.downloads.onCreated) {
       //   绕过样本 IOC 的下载通道。故黑名单**不再被任何白名单豁免**。
       const srcHost = downloadSourceHost(item);
       const srcUrl = downloadSourceUrl(item);
+      // 旧（2026-11-09 定版）：黑名单逐条判，命中即取消；没有「例外」这一层。
+      /*
       // 1) 云端黑名单（含通配 / 路径）：下载地址或来源页链接命中即拦
       if (isCloudBadHost(host) || isCloudBadUrl(item.url) || (srcHost && isCloudBadUrl(srcUrl))) {
         cancelDownload(item.id, host, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
@@ -4377,6 +4421,17 @@ if (chrome.downloads && chrome.downloads.onCreated) {
       }
       if (srcHost && hostMatch(srcHost, settings.customBadDomains)) {
         cancelDownload(item.id, srcHost, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
+        return;
+      }
+      */
+      // ★ 新（2026-11-23）：按「例外优先矩阵」逐主机判定（云端例外 > 云端黑名单 > 内置例外 >
+      //   内置黑名单 > 用户例外 > 用户黑名单）。命中例外的那一侧不再进入黑名单取消分支，
+      //   另一侧仍独立判定；下面的文件名 IOC / 白名单 / 下载黑名单逻辑保持原样。
+      const _tierMain = _dlListTier(host, item.url, settings);
+      const _tierSrc = srcHost ? _dlListTier(srcHost, srcUrl, settings) : '';
+      if (_tierMain === 'bad' || _tierSrc === 'bad') {
+        const _badHost = (_tierMain === 'bad') ? host : srcHost;
+        cancelDownload(item.id, _badHost, item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename);
         return;
       }
       // 3.5) ★ 已知木马化投递物文件名（样本静态分析 IOC）：bzy.exe / shanlian_VPN_64.exe 等

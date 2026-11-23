@@ -5,6 +5,8 @@ const DEFAULTS = {
   enabledGlobal: true,
   fontMode: 'system',   // 'system' | 'smiley'
   theme: 'dark',        // 'dark' | 'light'
+  // ★ 2026-11-23：明暗模式，与设置页共用同一个 storage.sync 键（theme-mode.js 负责实际应用）
+  colorMode: 'dark',    // 'dark' | 'light' | 'system' | 'system-invert'
   themePalette: 'classic', // 'classic' | 'gold' | 'neon' | 'mist' | 'space' | 'pixel'
   material: 'frosted',  // 'frosted' | 'liquid'
   bgImage: '',          // 自定义背景 dataURL
@@ -113,6 +115,10 @@ function loadCurrentSite() {
     // 2026-11-09：路径级条目（主机名/路径）。只放行这一个链接，同站其它链接照常检测，
     //   文案必须与 LIST_TEXT.cloudWhitePath 逐字一致。
     cloudWhitePath: { text: '已跳过评分', lvl: 'official', reason: '云端白名单（链接级）：该页面链接命中云端白名单的路径条目，未进入评分引擎（同站其它链接照常检测）。' },
+    // ★ 2026-11-23：三层「例外」——可推翻黑名单的放行。文案必须与 LIST_TEXT 同名项逐字一致后缀。
+    cloudException: { text: '已跳过评分', lvl: 'official', reason: '云端例外：该域名命中云端下发的例外规则，已跳过拦截（即使同时命中云端黑名单）。' },
+    builtinException: { text: '已跳过评分', lvl: 'official', reason: '扩展内置例外：该域名在扩展内置的例外名单中，已跳过拦截（可推翻扩展内置黑名单，但云端黑名单仍然优先）。' },
+    customException: { text: '已跳过评分', lvl: 'official', reason: '自定义例外：该域名在自定义例外名单中，已跳过拦截（可推翻自定义黑名单，但云端与内置黑名单仍然优先）。' },
     // 兼容旧版内容脚本的 skip 值（allowlist + skipBy / official）
     allowlist: {
       text: '已跳过评分', lvl: 'official',

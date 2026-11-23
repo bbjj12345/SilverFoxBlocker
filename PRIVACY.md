@@ -2,7 +2,7 @@
 
 **SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期：2026-11-23　|　适用版本：v1.10.6（本次修订：**权限没有增减**，仍为 7 项 API 权限 + 1 项主机权限，也没有新增任何第三方、没有新增任何数据外发；变化集中在**下载处置**与一处**本地存储**：① 分析结束且判定安全后，被拦下的下载**不再自动重下**（需你自己重新点一次），分析期间页面上的下载入口会置灰、顶部横幅改为深红警示色；② 新增「每站首次确认」——每个站点第一次下载可执行/压缩/网盘类文件时必须人工确认一次，为此在本机 `storage.local` 新增一份站点名单（`sfSiteFirstSeen`，只有注册域名与时间戳，不上传、180 天过期）；③ 页内授权、强手势时间戳与「待确认下载」改用 `storage.session` 保存（关闭浏览器即清空），仍然只在本机；④ 判定为「用户意图」而放行时，页面左下角显示一条 10 秒自动关闭的轻提示（纯本地 UI）；⑤ 「运行时取链探测」此前只在已判危页面自动运行、**没有开关**，现在补上显式开关（设置 → 拦截行为，默认开），与本文 3.1④ 的「可关闭」表述一致）
+生效日期：2026-11-23　|　适用版本：v1.11.6（本次修订：**权限没有增减**，仍为 7 项 API 权限 + 1 项主机权限，也没有新增任何第三方、没有新增任何网络请求、没有新增任何数据外发；变化只在**名单判定**：新增三层「例外」放行层（云端 / 扩展内置 / 自定义），用来把「被名单误伤的站点」放回来，判定顺序为 云端例外 > 云端黑名单 > 内置例外 > 内置黑名单 > 自定义例外 > 自定义黑名单 > 三档白名单。数据全部走既有通道——云端例外是该扩展本就拉取的 `whitelist.json` 里新增的 `exceptions` 字段（纯域名数据，与名单同一次手动同步、同一套清洗，见 §3.3），自定义例外存在本机 `storage.local` 的 `exceptionDomains`（与自定义黑白名单同处，不上传），内置例外随扩展打包。另需注意两点语义：① 白名单只在「没有任何黑名单命中」时生效，例外才是唯一能推翻黑名单的放行层；② 自定义例外**只能**推翻自定义黑名单，压不住云端与内置黑名单——避免钓鱼站诱导用户点一次「信任」就突破防线）
 
 ---
 ## 一、概述
@@ -20,6 +20,7 @@
 - 页面结构、下载入口、话术特征的采集与加权评分（`rules/analyzer.js`）；
 - 官方域名表、恶意域名、可疑 TLD、话术词表等内置特征库（`rules/iocs.js`）；
 - **六类名单的查表比对**（云端 / 扩展内置 / 自定义，各有黑、白两份）——包括优先级判断、域名后缀回溯、通配符与「主机名/路径」匹配。云端名单同步是一次性 GET，同步之后的判定全在本地；
+- **三层「例外」的查表比对**（2026-11-23 起：云端 / 扩展内置 / 自定义）——用来把被名单误伤的站点放回来，规则同样是纯字符串、纯本地比对。自定义例外只写在本机（`storage.local` 的 `exceptionDomains`），云端例外随 `whitelist.json` 的 `exceptions` 字段一次取回（见 §3.3），内置例外随扩展打包；
 - 下载拦截、跳转链追踪、拦截浮层与提示；
 - **下载授权与「用户手势」判定**（2026-11-23 起）：内容脚本在你真实点击 / 回车时向本扩展后台发一条消息（只含「发生了一次点击」的时间戳，以及被点元素上的链接地址、主机名、文件名——用于判断这次下载是不是你点的），后台只在内存 / `storage.session` 里做比对，**不写日志、不上传、不落盘**；页面脚本用 `a.click()` 合成的事件不算手势；
 - **「每站首次确认」名单**（2026-11-23 起）：只在本机记「哪些站点的第一次可执行文件下载已经问过」，见第五节；
@@ -78,7 +79,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 ```
 
 - **发出什么**：只有查询参数 `type`、缓存规避用的时间戳，以及一个随扩展分发的只读 `X-API-Key`（用于接口鉴权，**不是你的身份标识**）。**不发送你的浏览记录、本地名单、设置、设备标识或任何个人信息**。
-- **收到什么**：作者维护的域名清单（纯数据，不含代码）。自 2026-11-12 起，白名单文件还可附带一份「品牌词 → 正确官网」映射（`correct_sites`），同样是纯数据，仅用于拦截浮层的「访问正确的页面」按钮，不参与放行 / 拦截判定。Worker 实时从作者的私有 GitHub 仓库读取后转发；GitHub 不可达时改从作者的私有 Gitee 镜像仓库读取同一份文件（此过程完全发生在服务端，你的浏览器不直接访问 Gitee）。响应经清洗校验后整体覆盖写入本机 `storage.local`，任一份失败则两份都不写入。
+- **收到什么**：作者维护的域名清单（纯数据，不含代码）。自 2026-11-12 起，白名单文件还可附带一份「品牌词 → 正确官网」映射（`correct_sites`），同样是纯数据，仅用于拦截浮层的「访问正确的页面」按钮，不参与放行 / 拦截判定；自 2026-11-23 起，白名单文件还可附带一份 exceptions（云端例外：可推翻云端黑名单的放行规则），同样是纯域名数据，在本地参与放行判定。Worker 实时从作者的私有 GitHub 仓库读取后转发；GitHub 不可达时改从作者的私有 Gitee 镜像仓库读取同一份文件（此过程完全发生在服务端，你的浏览器不直接访问 Gitee）。响应经清洗校验后整体覆盖写入本机 `storage.local`，任一份失败则两份都不写入。
 - **日志**：该 Worker 开启了 Cloudflare 调用日志，因此服务端可能记录请求时间、来源 IP 与请求路径；日志中不含有你填写的内容。
 - **备用通道（仅当上述接口不通时）**：会改为从公开仓库（GitHub 的 `raw.githubusercontent.com` 及其公共反代；都失败时再改用 `gitee.com` 上的同一份文件）GET 一份**加密快照**（`Cloud/*.json.enc`），顺序上始终是「GitHub 优先、Gitee 兜底」。文件本身是密文，只有扩展用内置口令在本机解密后才能得到名单；此请求**不带 `X-API-Key`、不带任何本地数据**，但第三方反代能看到请求方 IP 与所取文件名。解密失败（口令不符 / 文件被篡改）时同步中止，不会把名单清空。
 
@@ -156,7 +157,7 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 |---|---|---|
 | `chrome.storage.sync` | 开关、权重、灵敏度、自定义关键词、界面偏好、情报源配置 | 由**浏览器账号**同步机制决定是否跨设备同步，**不经过作者服务器**；卸载扩展后本机副本被清除 |
 | `chrome.storage.sync` | VirusTotal / Google Safe Browsing / FoxAPI 的 API Key（均为 **AES-GCM 密文**，含随机 salt 与 IV） | 明文只在后台 Service Worker 内短暂解密，内容脚本拿不到；设置页只显示圆点掩码，不回显明文或密文。v1.6.1 及更早版本明文保存的 VT Key 会在打开一次设置页时自动加密迁移（迁移前后台仍兼容明文查询）。三者都只用于向对应服务鉴权，绝不发给作者 |
-| `chrome.storage.local` | 防护统计（拦截/告警计数、近期记录）、OpenPhish 域名数组、PhishDestroy 域名文本、社区名单元数据、自动学习的下载黑名单、连坐域名集合 | 仅本机 |
+| `chrome.storage.local` | 防护统计（拦截/告警计数、近期记录）、OpenPhish 域名数组、PhishDestroy 域名文本、社区名单元数据、自动学习的下载黑名单、连坐域名集合、自定义例外名单（exceptionDomains） | 仅本机 |
 | `chrome.storage.local` | 「每站首次确认」名单 `sfSiteFirstSeen`：注册域名 + 最近一次确认时间 | 仅本机。只用来决定「该站这次下载是否要先问一次」，**不含链接、文件名或访问记录**；180 天未再确认自动失效，最多保留 2000 条 |
 | `chrome.storage.session` | 页面级下载授权、「强手势」时间戳（最多 12 条、只留 10 秒内的）、待确认下载队列、本会话的危险标签页 | 存在浏览器的**会话存储**里，关闭浏览器即清空，不落盘、不跨设备、不上传 |
 | `chrome.storage.local` | 自定义信任域名白名单 / 自定义恶意域名黑名单（2026-11-12 起以本地为准） | `storage.sync` 单键上限 8KB（约 550 个域名），超出会**静默写入失败**，故名单改存本地；体积小于 8KB 时仍镜像一份到 sync 以保留跨设备同步，超过则只存本机 |
@@ -293,11 +294,13 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## English Summary
 
-**SilverFoxBlocker v1.10.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
+**SilverFoxBlocker v1.11.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
 
 **Automatic requests (on by default, disableable):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`); limited reads of resources already referenced by the page you are visiting for download discovery. Any list hit short-circuits these lookups.
 
 **Download handling (v1.10.x):** high-risk files (`.exe`/`.msi`/`.zip`/`.dmg` and cloud-disk share links) are **not** exempted by allowlists any more. A download that starts without a matching user gesture is paused and a small non-blocking bar offers "keep blocked / continue"; one confirmation authorizes the rest of that page (revoked on navigation or reload), and the **first** executable download from each site must be confirmed once (registrable domain + timestamp kept locally, 180-day expiry, ≤2,000 entries, never uploaded; declining does not record it). Page grants, gesture timestamps and pending downloads live in `chrome.storage.session` and are cleared when the browser closes. When a download is allowed as user intent, a 10-second dismissible notice appears in the bottom-left corner. After a **safe** verdict, previously held downloads are **not** restarted automatically — you click again. The resolver-follow probe (dangerous pages only) now has an explicit on/off switch (Settings → Behavior, on by default).
+
+**Lists and exceptions (v1.11.6):** beyond the six local lists (cloud / builtin / custom, each with a block and an allow side), three "exception" layers can override blocklists: **cloud exceptions** arrive as the `exceptions` field inside the same `whitelist.json` you already fetch only when you click "update from cloud" (plain domain strings, no new request), **builtin exceptions** ship inside the extension, and **your own exceptions** are typed into the options page and kept in `chrome.storage.local` (`exceptionDomains`) — never uploaded. Your own exceptions override only your own blocklist, never the cloud or builtin ones. No new permissions, no new network requests, no new data collection.
 
 **Optional requests (off by default):** VirusTotal receives base64url domain/URL IDs; Google Safe Browsing receives the **full page URL** (v4 Lookup); FoxAPI receives the **domain**. All three use your own API key, stored **only as AES-GCM ciphertext** (`v1.salt.iv.ciphertext`); plaintext exists only briefly inside the background service worker, never in storage or page scripts. FoxAPI results never render a banner — they only adjust the local score (`official:false` adds 45 points), and calls are throttled to 1/second with a 10-minute per-domain cache. URLhaus receives domain + page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF, uBlock Origin Badware risks, Dandelion Sprout Anti-Malware) are downloaded as one-way GETs from jsDelivr/GitHub mirrors; the two AdBlock-format lists are reduced to `||domain^` host rules only — IPs, paths, regexes, cosmetic and exception rules are discarded and never executed. VT keys saved as plaintext by older versions are automatically re-encrypted once you open the options page; until then the background still accepts them.
 

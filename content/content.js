@@ -49,6 +49,8 @@
     allowlist: [],
     customKeywords: [],
     customBadDomains: [],
+    // ★ 2026-11-23：用户自定义「黑名单例外」（可推翻自定义黑名单，不能推翻云端/内置黑名单）
+    exceptionDomains: [],
     fontMode: 'system',   // 'system' | 'smiley'
     theme: 'dark',        // 'dark' | 'light'
     fontScale: 1,         // 0.85 ~ 1.40，界面字号缩放系数
@@ -227,7 +229,7 @@
       const done = () => { _cloudListsLoaded = true; resolve(); };
       try {
         // 一并取 meta：这里读的是「刚刚注入的那份名单的版本」，用来给 _cloudAuthRev 打锚点。
-        chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [], sfCloudListMeta: null }, (o) => {
+        chrome.storage.local.get({ sfCloudWhite: [], sfCloudBlack: [], sfCloudCorrect: [], sfCloudException: [], sfCloudListMeta: null }, (o) => {
           try {
             const w = (o && Array.isArray(o.sfCloudWhite)) ? o.sfCloudWhite : [];
             const b = (o && Array.isArray(o.sfCloudBlack)) ? o.sfCloudBlack : [];
@@ -235,6 +237,9 @@
             // 空数组也照常注入（等价于清空），不再用 length 做前置判断。
             if (SF.registerCloudOfficial) SF.registerCloudOfficial(w, { replace: true });
             if (SF.registerCloudBad) SF.registerCloudBad(b, { replace: true });
+            // ★ 2026-11-23：云端「例外」（whitelist.json 的 exceptions）——优先级最高的放行层。
+            //   与黑白名单同源同步、同样整体覆盖；空数组＝云端没有例外规则。
+            if (SF.registerCloudException) SF.registerCloudException((o && Array.isArray(o.sfCloudException)) ? o.sfCloudException : [], { replace: true });
             // ★ 2026-11-12：云端「品牌词 → 正确官网」补录（whitelist.json 的 correct_sites）。
             //   与上面两份名单同源同步、同样整体覆盖；空数组＝云端没有补录，内置表照常生效。
             if (SF.registerCloudCorrect) SF.registerCloudCorrect((o && Array.isArray(o.sfCloudCorrect)) ? o.sfCloudCorrect : []);
@@ -1910,6 +1915,58 @@
       return d && (h === d || h.endsWith('.' + d));
     });
   }
+
+  // ★ 2026-11-23：用户自定义「黑名单例外」。
+  //   与自定义白名单共用同一套通配护栏（customException 策略当前与 customWhite 逐位相同：
+  //   `*` 不跨标签、`?.foo.com` 归一为后缀、TLD 位禁通配），所以直接复用 matchHostList。
+  function isUserException(host, list) {
+    try {
+      if (SF && typeof SF.matchHostList === 'function') return SF.matchHostList(host, list, 'customException');
+    } catch (e) {}
+    const h = String(host || '').toLowerCase().replace(/^www\./, '');
+    if (!h) return false;
+    return (Array.isArray(list) ? list : []).some(function (d) {
+      const v = normBlackDomain(d);
+      return v && (h === v || h.endsWith('.' + v));
+    });
+  }
+
+  // ★ 2026-11-23：**三层「例外」优先矩阵**（页面判定与快速通道共用）。
+  //   真正的实现已收进 analyzer（SF.resolveListTier），此处只做一次薄包装：
+  //     · 内容脚本多一份「可信分发域名」名单（isTrustedDispatch），analyzer 不认识它，
+  //       因此以 extraOfficial 参数传进去，保证「内置白名单」那一档与旧版完全等价；
+  //     · analyzer 未加载（极早期）时返回空结论，等同旧版的「都没命中」，不会误拦也不会误放。
+  //   顺序（自高到低，与设置页说明、README 完全一致）：
+  //     ① 云端例外（含路径级） ② 云端黑名单（含路径级） ③ 内置例外 ④ 内置黑名单
+  //     ⑤ 用户例外 ⑥ 用户自定义黑名单 ⑦ 云端白名单（路径级→整站）→ 内置白名单 → 用户白名单
+  // 旧实现（2026-11-23 首次落地时的内联版本，保留作对照）：
+  /*
+  function resolveListTier(settings, host, href) {
+    const h = (host || '').toLowerCase();
+    const s = settings || {};
+    if (SF.isCloudExceptionUrl && SF.isCloudExceptionUrl(href)) return { kind: 'exc', key: 'cloudException' };
+    if (SF.isCloudException && SF.isCloudException(h)) return { kind: 'exc', key: 'cloudException' };
+    if (SF.matchCloudBadUrl && SF.matchCloudBadUrl(href)) return { kind: 'bad', key: 'cloudBlackPath' };
+    if (SF.isCloudBad && SF.isCloudBad(h)) return { kind: 'bad', key: 'cloudBlack' };
+    if (SF.isBuiltinException && SF.isBuiltinException(h)) return { kind: 'exc', key: 'builtinException' };
+    if (SF.isBuiltinBad && SF.isBuiltinBad(h)) return { kind: 'bad', key: 'builtinBlack' };
+    if (isUserException(h, s.exceptionDomains)) return { kind: 'exc', key: 'customException' };
+    if (isHostBlacklisted(h, s.customBadDomains)) return { kind: 'bad', key: 'customBlack' };
+    if (SF.matchCloudWhiteUrl && SF.matchCloudWhiteUrl(href)) return { kind: 'white', key: 'cloudWhitePath' };
+    if (SF.isCloudOfficial && SF.isCloudOfficial(h)) return { kind: 'white', key: 'cloudWhite' };
+    if ((SF.isOfficialDomain && SF.isOfficialDomain(h)) || isTrustedDispatch(h)) return { kind: 'white', key: 'builtinWhite' };
+    if (isAllowlisted(h, s.allowlist)) return { kind: 'white', key: 'customWhite' };
+    return { kind: '', key: '' };
+  }
+  */
+  function resolveListTier(settings, host, href) {
+    try {
+      if (SF && typeof SF.resolveListTier === 'function') {
+        return SF.resolveListTier(host, href, settings, isTrustedDispatch(host));
+      }
+    } catch (e) {}
+    return { kind: '', key: '' };
+  }
   // 已拉黑时把按钮直接置为「已完成」态，避免用户重复点击
   function syncBlacklistButton(card) {
     if (!card) return;
@@ -2866,6 +2923,8 @@
     // ★ 2026-11-09：云端名单支持「主机名/路径」条目，因此先按本页完整 URL 过一遍路径表，
     //   再退回原有的 hostname 查表。路径条目只作用于这一个链接，不会让整站豁免/整站封禁。
     const _hrefNow = location.href;
+    // 旧（2026-11-09 定版，保留作对照）：黑名单 → 白名单 两段式，没有「例外」这一层。
+    /*
     const _badKey =
       (SF.matchCloudBadUrl && SF.matchCloudBadUrl(_hrefNow)) ? 'cloudBlackPath'
         : (SF.isCloudBad && SF.isCloudBad(_hostNow)) ? 'cloudBlack'
@@ -2917,6 +2976,43 @@
         reportVerdict('safe');
         return;
       }
+    }
+    */
+    // ★ 新（2026-11-23）：**三层「例外」优先矩阵**。判定顺序集中实现在 resolveListTier 里：
+    //   云端例外 > 云端黑名单 > 内置例外 > 内置黑名单 > 用户例外 > 用户黑名单 > 三档白名单。
+    //   与前版的唯一差别就是多了三层例外；白名单的「黑名单全落空才生效」没有变。
+    const _tier = resolveListTier(settings, _hostNow, _hrefNow);
+    const _badKey = _tier.kind === 'bad' ? _tier.key : '';
+    if (_tier.kind === 'exc') {
+      // 例外命中：整站不拦截、不评分、不参与连坐；并清掉可能残留的连坐记录，
+      //   否则「例外放行」会被 sfBlockedHosts 里的旧记录重新抬成 100 分（与内置白名单同一处理）。
+      //   与旧版只在内置白名单分支清理不同：三层例外都要清，否则云端例外救回来的站点
+      //   仍会被「域名级联动」二次拉黑（例外本来就是为了修复误判，留着旧记录等于没修）。
+      _clearBlockedHost(_hostNow);
+      lastResult = {
+        analyzed: true, official: true, allowlisted: true, exception: true, skip: _tier.key, skipBy: 'exception',
+        score: 0, level: 'official', reasons: [SF.listReason(_tier.key, 0)]
+      };
+      reportVerdict('safe');
+      return;
+    }
+    if (_tier.kind === 'white') {
+      // 白名单（放行）：仅当黑名单全不命中时才评估，顺序同为 云端路径 > 云端 > 内置 > 自定义。
+      // allowlisted / skipBy 的取值与旧版逐项一致（云端那两支原本就不带这两个标记）。
+      lastResult = {
+        analyzed: true, official: true, skip: _tier.key, score: 0, level: 'official',
+        reasons: [SF.listReason(_tier.key, 0)]
+      };
+      if (_tier.key === 'builtinWhite') {
+        if (SF.isExceptionHost && SF.isExceptionHost(_hostNow)) _clearBlockedHost(_hostNow);
+        lastResult.allowlisted = true;
+        lastResult.skipBy = 'builtin';
+      } else if (_tier.key === 'customWhite') {
+        lastResult.allowlisted = true;
+        lastResult.skipBy = 'user';
+      }
+      reportVerdict('safe');
+      return;
     }
     // ★ 域名级联动（祖/父/子/孙 递归连坐）：当前 host 自身或其祖先域名此前已被判危/可疑时，
     //   本页连坐判相应等级（危险→拦截下载/弹层；可疑→提示），但「不记录」统计——
@@ -3250,6 +3346,8 @@
     //   安全性：这里只是提前宣判，具体文案与处置仍由 analyzeAndAct 统一给出。
     let _fast = '';   // 'cloud-black' | 'cloud-black-path' | ... | 'cloud-white' | 'cloud-white-path' | ...
     try {
+      // 旧（2026-11-09 定版）：黑名单 → 白名单 两段式，没有「例外」这一层。
+      /*
       // 路径条目（主机名/路径）优先于同色整站条目：命中说明用户精准指定了这个链接
       if (SF.matchCloudBadUrl && SF.matchCloudBadUrl(location.href)) _fast = 'cloud-black-path';
       else if (SF.isCloudBad && SF.isCloudBad(_host)) _fast = 'cloud-black';
@@ -3259,6 +3357,18 @@
       else if (SF.isCloudOfficial && SF.isCloudOfficial(_host)) _fast = 'cloud-white';
       else if ((SF.isOfficialDomain && SF.isOfficialDomain(_host)) || isTrustedDispatch(_host)) _fast = 'builtin-white';
       else if (isAllowlisted(_host, settings.allowlist)) _fast = 'custom-white';
+      */
+      // 新（2026-11-23）：与 analyzeAndAct 共用同一个优先矩阵，避免两处顺序漂移。
+      //   例外层的 key 与下面 FAST_TEXT 的键一一对应（cloud-exception / builtin-exception / custom-exception）。
+      const _t = resolveListTier(settings, _host, location.href);
+      if (_t.kind === 'exc') _fast = _t.key === 'cloudException' ? 'cloud-exception'
+        : _t.key === 'builtinException' ? 'builtin-exception' : 'custom-exception';
+      else if (_t.kind === 'bad') _fast = _t.key === 'cloudBlackPath' ? 'cloud-black-path'
+        : _t.key === 'cloudBlack' ? 'cloud-black'
+          : _t.key === 'builtinBlack' ? 'builtin-black' : 'custom-black';
+      else if (_t.kind === 'white') _fast = _t.key === 'cloudWhitePath' ? 'cloud-white-path'
+        : _t.key === 'cloudWhite' ? 'cloud-white'
+          : _t.key === 'builtinWhite' ? 'builtin-white' : 'custom-white';
     } catch (e) {}
     if (_fast) {
       const dataFast = collectCore();
@@ -3270,7 +3380,10 @@
         'cloud-white': '命中云端白名单 → 直接放行',
         'cloud-white-path': '命中云端白名单（链接级）→ 直接放行',
         'builtin-white': '命中扩展内置白名单 → 直接放行',
-        'custom-white': '命中自定义白名单 → 直接放行'
+        'custom-white': '命中自定义白名单 → 直接放行',
+        'cloud-exception': '命中云端例外 → 直接放行（可推翻云端黑名单）',
+        'builtin-exception': '命中扩展内置例外 → 直接放行（可推翻内置黑名单）',
+        'custom-exception': '命中自定义例外 → 直接放行（可推翻自定义黑名单）'
       };
       try {
         console.log('[SilverFoxBlocker][快速通道] ' + (FAST_TEXT[_fast] || _fast) +

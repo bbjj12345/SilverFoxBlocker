@@ -21,7 +21,7 @@
   'use strict';
   if (!root) return;
 
-  var LIST_KEYS = ['allowlist', 'customBadDomains'];
+  var LIST_KEYS = ['allowlist', 'customBadDomains', 'exceptionDomains'];
   var MIRROR_MAX = 7000;          // sync 单键上限 8192，留 ~1KB 给键名与 JSON 包装
   var hasChrome = (typeof chrome !== 'undefined') && chrome && chrome.storage;
 
