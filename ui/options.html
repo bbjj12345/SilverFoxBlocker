@@ -427,7 +427,7 @@
         <div class="card" data-page-node-id="hvI1rBRFFdyf3KJVEHkYAz">
           <div class="field" data-page-node-id="oOItSmLqHP6DxMGlyjQtdD">
             <label data-page-node-id="Ol7axpG3tDeKZDnTWkWPDA">自动学习的下载黑名单</label>
-            <div class="hint" style="margin:0 0 10px" data-page-node-id="sBAydBiDlqog7AExbalZSf">每次成功拦截一次可疑下载，该文件所在域名会被自动记下；此后任何页面指向同一域名都会加分或直接拦截（银狐换落地页不换载荷服务器）。<br>2026-11-20 起：如果危险页的下载按钮是「<code>/go/event?…</code>」这类跳转端点（真实分发域藏在 302 里、页面上看不到），扩展会在后台用一个不可见标签页跑一次该跳转，把最终落到的域名也记进来（只取域名，文件当场取消，不落地）。<br>90 天未再命中自动移除，最多保留 500 条。GitHub、微软等可信下载源与自定义信任白名单永不入库。如遇误拦，删除对应条目即可恢复下载。</div>
+            <div class="hint" style="margin:0 0 10px" data-page-node-id="sBAydBiDlqog7AExbalZSf">每次成功拦截一次可疑下载，该文件所在域名会被自动记下；此后任何页面指向同一域名都会加分或直接拦截（银狐换落地页不换载荷服务器）。<br>2026-11-20 起：如果危险页的下载按钮是「<code>/go/event?…</code>」这类跳转端点（真实分发域藏在 302 里、页面上看不到），扩展会在后台用一个不可见标签页跑一次该跳转，把最终落到的域名也记进来（只取域名，文件当场取消，不落地）。<br>90 天未再命中自动移除，最多保留 500 条。GitHub、微软等可信下载源与自定义信任白名单永不入库。如遇误拦，删除对应条目即可恢复下载。<br><b>2026-11-24 起：</b>危险页上「按钮背后的地址」也会被记下——即使你一次都没点过。判定为危险后，扩展会静态扫一遍页面（<code>href</code> / <code>data-*</code> / 内联脚本里的绝对地址 / meta refresh），只收 <code>.exe .msi .zip .rar .7z .dmg .apk</code> 这类载荷，或 <code>/download</code>、<code>/dsluc</code> 这类分发页；对火山 TOS、阿里 OSS、腾讯 COS 等共享对象存储只记到<b>桶级</b>（<code>桶.区域.平台</code>），不会连累同平台的其它文件。全程只读页面、不发任何请求。</div>
             <div id="dlBlList" class="dlbl-list" data-page-node-id="QqOYCkUFdlkjxhAgD5Qnst"><div class="dlbl-empty" data-page-node-id="n8ABGTP8WjHPSA2pUBKNXD">暂无记录</div></div>
             <div class="row" style="border:0;padding:10px 0 0" data-page-node-id="P4nUgox4RtsqIe7N2y7UNu">
               <div class="rl" data-page-node-id="LJQEqK6sFEuwws5KWPWMGh"><div class="rd" id="dlBlCount" data-page-node-id="2jyArmVFPgNNywIxcGquFE">共 0 条</div></div>

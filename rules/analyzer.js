@@ -283,17 +283,37 @@
     return false;
   }
 
+  // ============ 有界缓存的淘汰策略（2026-11-24）============
+  // 旧写法：缓存条数超过上限时直接 `cache.clear()` —— 一次性丢掉**全部**条目。两个实际影响：
+  //   ① 抖动：清空后紧接的几页全部落到冷路径（仿冒检测的品牌词矩阵 + 编辑距离、官网表扫描、
+  //      通配正则编译），表现为「偶发卡顿」；而重判 / 多标签页往往集中在同一时刻发生；
+  //   ② 命中率塌陷：被清掉的常常正是刚用过、马上还要用的热条目（同源主机在页面上反复出现），
+  //      清完立刻又算一遍，等于白算。
+  // 现改为 LRU：命中即把该条移到队尾（Map 保留插入顺序），满了只淘汰**最旧的一条**。
+  //   容量仍然有界（不会无界增长），单次淘汰 O(1)，不再出现「整表归零」的瞬间。
+  const _CACHE_MISS = Symbol('cache-miss');
+  function _lruGet(cache, key) {
+    if (!cache.has(key)) return _CACHE_MISS;
+    const v = cache.get(key);
+    cache.delete(key);          // 重新插入 → 排到队尾（最近使用）
+    cache.set(key, v);
+    return v;
+  }
+  function _lruPut(cache, key, val, max) {
+    if (cache.has(key)) cache.delete(key);
+    else if (cache.size >= max) cache.delete(cache.keys().next().value);   // 只淘汰最旧的一条
+    cache.set(key, val);
+  }
+
   // 域名判定结果缓存：名单是静态数据，同一域名的判定结果恒定不变。
   // 页面内链接高度同源（同一 host 反复出现），缓存把重复查询摊平为一次 Map 读取。
   // 限容 4096 防极端页面（数千个不同外链域名）无界增长。
   function _memoHost(cache, hostname, calc) {
     const k = hostname || '';
-    let r = cache.get(k);
-    if (r === undefined) {
-      r = calc(k);
-      if (cache.size > 4096) cache.clear();
-      cache.set(k, r);
-    }
+    const hit = _lruGet(cache, k);
+    if (hit !== _CACHE_MISS) return hit;
+    const r = calc(k);
+    _lruPut(cache, k, r, 4096);
     return r;
   }
 
@@ -571,8 +591,8 @@
   //   将来「只给自定义黑名单放开某条限制」时不必再改这里。
   function _customPattern(d, kind, pol) {
     const key = kind + '|' + d;
-    let p = _customPatCache.get(key);
-    if (p !== undefined) return p;
+    const got = _lruGet(_customPatCache, key);
+    if (got !== _CACHE_MISS) return got;
     let out = null;
     if (d.indexOf('*') !== -1 || d.indexOf('?') !== -1) {
       // ⚠️ 不要在这里手动处理前导 `*.`：`*.com` 必须走 _compileBadWild 的护栏才会被拒，
@@ -582,8 +602,7 @@
       else if (c.kind === 'suffix-wild') out = { suffixRe: c.re };
       else if (c.kind === 'wild') out = { re: c.re };
     }
-    if (_customPatCache.size > 512) _customPatCache.clear();
-    _customPatCache.set(key, out);
+    _lruPut(_customPatCache, key, out, 512);
     return out;
   }
   // listKind：'customWhite' | 'customBlack'（缺省按黑名单算 —— 两者当前策略相同，
@@ -1386,29 +1405,57 @@
   function _spoofBrandFallback(h) {
     let r = null;
     try { r = detectSpoof(h, { verifiedIcp: false }); } catch (e) { return null; }
-    if (!r || !r.brand) return null;
-    const mt = r.matchType;
-    if (mt !== 'typo' && mt !== 'branddomain') return null;
+    // 旧（只能看到 basic 一条线）：
+    //   if (!r || !r.brand) return null;
+    //   const mt = r.matchType;
+    //   if (mt !== 'typo' && mt !== 'digit' && mt !== 'branddomain') return null;
+    // ★ 2026-11-24（本轮）：basic 落空时补跑**隐藏变体分支**（与 detSpoof 完全同一套信号）。
+    //   缺陷：`ai.deekseep-e.com.cn` 在检测链路已经判了 45 分「拼写变体」，点「访问正确的页面」
+    //   却落到「没有已收录的正确域名」—— 两条线自相矛盾。原因是 detectSpoof 只覆盖 basic，
+    //   变体结论在 detectBrandVariantCached 里，旧代码根本没看这一层。
+    //   口径与 getBrandSignal 一致：basic 优先，未命中才问变体；只有确认了品牌词才继续，
+    //   拿不到 brand 就保持说明页（绝不凭「大概像谁」把用户送走）。
+    let brand = (r && r.brand) || '';
+    let mt = (r && r.matchType) || '';
+    if (!brand) {
+      let v = null;
+      try { v = detectBrandVariantCached(h); } catch (e) { return null; }
+      if (!v || !v.brand) return null;
+      // ⚠️ `variant-typo`（编辑距离型变体）故意不接：它和 basic 的 typo 是同一种「拼写差一两个字母」，
+      //   只是没通过 basic 的 lcp/lcs 护栏才落到变体分支。huolong.cn（火龙）与 huorong 编辑距离 1，
+      //   是**另一家公司**——把它送到 huorong.cn 比留在说明页更糟（test-correct-site 有反向护栏）。
+      //   其余变体（重排 / 插字 / 分片拼接 / 子串包含）都建立在「字母组成就是该品牌」上，可以放心给官网。
+      if (v.matchType === 'variant-typo') return null;
+      brand = v.brand;
+      mt = 'variant';
+    }
+    // ★ 2026-11-24：digit（数字形近，ba1du / g00gle）与 typo 同属「拼写对不上」，
+    //   官网表里登记了这个品牌就照样能把用户送到官网；confidence 统一按 typo 输出，
+    //   说明页 / 提示语复用「当前域名拼写与该品牌相近」的措辞。
+    //   variant（重排 / 插字 / 分片拼接，deekseep-e / deeposieek）：字母组成就是同一个品牌，
+    //   单独给一种置信度，文案说明「字母被重排或插入了个别字母」，比笼统说「拼写相近」准确。
+    if (mt !== 'typo' && mt !== 'digit' && mt !== 'branddomain' && mt !== 'variant') return null;
     const tables = _correctTables();
-    const e = tables.map.get(r.brand);
+    const e = tables.map.get(brand);
     if (e && e.domain) {
       if (e.domain === h) return null;
       return {
         domain: e.domain,
         sites: (Array.isArray(e.sites) && e.sites.length) ? e.sites : _oneSite(e.domain),
-        product: e.product || '', brand: r.brand, source: e.source, confidence: mt
+        product: e.product || '', brand: brand, source: e.source,
+        confidence: mt === 'digit' ? 'typo' : mt
       };
     }
     // 官网表里没登记这个品牌词：branddomain 还能靠「主干 == 品牌词」反查官方域名表；
-    // typo 不行 —— 错拼词若不在官网表里，就没有依据猜它该去哪（保持说明页）。
+    // typo / digit / variant 不行 —— 错拼词若不在官网表里，就没有依据猜它该去哪（保持说明页）。
     if (mt !== 'branddomain') return null;
-    const rev = _officialByLabel().get(r.brand);
+    const rev = _officialByLabel().get(brand);
     if (!rev || !rev.domain || rev.domain === h) return null;
     if (getRegistrableDomain(rev.domain) === getRegistrableDomain(h)) return null;
     return {
       domain: rev.domain,
       sites: _oneSite(rev.domain),
-      product: '', brand: r.brand, source: 'official', confidence: 'branddomain'
+      product: '', brand: brand, source: 'official', confidence: 'branddomain'
     };
   }
   // 「被拦主机名的注册域主干恰好等于品牌词」—— 只用于给提示语定性，不参与域名解析。
@@ -1424,7 +1471,7 @@
     h = h.replace(/^https?:\/\//, '').replace(/[/?#].*$/, '');
     h = h.replace(/:\d+$/, '').replace(/^www\./, '');
     if (!h || h.indexOf('.') === -1) return null;
-    if (_correctCache.has(h)) return _correctCache.get(h);
+    if (_correctCache.has(h)) return _lruGet(_correctCache, h);
 
     // 两级数据源先合并成一张表再扫：这样「云端的长词」才能压过「内置的短词」，
     // 而同名词仍然内置优先。先查内置、再查云端的写法会让云端补录永远生效不了。
@@ -1451,8 +1498,7 @@
       // 认出品牌，交给检测结论回退（typo / branddomain）
       out = _spoofBrandFallback(h);
     }
-    if (_correctCache.size >= CORRECT_CACHE_MAX) _correctCache.clear();
-    _correctCache.set(h, out);
+    _lruPut(_correctCache, h, out, CORRECT_CACHE_MAX);
     return out;
   }
 
@@ -1717,6 +1763,21 @@
   function _isGenericBrandWord(w) {
     return _SPOOF_GENERIC.has(String(w || '').toLowerCase());
   }
+
+  // ============ 通用行业缩写：只豁免「裸域」这一种形态（2026-11-24）============
+  // 与上面的通用词表不同：这些词**保留在品牌词表里**，因为「品牌词 + 词缀 / 子域」
+  // 仍是有效的仿冒形态（erp-login.xxx.top、erp.evil.com 都要能命中段匹配）；
+  // 但当一个域名**整个主干就是这一个词**（erp.com / www.erp.com / erp.com.cn）时，
+  // 「段 == 品牌词」不构成任何仿冒证据：缩写本身没有专有性，做 ERP 的公司注册 erp.com
+  // 是最自然的用法，仿冒者也不会拿一个通用缩写当仿冒目标（没有"官方"可冒充）。
+  // 实测（tools/test-brand-variant.js 第 14 节）：品牌词表中落入这一格的只有 erp；
+  //   pdf 早已被「通用词表」整体剔除；msi 虽是缩写但同时是真实品牌名（微星 / Windows 安装包），
+  //   故意不收 —— 裸域 msi.net 仍按仿冒 60 分处理。
+  // 新增品牌词后若与下表撞上，会立即体现为「裸域不再计 60 分」，可用同一节测试发现。
+  const _GENERIC_ABBR = new Set([
+    'erp', 'crm', 'hrm', 'ehr', 'oa', 'mes', 'wms', 'plm', 'bpm', 'srm', 'scm', 'aps', 'mrp',
+    'pdm', 'pos', 'mis', 'bi', 'cms', 'ecm', 'saas', 'paas', 'iaas', 'vpn', 'sdk', 'ide', 'api'
+  ]);
 
   // 仅取 ASCII、长度≥4 的品牌词作为「可识别的主品牌标签」，避免 qq / jd 等超短词
   // 或中文品牌词造成的边界误判；短品牌（qq 等）仍由 OFFICIAL_DOMAINS 兜底。
@@ -1984,8 +2045,15 @@
     while (changed) {
       changed = false;
       for (const a of affixes) {
-        if (rem.length > a.length && rem.startsWith(a)) { rem = rem.slice(a.length); changed = true; }
-        else if (rem.length > a.length && rem.endsWith(a)) { rem = rem.slice(0, rem.length - a.length); changed = true; }
+        // 旧（严格大于）：rem 与词缀**等长**时整段剥不掉 —— `deepseekcn` 去掉品牌词后剩 "cn"，
+        //   `"cn".length(2) > "cn".length(2)` 为 false，于是永远判不干净，只剩 45 分的变体分。
+        //   这正是「品牌词 + 完整词缀」（deepseekcn / deepseekapp / deepseekvip / taobaocn）漏检的根因。
+        // if (rem.length > a.length && rem.startsWith(a)) { rem = rem.slice(a.length); changed = true; }
+        // else if (rem.length > a.length && rem.endsWith(a)) { rem = rem.slice(0, rem.length - a.length); changed = true; }
+        // 新（允许等长）：等长说明去掉品牌词后**只剩一个词缀**，是「品牌词 + 词缀」最纯的形态。
+        //   剥成空串后循环自然结束，不会无限循环。
+        if (rem.length >= a.length && rem.startsWith(a)) { rem = rem.slice(a.length); changed = true; }
+        else if (rem.length >= a.length && rem.endsWith(a)) { rem = rem.slice(0, rem.length - a.length); changed = true; }
       }
     }
     return rem.replace(/^[.\-_]+/, '').replace(/[.\-_]+$/, '');
@@ -2038,6 +2106,35 @@
   function _lcp(a, b) { let i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++; return i; }
   function _lcs(a, b) { let i = 0; while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i++; return i; }
 
+  // ★ typo 分支的「真英文词」排除表（2026-11-24）。
+  //   缘由：编辑距离 1 的**同长度替换**（discard → discord 只差第 5 位 a/o）在结构上与
+  //   「deepseak → deepseek」这类真 typo 完全同形，没有任何字符串层面的区别可言：
+  //   都是首尾各咬住一段、中间改一个字符、长度不变。LCP/LCS 护栏对它无效（discard 的
+  //   LCP=4 / LCS=2，深度咬合），只能靠「这个词本身是常用英文词」来判断。
+  //   生成方式（**不要手改**，改品牌词表后重跑即可）：tools/test-brand-variant.js 把
+  //     tools/data/en-common-10000.txt（google-10000-english）+ 少量手工常用词
+  //   逐个当域名扫一遍，凡是会命中「域名仿冒」的英文词就收进本表。当前 63 个。
+  //   没直接内嵌 9424 词的完整词表（72 KB、每页还要建 Set），是因为只有这 63 个词真正
+  //   与品牌词碰撞，其余词在 typo/variant 分支里本来就过不了编辑距离护栏。
+  //   维护约定：新增品牌词后跑测试，若出现「新碰撞词不在本表」会直接失败并给出词面。
+  const _TYPO_EN_STOPWORDS = new Set([
+    // ★ 2026-11-24（本轮补 6 词）：全量 9424 个常用英文词复扫时新抓到的一批变体碰撞，
+    //   全部是「变体分支」而非 typo/basic —— 因为 analyze 的 rr.spoof 只带 basic 结论，
+    //   旧的词表自检用 rr.spoof 取样，把这 6 条整批漏掉了（测试已改为看 reasons）。
+    //   accent↔antecc（重排）、discovered↔discord（插 vee）、officers↔office（插 rs）、
+    //   operating / operation↔openai（插 rtg / rto）、tenant↔tencent（编辑距离 2）。
+    //   它们既是误报分，也是「访问正确的页面」误跳的源头（discovered.com → discord.com）。
+    'accent', 'discovered', 'officers', 'operating', 'operation', 'tenant',
+    'amanda', 'berry', 'bitter', 'black', 'burton', 'class', 'data', 'decent',
+    'decode', 'discard', 'double', 'doubt', 'down', 'dreams', 'emerge', 'encode',
+    'erp', 'exceed', 'except', 'excess', 'ferry', 'grave', 'illustrated', 'illustration',
+    'index', 'intend', 'intent', 'inter', 'jerry', 'kerry', 'kingdom', 'lack',
+    'mall', 'marathon', 'matrix', 'merge', 'merry', 'micro', 'north', 'officer',
+    'offices', 'opened', 'opens', 'percent', 'perry', 'premier', 'racial', 'recent',
+    'release', 'rwanda', 'seasonal', 'seasons', 'skill', 'small', 'sought', 'team',
+    'terry', 'tongue', 'uganda', 'vast', 'vincent', 'webchat', 'winston',
+  ]);
+
   // ============ 形近字符混淆检测（homoglyph，原作 S3 算法，此前缺失）============
   // 银狐常用形近字符替换绕过品牌词检测：0↔o、1↔l、rn↔m、vv↔w 等。
   // 只在仿冒匹配阶段对 ASCII 段做规范化；官方豁免仍用原始 normalized，
@@ -2051,6 +2148,43 @@
     return out;
   }
 
+  // ============ 数字的「多义读法」（2026-11-24）============
+  // 上面的 HOMOGLYPH_MAP 是**固定置换**：1 一律读成 l。但同一个数字在域名里的读法是
+  //   多义的 —— 1 既可以是 l 也可以是 i，5 可以是 s，3 可以是 e；选错一种就整条判定作废。
+  // 实测漏报 ba1du.com：折算后成 baldu，与品牌词 baidu 的 LCP/LCS 都只有 2，
+  //   编辑距离护栏（max(lcp,lcs) ≥ 4）直接否掉，隐藏分支的 lcp ≥ 3 也进不去。
+  // 所以这里不再做「先折算、后比对」，而是把数字当成**一个字符的多种可能写法**，
+  //   逐个位置判断「这个数字能不能读成品牌词这一格上的字母」。
+  const DIGIT_HOMOGLYPH = {
+    '0': 'o', '1': 'li', '2': 'z', '3': 'e', '4': 'a', '5': 's',
+    '6': 'g', '7': 't', '8': 'b', '9': 'g',
+  };
+  // 标签与品牌词等长、且「非数字位置逐字相同、数字位置都能读成对应字母」时，返回替换处数；否则 0。
+  // 只允许数字顶替字母（反向不认）：`360` / `hao123` 这类含数字品牌自己的数字位不受影响。
+  function _digitLetterHits(label, kw) {
+    if (label.length !== kw.length) return 0;
+    let hits = 0;
+    for (let i = 0; i < label.length; i++) {
+      const a = label[i], b = kw[i];
+      if (a === b) continue;
+      const reads = DIGIT_HOMOGLYPH[a];
+      if (!reads || reads.indexOf(b) === -1) return 0;   // 该位置既不是数字，也不是合法读法 → 整体否决
+      if (++hits > 2) return 0;                          // 顶替超过 2 处不再算「形近」，交给 A/B 分支
+    }
+    return hits;
+  }
+
+  // ============ 域名仿冒：两条检测线的公共前置（2026-11-24 架构整理）============
+  // 之前 basic 与隐藏分支各自把「例外 / 官方域 / UGC 平台」判一遍，重复且已实际漂移过一次
+  // （隐藏分支漏了 `_brandSelfVerdict`，chrome.com / android.com 被"拼接式"误判 45）。
+  // 现在统一成一道闸门：两边都调用它，改一处两边同时生效。
+  function _spoofExempt(normalized) {
+    if (isExceptionHost(normalized)) return 'exception';
+    if (_suffixHit(OFFICIAL_SET, normalized) || _wildListHit(OFFICIAL_WILD, normalized)) return 'official';
+    if (isTrustedPlatform(normalized)) return 'ugc';
+    return '';
+  }
+
   function detectSpoof(hostname, opts) {
     // opts.verifiedIcp：调用方是否已确认「本域名确有 ICP 备案」（权威库或页面备案号）。
     //   undefined ⇒ 调用方没有备案上下文（如下载拦截路径只拿到 hostname）→ 保持旧行为放行，
@@ -2058,19 +2192,17 @@
     const _ctxKnown = !!(opts && typeof opts.verifiedIcp === 'boolean');
     const _verifiedIcp = !!(opts && opts.verifiedIcp);
     const normalized = (hostname || '').toLowerCase().replace(WWW_RE, '');
-    // ★ 用户指定豁免域名（如 qianwenai.com）：整站不判品牌仿冒（连同 content.js 的连坐/评分告警一并放行）。
-    //   其余检测（缺备案 / 混淆脚本 / 木马安装包等）仍照常运行；其它 qianwen 仿冒站（go0gle 类等）仍受保护。
-    if (isExceptionHost(normalized)) return null;
-    // 官方域名豁免：含品牌词但确属官方（如 www.moonshot.cn / qq.com / kimi.moonshot.cn / aliyun.com）
-    // 不算仿冒。否则 detectSpoof 仅做品牌词段匹配会把这些真官网误判为仿冒。
-    // 官方豁免使用原始 normalized（不施加形近规范化），防止 go0gle 类被误判为官方域名。
-    // 2026-11-11：内置白名单的通配条目同样属于「官方域」，一并豁免仿冒判定
-    if (_suffixHit(OFFICIAL_SET, normalized) || _wildListHit(OFFICIAL_WILD, normalized)) return null;
-    // UGC 平台跳过：Wiki 农场 / Pages / 静态托管 / 博客的子域由用户自由创建，
-    // 子域名里带品牌词是常态（如 wechat-tips.github.io、wps-guide.vercel.app），
-    // 判「域名仿冒」会造成海量合法页面误报。
-    // ⚠️ 只跳过本条规则——页面内容仍照常参与混淆脚本 / 沙箱探测 / 木马安装包等全部检测。
-    if (isTrustedPlatform(normalized)) return null;
+    // ★ 统一豁免闸门（例外域名 / 官方域 / UGC 平台）—— 原先三行分散判断，现与隐藏分支共用。
+    //   · 例外域名（如 qianwenai.com）：整站不判品牌仿冒，其余检测照常；
+    //   · 官方域（www.moonshot.cn / kimi.moonshot.cn / qq.com）：用**原始** normalized 判定，
+    //     不施加形近规范化，防止 go0gle 类被误认为官方域名；内置白名单的通配条目同样算官方；
+    //   · UGC 托管（wechat-tips.github.io / wps-guide.vercel.app）：子域由用户自由创建，
+    //     只跳过本条规则，页面内容仍参与混淆脚本 / 沙箱探测 / 木马安装包等全部检测。
+    // 旧：
+    // if (isExceptionHost(normalized)) return null;
+    // if (_suffixHit(OFFICIAL_SET, normalized) || _wildListHit(OFFICIAL_WILD, normalized)) return null;
+    // if (isTrustedPlatform(normalized)) return null;
+    if (_spoofExempt(normalized)) return null;
     // ★ 站点自身品牌豁免（2026-11-05 改造）：注册域主标签恰好等于某品牌词。
     //   同一注册局内这是可靠的所有权证据（他人抢注 brand.com，品牌方就拿不到 brand.com）；
     //   但跨注册局毫无约束力 —— todesk.com.cn / todesk.cn 谁都能注册，
@@ -2094,8 +2226,21 @@
     //   此前把 .live / .top / .com.cn 等后缀当作普通域名段参与品牌匹配，
     //   导致 `btsow.live` 因派生品牌词 live 被判「域名仿冒官方品牌」。
     const _suffixLabels = new Set(getPublicSuffix(h).split('.').filter(Boolean));
-    const labels = h.split('.').filter(l => !_suffixLabels.has(l));
-    const labelSegs = labels.map(l => l.split(/[-_]/));
+    // 旧（只扫形近折叠后的标签）：
+    // const labels = h.split('.').filter(l => !_suffixLabels.has(l));
+    // const labelSegs = labels.map(l => l.split(/[-_]/));
+    // ★ 2026-11-24「数字被形近归一化吃掉」：normalizeHomoglyph 把 0→o、1→l 之后，
+    //   `deepseek10` 变成 `deepseeklo`、`deepseek2026` 变成 `deepseek2o26`。原本 B 类子串规则
+    //   会先剥掉首尾数字串（_substrSpoofOK），「品牌词 + 数字」本来能命中 60 分，
+    //   折叠后剩下 `lo` / `2o26` 这种**假剩余**，剥数字剥不掉、剥词缀也剥不掉 → 整条规则失效，
+    //   只剩隐藏分支的 45 分。实测：deepseek10=45（应 60）、deepseek2026=45。
+    //   做法：**两组标签各扫一遍** —— 原始标签（保留数字）在前，形近折叠标签兜底；
+    //   两组字符串完全相同（绝大多数域名）时只扫一遍，不做双倍开销。
+    const _rawLabels = normalized.split('.').filter(l => !_suffixLabels.has(l));
+    const _foldLabels = h.split('.').filter(l => !_suffixLabels.has(l));
+    const _labelSets = _rawLabels.join('\n') === _foldLabels.join('\n')
+      ? [_rawLabels]
+      : [_rawLabels, _foldLabels];
 
     // ---- 通用词品牌：官方域「整串嵌入」判定（2026-10-29）----
     // 通用词品牌（live / tool / code / book / china …）已从品牌词表剔除，
@@ -2120,6 +2265,21 @@
       };
     }
 
+    // ★ 2026-11-24：两组标签依次扫描，命中即返回（原始标签优先：数字保留时「品牌词 + 数字」
+    //   这类子串证据更强；折叠标签兜底 0→o / 1→l 替换式仿冒）。扫描逻辑整体抽到 _scanBrandLabels。
+    for (const labels of _labelSets) {
+      const hit = _scanBrandLabels(labels, h);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  // ---- 单组标签的品牌词扫描（A 段匹配 / B 子串 / C 堆叠 / D 编辑距离 / 去连字符）----
+  // 从 detectSpoof 内联抽出，只为让它能对「原始标签」「形近折叠标签」各跑一遍（见调用处注释）。
+  // 逻辑与抽出前逐行一致：只依赖 labels 与 h（h 仅用于判断是否存在连字符），无其它状态。
+  function _scanBrandLabels(labels, h) {
+    const labelSegs = labels.map(l => l.split(/[-_]/));
+
     // ---- 性能重构（#343）：把「品牌词 × 域名段」的嵌套遍历换成查表 ----
     // 原实现对 325 个品牌词各自遍历一遍全部域名段（A 类）与全部段计数（C 类），
     // 是 O(品牌词数 × 段数) 的矩阵扫描。域名段是极小集合（通常 2–5 个），
@@ -2135,7 +2295,19 @@
     for (const kw of SPOOF_KEYWORDS) {
       // A. 精确段匹配（查表；命中时 seg === kw）
       const cnt = segCount.get(kw) || 0;
-      if (cnt > 0) return { brand: kw, matchType: 'seg', detail: `域名段「${kw}」精确匹配品牌词「${kw}」` };
+      // 旧：
+      // if (cnt > 0) return { brand: kw, matchType: 'seg', detail: `域名段「${kw}」精确匹配品牌词「${kw}」` };
+      // 新（2026-11-24）：「通用行业缩写 + 裸域」不计分 —— 见 _GENERIC_ABBR 处注释。
+      //   判据（三者同时成立才豁免）：
+      //     ① labels.length === 1：去掉公共后缀后只剩**一个**标签，即域名主干就是这个词；
+      //     ② labels[0] === kw：该标签**整体**等于品牌词，而不是 erp-login 这种拆分后恰好含 erp
+      //        （`erp-login.xxx.top` 的 labels 也是长度 1，但标签是 "erp-login"，②不成立 → 照常 60 分）；
+      //     ③ kw 在通用缩写表里。
+      //   命中后只是**跳过本条品牌词**，其余品牌词与 B/C/D/E 各分支照常跑，不是整条规则弃权。
+      if (cnt > 0) {
+        const _bareAbbr = labels.length === 1 && labels[0] === kw && _GENERIC_ABBR.has(kw);
+        if (!_bareAbbr) return { brand: kw, matchType: 'seg', detail: `域名段「${kw}」精确匹配品牌词「${kw}」` };
+      }
       // B. 子串包含（kw≥4）—— 加「词边界」护栏，避免品牌词埋在更长语义标签里被误判
       if (kw.length >= 4 && labelsJoined.includes(kw)) {
         for (const label of labels)
@@ -2155,11 +2327,54 @@
       for (const label of labels) {
         const diff = Math.abs(label.length - kw.length);
         if (diff > 2) continue;
-        if (Math.max(_lcp(label, kw), _lcs(label, kw)) < 4) continue;
+        const lcp = _lcp(label, kw), lcs = _lcs(label, kw);
+        if (Math.max(lcp, lcs) < 4) continue;
+        // ⚠️ 曾试过两条「结构护栏」，实测全部放弃（保留记录避免重复踩坑）：
+        //   ① 要求 lcp ≥ 2（首部必须咬住）—— 会丢掉「首字母被删/被换」这一大类真仿冒：
+        //      eepseek.com（删 d）、aipay.com（删 l）、penai.com（删 o）、wchatpay.com（删 e）、
+        //      slipay.com（插 s）、dbepseek.com（插 d）、cyhatglm.com（换 c）。
+        //      900 个单字符变异样本里 205 条从「命中」变「漏检」（23%），代价不可接受。
+        //   ② d=2 要求 lcp≥2 且 lcs≥2 —— 同样误伤（release↔netease 与 eepseek↔deepseek
+        //      在字符串层面完全同形：都是「一端咬合、另一端全不同」）。
+        // 结论：这类误报的根因是「候选本身是常用英文单词」，只能靠词表判定，见 ③。
         const d = _levenshtein(label, kw);
         if (d < 1 || d > 2) continue;
         if (d === 2 && diff > 1) continue;
+        //   ③ 极少数「真英文词 ↔ 品牌词编辑距离 1~2」的碰撞，结构与真 typo 完全同形
+        //      （discard↔discord 只差第 5 位 a/o，LCP=4/LCS=2），只能靠词表排除。
+        //      词表由 tools/test-brand-variant.js 用 10000 个常用英文词离线扫描生成，
+        //      只收**实测撞上**的词；品牌词表变动后重跑该测试即可发现新增碰撞。
+        if (_TYPO_EN_STOPWORDS.has(label)) continue;
         return { brand: kw, matchType: 'typo', detail: `域名「${label}」与品牌词「${kw}」编辑距离 ${d}（疑似 typo 仿冒）` };
+      }
+    }
+
+    // ---- E. 数字形近（1→i/l、5→s、3→e …）2026-11-24 ----
+    // 缘起：ba1du.com 漏检（见 DIGIT_HOMOGLYPH 处的注释）。数字被折成某一种读法后，
+    //   typo 的 LCP/LCS 护栏与隐藏分支的 lcp≥3 都可能同时失效，而它本身证据并不弱：
+    //   除数字以外的每个字母都精确对上。判据因此写得很紧 ——
+    //     ① 与品牌词**等长**；② 非数字位置**逐字相同**；③ 数字顶替 1~2 处；
+    //   满足三条的标签在结构上就是「把品牌词里的字母写成数字」，误报面极小
+    //   （纯字母域名根本进不来：没有数字位就没有替换，hits=0）。
+    // 分值语义等同「编辑距离 1 的 typo」（basic 档 60 分）。
+    if (/\d/.test(labelsJoined)) {
+      // 用**全量**品牌词（含从官方域派生的 apple / xiaomi / steam），比 D 段更宽：
+      //   D 段只用精选词是因为「编辑距离」本身会把 mail↔gmail 这类常见词撞进来，
+      //   而本条要求「等长 + 非数字位逐字相同」，没有这个风险面。
+      // 长度先筛一遍：等长是判据的一半，长度不在标签集合里的品牌词根本不用比。
+      const _lens = new Set(labels.map(l => l.length));
+      for (const kw of SPOOF_KEYWORDS) {
+        if (kw.length < 5 || !_lens.has(kw.length)) continue;
+        for (const label of labels) {
+          if (label.length !== kw.length) continue;
+          const hits = _digitLetterHits(label, kw);
+          if (!hits) continue;
+          if (_TYPO_EN_STOPWORDS.has(label)) continue;   // 与 typo/variant 共用同一份英文词排除表
+          return {
+            brand: kw, matchType: 'digit',
+            detail: `域名「${label}」把品牌词「${kw}」中的 ${hits} 个字母写成数字（形近读法），疑似仿冒`
+          };
+        }
       }
     }
 
@@ -2179,6 +2394,288 @@
     return null;
   }
 
+  // ============ 隐藏分支 A+B：品牌词「重排 / 插字」变体（2026-11-24）============
+  // 背景：上面的 basic 用「段匹配 / 子串 / 编辑距离(1-2 步) + LCP·LCS≥4」判定，有两条护栏会漏掉
+  //   一类真实样本（均实测）：
+  //     ai.deekseep-e.com.cn —— 与 deepseek 字母多重集**完全相同**（p/k 换位），LCP 只有 3，被 typo 护栏否掉；
+  //     cn.deeposieek.com.cn —— 与 deepseek 编辑距离 2、LCP 4，被「d==2 且长度差>1 视为太弱」否掉。
+  // 本分支**不改动 basic**、与之独立判断，任一方命中都计分（basic 60 / 本分支 45）。
+  //   A（宽松编辑距离）：长度差 ≤2、LCP≥3 且 LCS≥2（两端都咬住、只改中间）、字母多重集 Jaccard≥0.6；
+  //   B（字母多重集）：① 纯重排（多重集完全相等、顺序不同）；② 品牌词 + 2~3 个额外字母且额外部分非英文词缀。
+  // 护栏（全部字符串层，不引入外部数据源）：
+  //   ① 只对长度 ≥6 的品牌词生效 —— ≤5 的词（kimi / wps / steam）做 2 步编辑会与大量英文词撞车
+  //      （实测 steam↔teams、desktop↔todesk 都是 0.73~0.75 的相似度）；
+  //   ② 首字母必须相同（A 由 LCP≥3 隐含；B② 显式要求；B① 是多重集相等，天然强约束）；
+  //   ③ 官方域 / 内置白名单 / 例外域名 / UGC 托管平台 一律跳过（与 basic 共用同一套豁免）；
+  //   ④ 权威备案库确认有备案的域名跳过（与 basic 的 ICP 联动口径一致，由调用方判断）；
+  //   ⑤ 命中只给 45 分并标记 soft —— **不进 STRONG 组合升级**，否则「近似拼写」单条就会判死，
+  //      webchat.com / deepseeker.com 这类英文词撞车立刻变成误拦。
+  const BRAND_VARIANT_MIN_KW = 6;
+  // 额外字母若恰好是常见英文派生词缀（deepseek+ers / +ing / +ly），更像正常构词而非仿冒 → 不计。
+  // ⚠️ 存的是**排序后**的词缀（'ing'→'gin'），与 _sortedChars(extra) 比对，避免插入顺序影响判定。
+  const _VARIANT_EXTRA_AFFIX = new Set(['s', 'es', 'er', 'ers', 'ing', 'ings', 'ed', 'ly', 'ies', 'al', 'ic', 'ical',
+    'est', 'ish', 'ness', 'tion', 'sion', 'ment', 'able', 'ible', 'ive', 'ous', 'ful', 'less', 'ist', 'ism',
+    'ance', 'ence', 'ity', 'age', 'dom', 'hood', 'ship', 'ward', 'wise', 'ise', 'ize', 'ation']
+    .map(x => x.split('').sort().join('')));
+  function _sortedChars(s) { return s.split('').sort().join(''); }
+  // cand 比 kw 多出的字母；cand 不是 kw 的超集时返回 null
+  function _extraLetters(cand, kw) {
+    const need = new Map();
+    for (const ch of kw) need.set(ch, (need.get(ch) || 0) + 1);
+    let extra = '';
+    for (const ch of cand) {
+      const n = need.get(ch) || 0;
+      if (n > 0) need.set(ch, n - 1); else extra += ch;
+    }
+    for (const v of need.values()) if (v > 0) return null;
+    return extra;
+  }
+  // 字母多重集的 Jaccard（按出现次数取最小/最大值），衡量「同一堆字母」的程度
+  function _multisetJaccard(a, b) {
+    const ma = new Map(), mb = new Map();
+    for (const ch of a) ma.set(ch, (ma.get(ch) || 0) + 1);
+    for (const ch of b) mb.set(ch, (mb.get(ch) || 0) + 1);
+    let inter = 0, union = 0;
+    for (const [ch, n] of ma) {
+      const k = mb.get(ch) || 0;
+      inter += Math.min(n, k);
+      union += Math.max(n, k);
+    }
+    for (const [ch, n] of mb) if (!ma.has(ch)) union += n;
+    return union ? inter / union : 0;
+  }
+  // ============ 预处理分叉：raw / squash / tokens / windows / boundary（2026-11-24）============
+  // 难点：B①/B② 要比「字母多重集」，任何剥离都会改变集合（deekseep-e 一剥就不是那个集合了）；
+  //   A 要的是「去噪后的可比串」，两者共用一份字符串必然互相将就。做法是**输入层分叉、一次生成**：
+  //   · raw      —— 原样标签，交给 B①/B② 与最后的兜底比对（信息最全）；
+  //   · squash   —— 整标签去 `-`/`_`，dehyphen 型仿冒的基线（旧实现只有这一种）；
+  //   · tokens   —— 按 `.` 与 `-` 切片，精确/编辑距离的比对单位；
+  //   · windows  —— 连续 1~3 片拼接（deep + seek → deepseek），专治"被拼进超长串后长度差超标"；
+  //   · boundary —— 只剥首尾的连字符/数字，不碰中间（否则 `deekseep-e` 的 `-e` 会被算成插入字母）。
+  // cands 按「信息损失从小到大」排列，同一域名多种解读并存时优先给出损失最小的解释。
+  // 一次生成、两处复用，A/B 不再各自 normalize 一遍（上一轮就是各写一份豁免才漂移的）。
+  function _spoofPrep(hostname) {
+    const normalized = (hostname || '').toLowerCase().replace(WWW_RE, '');
+    if (!normalized) return null;
+    const h = normalizeHomoglyph(normalized);
+    const suffixLabels = new Set(getPublicSuffix(h).split('.').filter(Boolean));
+    const hLabels = h.split('.');
+    const oLabels = normalized.split('.');
+    const cands = [];
+    const contain = [];
+    // ★ 2026-11-24：记录每个「多 token 窗口拼接」结果两侧还剩哪些 token，
+    //   供 detectBrandVariant 判断「品牌词之外是不是只剩站点性质词」（my-deep-seek-app 这类）。
+    //   key = 拼接结果，value = { pre: [...], suf: [...] }（首次出现者为准，同串语义一致）。
+    const winCtx = new Map();
+    const seenC = new Set();
+    for (let i = 0; i < hLabels.length; i++) {
+      const l = hLabels[i];
+      if (!l || suffixLabels.has(l)) continue;
+      const squash = l.replace(/[-_]/g, '');
+      const toks = l.split(/[-_]+/).filter(Boolean);
+      // 顺序 = 信息损失从小到大
+      cands.push(squash);
+      for (let k = 0; k < toks.length; k++) {
+        if (toks[k].length >= 5) cands.push(toks[k]);
+        let acc = '';
+        for (let n = 0; n < 3 && k + n < toks.length; n++) {
+          acc += toks[k + n];
+          if (acc.length >= 5) cands.push(acc);
+          if (n >= 1 && acc.length >= 5 && !winCtx.has(acc)) {
+            winCtx.set(acc, { pre: toks.slice(0, k), suf: toks.slice(k + n + 1) });
+          }
+        }
+      }
+      const boundary = l.replace(/^[-_\d]+/, '').replace(/[-_\d]+$/, '');
+      if (boundary && boundary !== l) cands.push(boundary);
+      cands.push(l);              // raw 兜底，放最后
+      // 子串包含用的文本：squash（连字符被整段删除的障眼法在这里还原成连续串）
+      if (squash.length >= 5 && squash.length <= 40 && !seenC.has(squash)) {
+        seenC.add(squash);
+        contain.push({ text: squash, display: String(oLabels[i] || '').replace(/[-_]/g, '') || squash });
+      }
+    }
+    return { normalized, h, suffixLabels, cands, contain, winCtx };
+  }
+
+  // 子串包含（拼接式仿冒）的「填充片段」词表：品牌词前后只挂这类站点性质词时，
+  //   更像第三方工具站 / 粉丝站（mydeepseek.com、deepseekapp.com），不作为仿冒证据。
+  const _VARIANT_WEAK_CTX = new Set(['my', 'the', 'get', 'go', 'free', 'best', 'top', 'api', 'cdn', 'dl',
+    'app', 'web', 'www', 'new', 'pro', 'download', 'down', 'soft', 'tool', 'tools', 'online', 'site',
+    'home', 'hub', 'all', 'open', 'use', 'try', 'hey', 'its', 'cn', 'com', 'net', 'org', 'vip', 'club',
+    'shop', 'china', 'official', 'login', 'secure', 'service', 'mail', 'cloud', 'pay', 'bank', 'plus',
+    'group', 'hd', 'tv', 'live', 'game', 'news',
+    // 2026-11-24 补：粉丝站 / 民间团队站最常见的三个词（deep-seek-team、deepseekfan 这类）
+    'team', 'fan', 'fans']);
+  // 旧（本地再算一遍，已废弃 —— 现在由 _spoofPrep 统一生成）：
+  // function _variantContainTexts(h, normalized, suffixLabels) {
+  //   const hLabels = h.split('.');
+  //   const oLabels = normalized.split('.');
+  //   const out = [];
+  //   const seen = new Set();
+  //   for (let i = 0; i < hLabels.length; i++) {
+  //     const l = hLabels[i];
+  //     if (!l || suffixLabels.has(l)) continue;
+  //     const text = l.replace(/[-_]/g, '');
+  //     if (text.length < 5 || text.length > 40 || seen.has(text)) continue;
+  //     seen.add(text);
+  //     const o = String(oLabels[i] || '').replace(/[-_]/g, '');
+  //     out.push({ text, display: o || text });
+  //   }
+  //   return out;
+  // }
+  // 品牌词作为连续子串出现在 text 中，且前后填充片段不是"合法构词"→ 返回 {pre, suf}
+  function _variantContain(text, kw) {
+    const extra = text.length - kw.length;
+    if (extra < 4 || extra > 12) return null;   // 太短交给 A/B，太长不像「品牌词 + 少量填充」
+    let from = 0;
+    for (;;) {
+      const idx = text.indexOf(kw, from);
+      if (idx === -1) return null;
+      const pre = text.slice(0, idx).replace(/[0-9_-]/g, '');
+      const suf = text.slice(idx + kw.length).replace(/[0-9_-]/g, '');
+      const preOK = !pre || (!_VARIANT_WEAK_CTX.has(pre) && !_VARIANT_EXTRA_AFFIX.has(_sortedChars(pre)));
+      const sufOK = !suf || (!_VARIANT_WEAK_CTX.has(suf) && !_VARIANT_EXTRA_AFFIX.has(_sortedChars(suf)));
+      if (preOK && sufOK && pre.length + suf.length >= 4) return { pre, suf };
+      from = idx + 1;
+    }
+  }
+  function detectBrandVariant(hostname) {
+    const prep = _spoofPrep(hostname);
+    if (!prep) return null;
+    const normalized = prep.normalized;
+    // ★ 统一豁免闸门（与 basic 同一份判断）
+    // 旧（本分支各写一遍，已在实际中漏掉 _brandSelfVerdict）：
+    // if (isExceptionHost(normalized)) return null;
+    // if (_suffixHit(OFFICIAL_SET, normalized) || _wildListHit(OFFICIAL_WILD, normalized)) return null;
+    // if (isTrustedPlatform(normalized)) return null;
+    if (_spoofExempt(normalized)) return null;
+    // ★ 与 basic 对齐：注册域主干恰好等于品牌词（chrome.com / android.com / safari.com）
+    //   属于「品牌自有域名」。本分支有"与品牌词完全相等"的判定，不豁免会把这类官网判成 45 分。
+    if (_brandSelfVerdict(normalized)) return null;
+    // h / suffixLabels 现由 _spoofPrep 提供（旧：const h = normalizeHomoglyph(normalized);）
+    // 旧（2026-11-24 初版，**全局去连字符**：把所有 `-`/`_` 一次性删掉再比对）。
+    //   问题：这一步把所有 token 边界抹平，品牌词一旦被连字符拆开（deep-seek）就会被拼进
+    //   一个更长的串里，长度差超过 3 后直接进不了编辑距离；而拆分后的单片（deep / seek）
+    //   又因 <5 字符被过滤，两个方向都拿不到，信息被"截断"掉了。
+    //   实测：382web.cnds-deep-seek-harness.com.cn → 18 分（仅缺备案），未识别。
+    // const cands = [];
+    // for (const l of h.split('.')) {
+    //   if (!l || suffixLabels.has(l)) continue;
+    //   cands.push(l.replace(/[-_]/g, ''));
+    //   if (l.indexOf('-') !== -1 || l.indexOf('_') !== -1) {
+    //     for (const seg of l.split(/[-_]/)) if (seg.length >= 4) cands.push(seg);
+    //   }
+    // }
+    // 新：候选由 _spoofPrep 一次生成（squash → token → 窗口 → 边界 → raw），此处只做去重与长度过滤。
+    const uniq = [...new Set(prep.cands)].filter(c => c.length >= 5 && c.length <= 40);
+    if (!uniq.length) return null;
+    for (const cand of uniq) {
+      // 真英文词不做变体判定（与 typo 分支共用同一份词表，口径一致）：
+      // 例：discard 与 discord 字母多重集 Jaccard=0.75、编辑距离 2，A 分支会判 45 分；
+      // 但它是一个常用英文单词，不是品牌词的误写。
+      if (_TYPO_EN_STOPWORDS.has(cand)) continue;
+      for (const kw of SPOOF_KEYWORDS_LONG) {
+        if (kw.length < BRAND_VARIANT_MIN_KW) continue;
+        // 旧：综合命中与品牌词完全相同时也直接跳过（basic 的段匹配负责这种情况）。
+        //   ⚠️ 但品牌词被连字符拆开时（deep-seek）段匹配拿不到，只有窗口拼接能还原，
+        //   此时"拼接后完全相等"恰恰是强证据（分片式仿冒），故改为命中。
+        // if (cand === kw) continue;
+        if (cand === kw) {
+          // ★ 2026-11-24：分片拼接按「品牌词之外还剩什么」分档。
+          //   还剩非站点性质词的 token（cnds-deep-seek-harness）→ 45 分，分片式仿冒特征明显；
+          //   只剩 my / the / app / tool / open / fan 这类站点性质词（my-deep-seek-app）→ 30 分，
+          //   与「子串包含」同一档：单独够不到可疑线 42，必须叠加页面证据才升级。
+          //   理由：粉丝站 / 第三方工具站也常把品牌词拆开书写，而这类词在结构上与仿冒完全同形。
+          const ctx = prep.winCtx.get(cand);
+          const outside = ctx ? [...ctx.pre, ...ctx.suf].filter(Boolean) : [];
+          const onlyFiller = outside.length > 0 && outside.every(t => _VARIANT_WEAK_CTX.has(t));
+          if (onlyFiller) {
+            return {
+              brand: kw, matchType: 'variant-token-weak', weight: 30,
+              detail: `域名分片拼接后与品牌词「${kw}」一致，但品牌词之外只剩站点性质词（${outside.join('/')}），` +
+                `更像粉丝站/工具站而非仿冒，仅作弱信号`
+            };
+          }
+          return {
+            brand: kw, matchType: 'variant-token', weight: 45,
+            detail: `域名分片拼接后与品牌词「${kw}」完全一致（品牌词被连字符/数字拆开书写，分片式仿冒）`
+          };
+        }
+        const diff = Math.abs(cand.length - kw.length);
+        if (diff > 3) continue;
+        const lcp = _lcp(cand, kw);
+        const lcs = _lcs(cand, kw);
+        // ---- B①：纯重排（多重集完全相等、顺序不同）----
+        if (diff === 0 && _sortedChars(cand) === _sortedChars(kw)) {
+          return {
+            brand: kw, matchType: 'variant-anagram',
+            detail: `域名「${cand}」与品牌词「${kw}」由完全相同的字母重排而成（仅顺序不同），疑似重排式仿冒`
+          };
+        }
+        // ---- B②：品牌词 + 2~3 个额外字母（额外部分不是常见英文词缀）----
+        if (diff >= 2 && cand.length > kw.length && cand.charCodeAt(0) === kw.charCodeAt(0) && lcp >= 3) {
+          const extra = _extraLetters(cand, kw);
+          if (extra && !_VARIANT_EXTRA_AFFIX.has(_sortedChars(extra))) {
+            // 与「分片拼接」同口径：额外部分若是站点性质词（deepseekfan / deepseektools），
+            // 和 my-deep-seek-app 一样属于「品牌词 + 填充词」，降为 30 分弱信号。
+            if (_VARIANT_WEAK_CTX.has(extra)) {
+              return {
+                brand: kw, matchType: 'variant-insert-weak', weight: 30,
+                detail: `域名「${cand}」= 品牌词「${kw}」+「${extra}」（站点性质词），更像粉丝站/工具站，仅作弱信号`
+              };
+            }
+            return {
+              brand: kw, matchType: 'variant-insert',
+              detail: `域名「${cand}」= 品牌词「${kw}」插入「${extra}」且不属于英文构词词缀，疑似字母插入式仿冒`
+            };
+          }
+        }
+        // ---- A：宽松编辑距离（两端咬住、只改中间；d=2 时不再因长度差>1 直接放弃）----
+        if (diff <= 2 && lcp >= 3 && lcs >= 2 && _multisetJaccard(cand, kw) >= 0.6) {
+          const d = _levenshtein(cand, kw);
+          if (d >= 1 && d <= 2) {
+            return {
+              brand: kw, matchType: 'variant-typo',
+              detail: `域名「${cand}」与品牌词「${kw}」编辑距离 ${d}（首尾分别保留 ${lcp}/${lcs} 个字符，中间被替换或调换），疑似拼写变体仿冒`
+            };
+          }
+        }
+      }
+    }
+    // ---- 子串包含（滑动窗口）：品牌词完整嵌在更长的标签内部，且两侧不是"合法构词"----
+    // 场景：cndsdeepseekharness.com —— 连字符被整段删掉（障眼法），既无可切分的 token，
+    //   长度差又超出编辑距离护栏，A/B 都拿不到。这里按「品牌词作为连续子串出现」兜底。
+    // 只给 30 分且 soft：证据强度弱于编辑距离（品牌词可能只是某个词根的一部分），
+    //   单独 30 分够不到可疑线（42），必须叠加「缺备案 / 下载入口 / 自称官方」等页面证据才升级。
+    for (const item of prep.contain) {
+      for (const kw of SPOOF_KEYWORDS_LONG) {
+        if (kw.length < BRAND_VARIANT_MIN_KW) continue;
+        if (item.text === kw) continue;
+        const c = _variantContain(item.text, kw);
+        if (!c) continue;
+        // 前缀/后缀同样优先用原始标签算一次，避免形近归一化把 rn→m 的结果写进理由
+        const d = item.display !== item.text ? _variantContain(item.display, kw) : null;
+        const pre = d ? d.pre : c.pre, suf = d ? d.suf : c.suf;
+        return {
+          brand: kw, matchType: 'variant-embed', weight: 30,
+          detail: `域名「${item.display}」中嵌有品牌词「${kw}」（前缀「${pre || '无'}」/ 后缀「${suf || '无'}」均为填充片段），疑似拼接式仿冒`
+        };
+      }
+    }
+    return null;
+  }
+  // host 级缓存（同一域名在多次 analyze / 多次重判间复用；结果与 data 无关）
+  const _brandVariantCache = new Map();
+  function detectBrandVariantCached(hostname) {
+    const k = (hostname || '').toLowerCase();
+    const got = _lruGet(_brandVariantCache, k);
+    if (got !== _CACHE_MISS) return got;
+    const r = detectBrandVariant(k);
+    _lruPut(_brandVariantCache, k, r, 512);
+    return r;
+  }
+
   // detectSpoof 只依赖 hostname + verifiedIcp，但单次 analyze 内的 data 级缓存会在
   // 每次 analyze 入口被清空（异步补强后需按新 icpAuth 重判），导致同一域名反复重算。
   // 这里加一层 host 级缓存：结果恒定，重判时直接命中，省掉整轮品牌词矩阵与编辑距离。
@@ -2187,10 +2684,10 @@
   const _spoofHostCache = new Map();
   function detectSpoofCached(hostname, verifiedIcp) {
     const k = (hostname || '') + (verifiedIcp ? '|1' : '|0');
-    if (_spoofHostCache.has(k)) return _spoofHostCache.get(k);
+    const got = _lruGet(_spoofHostCache, k);
+    if (got !== _CACHE_MISS) return got;
     const r = detectSpoof(hostname, { verifiedIcp: !!verifiedIcp });
-    if (_spoofHostCache.size > 512) _spoofHostCache.clear();
-    _spoofHostCache.set(k, r);
+    _lruPut(_spoofHostCache, k, r, 512);
     return r;
   }
 
@@ -2251,6 +2748,31 @@
   // ============ 单个检测器（返回 {hit, weight, label, detail}）============
   function mk(hit, weight, label, detail) { return { hit: !!hit, weight: hit ? weight : 0, label, detail: hit ? detail : '' }; }
 
+  // ============ 统一的「信号分级」（2026-11-24）============
+  // 两条线不再各自返回布尔值，而是返回带置信度的信号：
+  //   basic（段 / 子串 / 编辑距离，最准）60  >  variant（重排 / 插字 / 分片拼接）45  >  embed（子串包含）30。
+  // detSpoof 取**权重最高**的一条，只产出一条理由：
+  //   · 结构上不可能出现「两条线各加一次分」的双计误报（旧写法靠 if/else 顺序保证，容易改坏）；
+  //   · 流水线短路：basic 命中即返回，正常站点在第一级就被放过；后面级别开销更大，只在未命中时才跑；
+  //   · 以后要加开销更大的 C 线，只需在末尾追加一级，调用方与评分体系都不用动。
+  // tier 只影响文案与 soft 标记：非 basic 一律 soft，不参与 STRONG 组合升级，
+  //   否则单条「近似拼写」就能判死（webchat / deepseeker 这类英文词撞车会立刻变成误拦）。
+  function getBrandSignal(data) {
+    // ---- 第 1 级：basic（查表 O(段数)，仅少量编辑距离）----
+    const s = getSpoof(data);
+    if (s) return { tier: 'basic', weight: 60, brand: s.brand, matchType: s.matchType, detail: s.detail };
+    // 权威备案库确认有备案 → 第 2/3 级同样不跑（与 basic 的 ICP 联动口径一致）
+    if (_hasVerifiedIcp(data)) return null;
+    // ---- 第 2/3 级：隐藏分支（host 级缓存；首次计算含 token 矩阵）----
+    const v = detectBrandVariantCached(data.hostname);
+    if (!v) return null;
+    const w = v.weight || 45;
+    return {
+      tier: w >= 45 ? 'variant' : 'embed',
+      weight: w, brand: v.brand, matchType: v.matchType, detail: v.detail
+    };
+  }
+
   function detSpoof(data) {
     // ---- 网盘平台自指排除（与 detCloudDisk 同源问题）----
     // 蓝奏云等网盘自身的域名（lanzouw.com / lanzoux.com / lanzoui.com …）
@@ -2263,8 +2785,21 @@
     const isSelfCloud = h && (IOCS.CLOUD_DISK_HOSTS || []).some((c) => h.indexOf(c) !== -1);
     if (isSelfCloud) return mk(false, 0, '域名仿冒官方品牌', '');
 
-    const s = getSpoof(data);
-    return s ? mk(true, 60, '域名仿冒官方品牌', s.detail) : mk(false, 0, '域名仿冒官方品牌', '');
+    // 旧（两条线在维度里手写顺序与分值，加一条线就要改一次这里）：
+    // const s = getSpoof(data);
+    // if (s) return mk(true, 60, '域名仿冒官方品牌', s.detail);
+    // if (!_hasVerifiedIcp(data)) {
+    //   const v = detectBrandVariantCached(data.hostname);
+    //   if (v) { const r = mk(true, v.weight || 45, '域名仿冒官方品牌（拼写变体）', v.detail); r.soft = true; return r; }
+    // }
+    // return mk(false, 0, '域名仿冒官方品牌', '');
+    // 新：统一取最高置信度的信号（basic 60 / variant 45 / embed 30），只产出一条理由。
+    const sig = getBrandSignal(data);
+    if (!sig) return mk(false, 0, '域名仿冒官方品牌', '');
+    const r = mk(true, sig.weight,
+      sig.tier === 'basic' ? '域名仿冒官方品牌' : '域名仿冒官方品牌（拼写变体）', sig.detail);
+    if (sig.tier !== 'basic') r.soft = true;
+    return r;
   }
 
   function detIcpMissing(data) {
@@ -3752,7 +4287,10 @@
         r.weight = r.weight < 0 ? -Math.abs(options.weights[cat.id]) : options.weights[cat.id];
       }
       // 只把正向风险维度计入 feature 组合（域名年龄减分等负向维度不参与组合升级）
-      features[cat.id] = r.hit && r.weight > 0;
+      // ★ 2026-11-24：soft 命中（域名仿冒的「拼写变体」隐藏分支）只加分、不计入组合升级 ——
+      //   近似拼写是靠字符串相似度推断的，置信度低于「域名含品牌词」，单条不该判死。
+      // features[cat.id] = r.hit && r.weight > 0;
+      features[cat.id] = r.hit && r.weight > 0 && !r.soft;
       if (r.hit) {
         // 老域名减分先暂存，稍后按「是否存在明确恶意证据」决定是否应用
         if (cat.id === 'domainAge' && r.weight < 0) { _ageDiscount = r; }

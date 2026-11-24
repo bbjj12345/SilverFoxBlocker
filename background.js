@@ -2969,7 +2969,10 @@ function _dlBlPrune() {
   let changed = false;
   for (const d in _dlBl) {
     const e = _dlBl[d];
-    if (!e || !e.last || (now - e.last) > DL_BL_TTL) { delete _dlBl[d]; changed = true; }
+    if (!e || !e.last || (now - e.last) > DL_BL_TTL) { delete _dlBl[d]; changed = true; continue; }
+    // ★ 2026-11-24：旧版本会把共享存储的注册域（volces.com / aliyuncs.com）整段记进来，
+    //   这会把整个平台（含大量正常文件）一起拦掉 —— 启动时直接剔除这类过宽条目。
+    if (_isSharedStorageHost(d) && String(d).split('.').length < 3) { delete _dlBl[d]; changed = true; }
   }
   const keys = Object.keys(_dlBl);
   if (keys.length > DL_BL_MAX) {
@@ -2981,12 +2984,63 @@ function _dlBlPrune() {
   return changed;
 }
 // 是否受保护（绝不入库）
+// ★ 2026-11-24：共享对象存储平台 —— 桶名随机、注册域却是平台级。
+//   把 `qqqqwwee8899.tos-cn-beijing.volces.com` 记成 `volces.com` 等于把整个火山引擎对象存储拉黑
+//   （上面还托管着大量正常文件），所以这类只按**桶级**（完整主机名）记账。
+const SHARED_STORAGE_DOMAINS = [
+  'volces.com',      // 火山引擎 TOS（tos-cn-beijing.volces.com）
+  'volcengine.com',
+  'aliyuncs.com',    // 阿里云 OSS（oss-cn-hangzhou.aliyuncs.com）
+  'myqcloud.com',    // 腾讯云 COS（bucket.cos.ap-x.myqcloud.com）
+  'qcloud.com',
+  'bcebos.com',      // 百度 BOS
+  'bcevod.com',
+  'upyun.com',
+  'qiniu.com',
+  'qiniucdn.com',
+  'qbox.me',
+  'jdcloud-oss.com',
+  'ctyunxs.cn',      // 天翼云
+  'hicloud.com'
+];
+function _isSharedStorageHost(host) {
+  const h = String(host || '').toLowerCase();
+  if (!h) return false;
+  for (let i = 0; i < SHARED_STORAGE_DOMAINS.length; i++) {
+    const d = SHARED_STORAGE_DOMAINS[i];
+    if (h === d || h.endsWith('.' + d)) return true;
+  }
+  return false;
+}
+// 黑名单记账键：普通域名用注册域（eTLD+1，覆盖所有子域）；共享存储用完整主机名（桶级）。
+// 返回空串表示「太宽、不该记账」（例如共享平台根域 volces.com 本身）。
+function _dlKeyFor(host) {
+  const h = String(host || '').toLowerCase().replace(/\.$/, '');
+  if (!h) return '';
+  if (_isSharedStorageHost(h)) {
+    // 至少要「桶.区域.平台.后缀」四级才足够具体。
+    // 3 级的是平台自己的区域/服务端点（`tos-cn-beijing.volces.com`、`oss-cn-hangzhou.aliyuncs.com`），
+    // 它们同样被成千上万个桶共用，记下来等于拉黑半个平台 —— 一律不记。
+    const parts = h.split('.');
+    if (parts.length < 4) return '';
+    // 首段是服务/区域名（tos / cos / oss / s3 …）而不是桶名 → 也不记
+    if (/^(tos|cos|oss|s3|obs|bce|bcebos|kodo|vod|img|cdn|static|dl|file|files)(-[a-z0-9-]+)*$/i.test(parts[0])) return '';
+    return h;
+  }
+  return _regDomain(h) || h;
+}
 function _dlBlProtected(host, settings) {
   const h = (host || '').toLowerCase();
   if (!h) return true;
   const trusted = (self.SF_IOCS && self.SF_IOCS.TRUSTED_DOWNLOAD_HOSTS) || [];
   if (hostMatch(h, trusted, 'customWhite')) return true;
-  try { if (SF && SF.isOfficialDomain && SF.isOfficialDomain(h)) return true; } catch (e) {}
+  // ★ 2026-11-24：共享对象存储的桶名由**用户**随意指定，平台域名在官方表里不代表这个桶可信。
+  //   实测 `zzz9.oss-cn-beijing.aliyuncs.com` 会因 `aliyuncs.com` 在官方域名表里而被判成 official，
+  //   于是整条学习链路把它当「官方域名」跳过 —— 恶意样本恰恰最爱用这类桶。这里对共享存储只认
+  //   trusted / 用户白名单，不再用平台后缀当挡箭牌（记账时也只会记到桶级，见 _dlKeyFor）。
+  try {
+    if (SF && SF.isOfficialDomain && !_isSharedStorageHost(h) && SF.isOfficialDomain(h)) return true;
+  } catch (e) {}
   if (settings && hostMatch(h, settings.allowlist, 'customWhite')) return true;
   return false;
 }
@@ -2997,7 +3051,8 @@ function dlBlacklistAdd(downloadHost, meta) {
   return Promise.all([_dlBlLoad(), getSettings()]).then(function (arr) {
     const settings = arr[1];
     if (_dlBlProtected(h, settings)) return;
-    const dom = _regDomain(h);
+    // ★ 2026-11-24：共享对象存储按桶级记账（见 _dlKeyFor），否则会连累整个平台
+    const dom = _dlKeyFor(h);
     if (!dom) return;
     const now = Date.now();
     const cur = _dlBl[dom];
@@ -3009,7 +3064,8 @@ function dlBlacklistAdd(downloadHost, meta) {
       _dlBl[dom] = {
         first: now, last: now, hits: 1,
         sample: (meta && meta.filename) ? String(meta.filename).slice(0, 80) : '',
-        from: (meta && meta.from) ? String(meta.from).slice(0, 120) : ''
+        from: (meta && meta.from) ? String(meta.from).slice(0, 120) : '',
+        via: (meta && meta.via) ? String(meta.via).slice(0, 16) : ''
       };
     }
     _dlBlPrune();
@@ -3019,11 +3075,68 @@ function dlBlacklistAdd(downloadHost, meta) {
 // 命中查询（按注册域名匹配，含全部子域名）
 function dlBlacklistHas(host) {
   if (!_dlBl) return false;                 // 未加载完成时保守返回 false（不误拦）
-  const dom = _regDomain((host || '').toLowerCase());
-  return !!(dom && _dlBl[dom]);
+  const h = (host || '').toLowerCase();
+  if (!h) return false;
+  // 先按「记账键」精确匹配（普通域名=注册域；共享存储=桶级主机名）
+  const key = _dlKeyFor(h);
+  if (key && _dlBl[key]) return true;
+  // 兼容旧条目：仍允许用注册域命中，但共享平台的过宽键已在 _dlBlPrune 里剔除
+  const dom = _regDomain(h);
+  if (dom && _dlBl[dom]) return true;
+  // 共享存储：桶级条目也要覆盖它的子域（bucket.region.volces.com 命中 → x.bucket.region.volces.com）
+  if (_isSharedStorageHost(h)) {
+    let rest = h;
+    while (rest.indexOf('.') > 0 && rest.split('.').length >= 3) {
+      rest = rest.slice(rest.indexOf('.') + 1);
+      if (_dlBl[rest]) return true;
+    }
+  }
+  return false;
 }
 function dlBlacklistDomains() {
   return _dlBlLoad().then(function () { return Object.keys(_dlBl || {}); });
+}
+// ===== 载荷链接静态嗅探的落库（2026-11-24）=====
+// 内容脚本在「已判危」页面上扫出「按钮背后的地址」（直接指向对象存储的 .zip、或 /download、/dsluc
+// 这类分发页），这里做最后一道校验再记账：
+//   · 可信下载源 / 官方域名 / 用户白名单 → 不记（_dlBlProtected）
+//   · 与落地页同注册域 → 不记（那是页面自己，交给页面级判定处理）
+//   · 共享对象存储 → 只记**桶级**主机名（_dlKeyFor），否则会把整个平台拉黑
+// 不产生任何网络请求：地址本来就在页面里，扩展只是把它记下来。
+function learnPayloadHosts(msg) {
+  return Promise.all([_dlBlLoad(), getSettings()]).then(function (arr) {
+    const settings = arr[1];
+    const pageHost = String((msg && msg.pageHost) || '').toLowerCase().replace(/:\d+$/, '');
+    const pageReg = _regDomain(pageHost);
+    const learned = [];
+    const items = (msg && msg.items) || [];
+    for (let i = 0; i < items.length && i < 16; i++) {
+      const it = items[i] || {};
+      const url = String(it.url || '');
+      if (!/^https?:/i.test(url)) continue;
+      let host = '';
+      try { host = new URL(url).hostname.toLowerCase(); } catch (e) { continue; }
+      if (!host) continue;
+      if (_dlBlProtected(host, settings)) continue;
+      const reg = _regDomain(host);
+      if (!reg) continue;
+      if (pageReg && reg === pageReg) continue;
+      const key = _dlKeyFor(host);
+      if (!key) continue;                       // 太宽（平台根域）→ 不记
+      const now = Date.now();
+      const cur = _dlBl[key];
+      if (cur) { cur.last = now; cur.hits = (cur.hits || 1) + 1; continue; }
+      _dlBl[key] = {
+        first: now, last: now, hits: 1,
+        sample: (_fileOfUrl(url) || '').slice(0, 80),
+        from: pageHost.slice(0, 120),
+        via: 'sniff'
+      };
+      learned.push(key);
+    }
+    if (learned.length) { _dlBlPrune(); _dlBlSave(); }
+    return learned;
+  }).catch(function () { return []; });
 }
 // service worker 一启动就预热，保证 downloads.onCreated（同步判断）能立即查到黑名单
 try { _dlBlLoad(); } catch (e) {}
@@ -3197,33 +3310,80 @@ const _icpRateWindow = new Map();     // providerName -> [请求时间戳...]
 const ICP_PROVIDERS = [
   {
     name: 'uapis', rateLimitPerMin: 0,
+    // ★ 2026-11-24：uapis 改版。「无备案」不再返回 200 + serviceLicence:"查询失败"，
+    //   而是 HTTP **404** + {"code":"NOT_FOUND","message":"No ICP record found for this domain."}
+    //   （实测 ai.deekseep-e.com.cn / deepaiseek.com.cn 均如此）。
+    //   旧 queryIcp 对非 2xx 直接 `continue` 换源，于是改版后首源永远"失败"，全部压力落到
+    //   第二源 apihz（令牌桶 10 次/分钟）；一旦超限，整次查询返回 {queried:false} ——
+    //   「盗用他人备案号」55 分必须 queried:true 且 hasIcp:false 才判，于是整条规则静默失效
+    //   （失败结果还有 5 分钟短缓存，一失败就连续 5 分钟都不判）。
+    //   现在把 404 收进白名单：只有正文明确是「没有记录」才算**已查询且无记录**。
+    acceptStatus: [404],
     buildUrl: function (d) { return 'https://uapis.cn/api/v1/network/icp?domain=' + encodeURIComponent(d); },
     // 有备案：{"code":200,"serviceLicence":"京ICP备xxxxxxx号","unitName":"..."}
     // 无备案：{"code":200,"serviceLicence":"查询失败","unitName":"查询失败"}
     // ⚠️ 查不到时它仍返回 code:200，必须靠「是否含 ICP备/ICP证」区分真实备案号与失败文案，
     //    否则会把无备案的外国站误判成 hasIcp:true，直接放行造成漏检。
+    // ★ 2026-11-24：改成三态 —— 命中返回 {hasIcp:true}，**明确的**无记录返回 {hasIcp:false}，
+    //   其余（字段缺失 / 未预期结构）返回 null 表示「这一源没给答案」，由调用方换源。
     parse: function (d) {
       const lic = (d && typeof d.serviceLicence === 'string') ? d.serviceLicence.trim() : '';
-      if (d && (d.code === 200 || d.code === '200') && /ICP[备证]/.test(lic)) {
+      const ok = d && (d.code === 200 || d.code === '200');
+      if (ok && /ICP[备证]/.test(lic)) {
         return { hasIcp: true, icpNumber: lic, unitName: (d.unitName && d.unitName !== '查询失败') ? d.unitName : '' };
       }
-      return { hasIcp: false };
+      // 旧：任何非命中都返回 {hasIcp:false} —— 等于把「接口返回了别的东西」也算成「权威确认无备案」。
+      if (ok && lic === '查询失败') return { hasIcp: false };
+      return null;
+    },
+    // 非 2xx 时「这条 404 是不是无记录」的判定。只认 uapis 自己的无记录口径：
+    //   code 为 NOT_FOUND，或 message 里有 "No ICP record"。
+    //   参数错误（如 INVALID_PARAM）、接口改版返回 HTML、网关 5xx 一律不算 ——
+    //   「查不到原因」绝不能当成「权威确认无备案」，否则 55 分重罚会砸到正规站。
+    noRecord: function (d) {
+      const code = String((d && d.code) || '').toUpperCase();
+      const msg = String((d && d.message) || '');
+      return code === 'NOT_FOUND' || /no\s+icp\s+record/i.test(msg);
     }
   },
   {
     // 公开 demo 凭据，上游可能随时撤销；撤销后本源静默失败并回退首源/页面扫描，不影响判定安全性
     name: 'apihz', rateLimitPerMin: 10, id: '88888888', key: '88888888',
+    // ★ 2026-11-24：对冲延迟 —— 见 queryIcp 顶部注释。uapis 有备案时 70~200ms 就答完，
+    //   这 400ms 的推迟让「有备案的正常站」根本不会向第二个接口披露域名；只有 uapis 迟迟
+    //   不答（无备案要 8~10s）时才真正发出请求。
+    hedgeDelay: 400,
     buildUrl: function (d, c) {
       return 'https://cn.apihz.cn/api/wangzhan/icp.php?id=' + encodeURIComponent(c.id) +
              '&key=' + encodeURIComponent(c.key) + '&domain=' + encodeURIComponent(d);
     },
     // 有备案：{"code":200,"icp":"蜀ICP备xxx号","unit":"..."} / 无备案：{"code":400,"msg":"查询失败或没有备案。"}
+    // ⚠️ 2026-11-24：这个公开 demo key 经常**被限流**，此时它返回的是
+    //   {"code":400,"msg":"调用频次过快，请19秒后再试，或购买钻石会员！…"}（HTTP 仍是 200）。
+    //   旧实现把所有 code≠200 都当 {hasIcp:false}，等于把「我刚被限流」当成
+    //   「权威确认这个域名没有备案」—— 配合页面上的备案号就是 55 分「盗用他人备案号」，
+    //   会砸到真正备过案的正规站。现在只有 msg 明确是「查询失败或没有备案」才算无记录，
+    //   限流 / 参数错误 / 未预期结构一律返回 null（= 这一源没答案，换源或按失败处理）。
     parse: function (d) {
       const lic = (d && typeof d.icp === 'string') ? d.icp.trim() : '';
-      if (d && (d.code === 200 || d.code === '200') && /ICP[备证]/.test(lic)) {
+      const msg = String((d && d.msg) || '');
+      const code = d && (d.code === 200 || d.code === '200') ? 200 : (d && String(d.code));
+      if (code === 200 && /ICP[备证]/.test(lic)) {
         return { hasIcp: true, icpNumber: lic, unitName: (d.unit && d.unit !== '查询失败') ? d.unit : '' };
       }
-      return { hasIcp: false };
+      if (code === '400' && /查询失败|没有备案/.test(msg) && !/频次|稍后|稍后再试|会员/.test(msg)) {
+        return { hasIcp: false };
+      }
+      // ★ 2026-11-24（第二次实测补）：apihz 对「无记录」还有第二种应答形状 ——
+      //   HTTP 200 + {"code":200,"td":"2-1","type":"查询失败","icp":"查询失败","unit":"查询失败",
+      //              "domain":"查询失败","time":"查询失败"}（实测同一域名两次请求，一次 400 一次 200）。
+      //   旧 parse 只认 code:400 那一种，于是这一形状被当成「这一源没答案」→ 换源 → 整次查询失败。
+      //   判据收得很紧：icp 与 type **两个字段都恰好是**「查询失败」、且明确不是限流文案；
+      //   限流（含「频次/稍后/会员」）、参数错误、未预期结构一律仍返回 null。
+      if (code === 200 && lic === '查询失败' && String((d && d.type) || '').trim() === '查询失败') {
+        return { hasIcp: false };
+      }
+      return null;
     }
   }
 ];
@@ -3260,39 +3420,128 @@ async function queryIcp(domain) {
   const cached = _icpCacheGet(domain);
   if (cached !== undefined) return cached;
 
-  // ★ 2026-11-09：给整次查询加总预算（含多源串行）。
-  //   原先每个源各 8s，两源串行最坏 16s，而这段等待**阻塞内容脚本判定**
-  //   （.cn / .com.cn 站点强制走 ICP，实测弹窗因此被拖到 16s）。现在：
-  //   · 单源超时 3s，总预算 4.5s，用完即放弃并返回"查询失败"（引擎回退页面文本扫描，判定仍安全）；
-  //   · 失败结果按 _ICP_FAIL_TTL 短缓存，不会因超时反复重试打爆公共接口。
-  const ICP_TOTAL_BUDGET = 4500;
-  const t0 = Date.now();
-  for (const p of ICP_PROVIDERS) {
-    if (!_icpAcquire(p)) continue;
-    const left = ICP_TOTAL_BUDGET - (Date.now() - t0);
-    if (left <= 300) break;   // 预算不足，直接放弃（留 300ms 余量避免开了头就超时）
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, Math.min(3000, left));
-      const resp = await fetch(p.buildUrl(domain, p), { signal: ctrl.signal, cache: 'no-store' });
-      clearTimeout(timer);
-      if (!resp.ok) continue;
-      const text = await resp.text();
-      if (!text) continue;
-      let data;
-      try { data = JSON.parse(text); } catch (e) { continue; } // 非 JSON（如接口改版/返回 HTML）→ 换下一源
-      const parsed = p.parse(data) || { hasIcp: false };
-      const result = {
-        queried: true,
-        hasIcp: !!parsed.hasIcp,
-        icpNumber: parsed.icpNumber || null,
-        unitName: parsed.unitName || null,
-        service: p.name
-      };
-      _icpCacheSet(domain, result);
-      return result;
-    } catch (e) { continue; } // 超时/网络错误 → 换下一源
+  // ★ 2026-11-24（第二次修正）：把「串行换源」改成「并行对冲（hedge）」。
+  //   实测（本机、ai.deekseep-e.com.cn，各测两轮）：
+  //     · uapis：**有备案** 70~200ms 就回 200 + 备案号；**无备案** 要 **8~10 秒** 才回
+  //       404 {"code":"NOT_FOUND"}（实测 9966ms / 8073ms）。
+  //     · apihz：两个方向都在 0.9~2.8s 内回，但公开 demo key 限 10 次/分钟。
+  //   上一版把单源超时压到 1.5s，本意是让第二源拿到预算，结果**反而把「无记录」这条路砍死**：
+  //   8~10s 才到的 404 应答必然被 1.5s 掐断，前面那段 acceptStatus 逻辑成了不可达代码 →
+  //   永远 `{queried:false}` →「盗用他人备案号」55 分消失（ai.deekseep-e.com.cn 停在 45 分）。
+  //   现在的分工：
+  //     · uapis 立刻发。有备案时 200ms 内定案，**根本不会惊动第二源**（保住原隐私口径）；
+  //     · apihz 延迟 400ms 对冲。只有 uapis 没在 400ms 内给出确定结论时才真正发请求
+  //       （省 apihz 的令牌：它 10 次/分钟，被无谓消耗后整条路都会失效）；
+  //     · 谁先给出**确定结论**（确有备案 / 明确无记录）谁胜出，立刻 abort 另一个；
+  //     · 单源上限 9s、总预算 10s，让 uapis 那 8~10s 的 404 也能在预算内到达。
+  //   内容脚本不再需要为 ICP 阻塞 2.2s 以上：慢结论由「迟到重判」补上（见 content.js 的
+  //   collectCriticalEnrichments / onLateIcp），判定不再被第三方接口拖住。
+  //
+  //   旧（串行 + 单源 1.5s，404 路径实际不可达）：
+  //   const ICP_TOTAL_BUDGET = 4500;
+  //   const ICP_SOURCE_TIMEOUT = 1500;
+  //   const t0 = Date.now();
+  //   for (const p of ICP_PROVIDERS) {
+  //     if (!_icpAcquire(p)) continue;
+  //     const left = ICP_TOTAL_BUDGET - (Date.now() - t0);
+  //     if (left <= 300) break;
+  //     try {
+  //       const ctrl = new AbortController();
+  //       const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, Math.min(ICP_SOURCE_TIMEOUT, left));
+  //       const resp = await fetch(p.buildUrl(domain, p), { signal: ctrl.signal, cache: 'no-store' });
+  //       clearTimeout(timer);
+  //       const text = await resp.text();
+  //       if (!text) continue;
+  //       let data;
+  //       try { data = JSON.parse(text); } catch (e) { continue; }
+  //       if (!resp.ok) {
+  //         const accepted = (p.acceptStatus || []).indexOf(resp.status) !== -1 &&
+  //           typeof p.noRecord === 'function' && p.noRecord(data);
+  //         if (!accepted) continue;
+  //         const noRecord = { queried: true, hasIcp: false, icpNumber: null, unitName: null, service: p.name };
+  //         _icpCacheSet(domain, noRecord);
+  //         return noRecord;
+  //       }
+  //       const parsed = p.parse(data);
+  //       if (!parsed) continue;
+  //       const result = { queried: true, hasIcp: !!parsed.hasIcp, icpNumber: parsed.icpNumber || null,
+  //         unitName: parsed.unitName || null, service: p.name };
+  //       _icpCacheSet(domain, result);
+  //       return result;
+  //     } catch (e) { continue; }
+  //   }
+  const ICP_TOTAL_BUDGET = 10000;
+  const ICP_SOURCE_TIMEOUT = 9000;
+  const ctrls = [];
+  let winner = null;
+
+  // 单源尝试：返回「确定结论对象」或 null（= 这一源没答案 / 失败 / 被放弃）。
+  // 注意 _icpAcquire 放在真正发请求的位置（kick）里，而不是建任务时 —— 否则对冲失败的那一源
+  // 会白白吃掉 apihz 的每分钟令牌额度。
+  function attempt(p) {
+    return new Promise(function (resolve) {
+      function kick() {
+        if (winner) return resolve(null);            // 已有人胜出 → 连请求都不发
+        if (!_icpAcquire(p)) return resolve(null);
+        const ctrl = new AbortController();
+        ctrls.push(ctrl);
+        const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ICP_SOURCE_TIMEOUT);
+        fetch(p.buildUrl(domain, p), { signal: ctrl.signal, cache: 'no-store' })
+          .then(function (resp) {
+            return resp.text().then(function (text) { return { resp: resp, text: text }; });
+          })
+          .then(function (o) {
+            clearTimeout(timer);
+            if (!o.text) return null;
+            let data;
+            try { data = JSON.parse(o.text); } catch (e) { return null; } // 非 JSON（接口改版/HTML）→ 没答案
+            // ⚠️ 「无备案」在 uapis 是 HTTP 404（见 ICP_PROVIDERS 注释）：非 2xx 也要读正文，
+            //    只有「状态码在该源白名单里 + 正文明确说没有记录」才算已查询且无记录；
+            //    参数错误 / 5xx / 返回 HTML 一律当「没答案」，绝不臆断成「权威确认无备案」。
+            if (!o.resp.ok) {
+              const accepted = (p.acceptStatus || []).indexOf(o.resp.status) !== -1 &&
+                typeof p.noRecord === 'function' && p.noRecord(data);
+              if (!accepted) return null;
+              return { queried: true, hasIcp: false, icpNumber: null, unitName: null, service: p.name };
+            }
+            const parsed = p.parse(data);
+            if (!parsed) return null;   // 三态：null = 限流 / 未预期结构 → 没答案
+            return {
+              queried: true,
+              hasIcp: !!parsed.hasIcp,
+              icpNumber: parsed.icpNumber || null,
+              unitName: parsed.unitName || null,
+              service: p.name
+            };
+          })
+          .then(function (res) { resolve(res || null); })
+          .catch(function () { clearTimeout(timer); resolve(null); });   // 超时 / 网络错误
+      }
+      if (p.hedgeDelay) setTimeout(kick, p.hedgeDelay);
+      else kick();
+    });
   }
+
+  const tasks = ICP_PROVIDERS.map(function (p) { return attempt(p); });
+  const result = await new Promise(function (resolve) {
+    let left = tasks.length;
+    let done = false;
+    const budgetTimer = setTimeout(function () {
+      if (done) return;
+      done = true; resolve(null);
+    }, ICP_TOTAL_BUDGET);
+    tasks.forEach(function (pr) {
+      pr.then(function (r) {
+        if (done) return;
+        if (r) { done = true; winner = r; clearTimeout(budgetTimer); resolve(r); return; }
+        if (--left === 0) { done = true; clearTimeout(budgetTimer); resolve(null); }
+      });
+    });
+  });
+  // 胜出后取消还在飞的请求（省流量，也避免对冲那一源白跑一趟）
+  ctrls.forEach(function (c) { try { c.abort(); } catch (e) {} });
+  if (result) { _icpCacheSet(domain, result); return result; }
+
   const failed = { queried: false, hasIcp: false };
   _icpCacheSet(domain, failed); // 失败按 _ICP_FAIL_TTL 短缓存
   return failed;
@@ -3929,6 +4178,19 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         chrome.storage.local.set({ stats });
       });
     } catch (e) {}
+  } else if (msg.type === 'sf-learn-payload') {
+    // ★ 2026-11-24：危险页的「按钮背后的下载地址」静态嗅探结果（内容脚本只扫 DOM，不发请求）。
+    //   异步落库后把真正新增的域名回推给页面，由页面弹一条 toast 告知用户（与解析器跟随同一套口径）。
+    const tabId = sender.tab ? sender.tab.id : null;
+    learnPayloadHosts(msg).then(function (learned) {
+      try {
+        if (learned && learned.length && tabId != null) {
+          safeTabMsg(tabId, { type: 'sf-payload-learned', hosts: learned });
+        }
+      } catch (e) {}
+      try { sendResponse({ ok: true, learned: learned || [] }); } catch (e) {}
+    });
+    return true;   // 异步回执
   } else if (msg.type === 'sf-probe-resolver') {
     // ★ 2026-11-20：解析器跟随（方案 A）。内容脚本在危险页发现「同源跳转端点」时调用，
     //   后台开不可见标签页跑一次跳转链，命中跨域载荷域就写进自动学习黑名单并立刻关标签页。

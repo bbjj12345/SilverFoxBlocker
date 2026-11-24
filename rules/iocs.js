@@ -870,6 +870,15 @@
         { url: 'deepseek.com', label: '公司官网' },
         { url: 'chat.deepseek.com', label: 'DeepSeek 网页版' }
       ], ''],
+      // 新（2026-11-24）：DeepSeek Harness —— 官方产品页，挂在主站路径下（无独立域名），
+      //   因此只能写成**链接级**站点；与 DeepSeek 主条目用第 5 个字段「双向关联」：
+      //   从 DeepSeek 条目能看到 Harness 入口，从 Harness 条目也能拿到主站 / 网页版。
+      //   品牌词取 `deepseek-harness`（整段、含连字符）而**不单收 `harness`**：
+      //   harness 是英文常用词（CI 工具站 harness.io 之类），单收会把无关站点也判成这个品牌。
+      //   命中范围：cnds-deepseek-harness / 382web.cnds-deepseek-harness.com.cn 这类主机名。
+      ['DeepSeek Harness', 'deepseek-harness', [
+        { url: 'https://www.deepseek.com/harness/', label: 'Harness 产品页' }
+      ], 'DeepSeek 官方子页面（无独立域名）；链接级条目，路径改版需复核', ['deepseek']],
       // 旧（2026-11-22 前）：只有 chatglm / zhipu，开放平台 bigmodel.cn 的仿冒站命中不了（判定词表已有 bigmodel）
       // ['智谱清言', 'chatglm zhipu', [
       ['智谱清言', 'chatglm zhipu bigmodel', [

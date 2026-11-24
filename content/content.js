@@ -1242,7 +1242,7 @@
   //   于是弹窗时间 = ICP 超时 + 本地读 + RDAP 超时 的**累加**（.cn 站最坏 8+0+6 ≈ 14s）。
   //   并行后只取决于最慢的一项，且由调用方传入剩余预算（budgetMs）做硬截止。
   // 入参 budgetMs：距判定总截止还剩多少毫秒（见 run() 里的 JUDGE_BUDGET_MS）。
-  async function collectCriticalEnrichments(settings, data, budgetMs) {
+  async function collectCriticalEnrichments(settings, data, budgetMs, onLateIcp) {
     // 原作者的「云端官网库」查询步骤已于 2026-11-01 移除。
     // 移除原因：源由第三方控制且无签名校验，命中即撤销告警，存在漏放风险。
     // 原文备份：.bak_20261101010207_remove-cloud/content.js
@@ -1251,7 +1251,27 @@
     // 1) ICP 权威核验（三态：确有备案 / 确认无备案 / 查询失败）。失败时后台返回 {queried:false}，引擎回退页面文本扫描。
     if (needIcpVerify(settings, data)) {
       jobs.push(sendMsg({ type: 'sf-icp-verify', hostname: location.hostname })
-        .then((ra) => { if (ra && ra.queried) data.icpAuth = ra; })
+        // 旧：.then((ra) => { if (ra && ra.queried) data.icpAuth = ra; })
+        // ★ 2026-11-24：慢结论不再阻塞判定，改为「先判定、后补强」——
+        //   实测 uapis 对**无备案**域名要 8~10s 才回 404（有备案只要 70~200ms），
+        //   而本函数最多等 budgetMs（≈2.2s）。以前等不到就永远丢掉结论：
+        //   页面明明展示了备案号、权威库也查实"本域名无记录"，却因为「没等到」而不判
+        //   「盗用他人备案号」55 分（ai.deekseep-e.com.cn 因此长期停在 45 分）。
+        //   现在：判定前拿到 → 照旧走正常路径；判定后才拿到 → 只要它会让结论变严，就重判一次。
+        .then((ra) => {
+          if (!ra || !ra.queried) return;
+          data.icpAuth = ra;
+          if (!data._judged) return;        // 判定前拿到，正常路径已经用上，不必重判
+          if (data._lateIcpDone) return;
+          const icp = data.icp || {};
+          // 只处理「会让判定变严」的一种组合：页面展示了备案号（或挂了官方备案查询入口），
+          // 权威库却确认本域名无记录 → 引擎判「盗用他人备案号」55 分。
+          // 反向（迟到确认"确有备案"→ 少扣「缺备案号」18 分）**故意不重判**：那只会让分数
+          // 往下跳（先报危、后变安全），既无安全收益，又制造判定抖动与重复记录。
+          if (ra.hasIcp || !(icp.hasIcpNumber || icp.hasBeianLink)) return;
+          data._lateIcpDone = true;
+          if (typeof onLateIcp === 'function') onLateIcp(ra);
+        })
         .catch(() => {}));
     }
     // 2) 下载黑名单（纯本地读）：只有本页确实存在指向黑名单域名的链接时才注入（供评分加分 + 页面级拦截提示）。
@@ -1780,12 +1800,17 @@
     if (!observer) {
       observer = new MutationObserver((muts) => {
         if (unblocked) return;
+        let touched = false;
         muts.forEach((m) => m.addedNodes && m.addedNodes.forEach((n) => {
           if (n.nodeType === 1) {
+            touched = true;
             neutralize(n);
             try { n.querySelectorAll && n.querySelectorAll('a[href],button,div,span,img,section,article,li').forEach(neutralize); } catch (e) {}
           }
         }));
+        // ★ 2026-11-24：新节点里可能就藏着「下载」按钮（版本过低弹窗、懒加载卡片），
+        //   去抖后重扫一次载荷地址；harvestPayloadTargets 自身有节流与「已放行则跳过」保护。
+        if (touched) scheduleHarvestPayloads(500, false);   // 非强制：受 1.2s 节流保护，避免危险页狂扫
       });
       observer.observe(document.documentElement, { childList: true, subtree: true });
     }
@@ -1793,6 +1818,21 @@
     //   真正载荷域藏在 302/Refresh 里，DOM 上看不到、hover 也看不到。这里交给后台用
     //   不可见标签页跑一次跳转链，命中后写入「自动学习的下载黑名单」。
     probeHiddenDownloadResolvers();
+    // ★ 2026-11-24：静态嗅探「按钮背后的载荷地址」（跨域直链 / 分发页），见 harvestPayloadTargets 注释。
+    //   首轮扫描放在这里；此时 DOM 常还没解析完（快速通道 8ms 就判危了），所以再补三次：
+    //   DOMContentLoaded / load / 2.5s 定时 —— 覆盖「按钮和内联脚本later 才出现」的页面
+    //   （本例的 .zip 直链在 body 里、弹窗地址常写在内联 <script> 里）。
+    harvestPayloadTargets(true);
+    try {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () { scheduleHarvestPayloads(200, true); }, { once: true });
+      }
+      window.addEventListener('load', function () { scheduleHarvestPayloads(200, true); }, { once: true });
+    } catch (e) {}
+    // 兜底：延迟注入的按钮 / 懒加载脚本（6s 后再强制扫一次）。
+    // 这里用独立 setTimeout 而不是上面的共用定时器 —— 共用定时器会被后续的观察器回调顶掉，
+    // 导致「必须补扫一次」的承诺落空（实测内联脚本里的地址就是这样漏掉的）。
+    setTimeout(function () { harvestPayloadTargets(true); }, 6000);
   }
 
   // ===== 跳转端点探测（方案 A 的前端入口，2026-11-20）=====
@@ -1844,6 +1884,110 @@
           });
         } catch (e) {}
       }
+    } catch (e) {}
+  }
+
+  // ===== 载荷链接静态嗅探（2026-11-24）=====
+  // 盲区：危险页把「开始对话 / 电脑版下载」两个按钮**直接**指向第三方对象存储上的安装包，例如
+  //   https://382web.cdns-deepseek.com/  →  https://qqqqwwee8899.tos-cn-beijing.volces.com/124322281030_setup.zip
+  // 地址就写死在 <a href> 里（hover 就能看到），但因为**没人点**，chrome.downloads.onCreated 从不触发，
+  // 而「自动学习的下载黑名单」只记「真被拦下的下载」→ 这个载荷域永远学不到；2026-11-20 的解析器跟随
+  // 只跟**同源**跳转端点，跨域直链会被它跳过。于是这类「看得见、但没点过」的载荷域成了盲区。
+  //
+  // 做法：页面判危后，把「本来能下载到的地址」静态扫一遍（只读 DOM，不发任何请求、不改 DOM）：
+  //   ① 被 neutralize() 处理过的入口 —— 原地址已挪到 data-sf-original-href；
+  //   ② 页面上所有 a[href] 与常见 data-* 属性；
+  //   ③ 内联 <script> 文本里的绝对 URL（版本过低弹窗、延迟注入常把地址写在 JS 字面量里）；
+  //   ④ <meta http-equiv="refresh"> 的目标。
+  // 只保留「可疑载荷」：高危扩展名（exe/msi/zip/rar/7z/dmg/apk/scr/bat/cmd/ps1/iso…），或路径/参数里
+  // 带下载语义词（/download、/dsluc、/dsnw、download.php、type=download 等）。**不含 .js/.css**——否则
+  // 每个站点都会把 CDN 域名学进黑名单。
+  // 命中后交给后台再校验（可信源/官方/白名单/同站一律剔除），并按「桶级」记账后写入下载黑名单。
+  const PAYLOAD_EXT_RE = /\.(exe|msi|msix|zip|rar|7z|tar|gz|tgz|dmg|pkg|apk|scr|bat|cmd|ps1|vbs|jar|iso|img|bin)(?:[?#]|$)/i;
+  const DL_PATH_RE = /(\/download|\/downloads|\/dl\/|\/go\/|\/dsluc|\/dsnw|download\.php|\/setup|installer|\/get\/?$|type=download|action=download)/i;
+  let _payloadHarvestAt = 0;
+  let _payloadHarvestTimer = null;
+  function scheduleHarvestPayloads(delay, force) {
+    if (_payloadHarvestTimer) clearTimeout(_payloadHarvestTimer);
+    _payloadHarvestTimer = setTimeout(function () {
+      _payloadHarvestTimer = null;
+      harvestPayloadTargets(force !== false);
+    }, delay || 500);
+  }
+  // force=true 时忽略节流（用于 DOMContentLoaded / load / 定时补扫这几个「必须扫一次」的时机）
+  function harvestPayloadTargets(force) {
+    if (unblocked || !dangerActive) return;
+    const now = Date.now();
+    // 节流：危险页 DOM 会持续变动（弹窗、懒加载），1.2s 内只扫一次
+    if (!force && now - _payloadHarvestAt < 1200) return;
+    _payloadHarvestAt = now;
+    try {
+      if (!chrome.runtime || !chrome.runtime.sendMessage) return;
+      const pageReg = regDomainOf(location.hostname);
+      const out = [];
+      const seen = {};
+      const push = function (raw) {
+        if (out.length >= 16) return;
+        const abs = absolutizeUrl(raw);
+        if (!abs || !/^https?:/i.test(abs)) return;
+        let host = '';
+        try { host = new URL(abs).hostname.toLowerCase(); } catch (e) { return; }
+        if (!host) return;
+        const reg = regDomainOf(host);
+        if (!reg || reg === pageReg) return;          // 同站交给「解析器跟随」那条路
+        const isPayload = PAYLOAD_EXT_RE.test(abs);
+        if (!isPayload && !DL_PATH_RE.test(abs)) return;
+        if (seen[abs]) return;
+        seen[abs] = 1;
+        out.push({ url: abs.slice(0, 512), host: host, payload: isPayload });
+      };
+      // ① 被禁用的入口（href 已摘走，原值在 dataset 里）
+      try {
+        _blockedEls.forEach(function (el) {
+          if (!el || !el.getAttribute) return;
+          push((el.dataset && el.dataset.sfOriginalHref) ||
+               el.getAttribute('data-sf-original-href') ||
+               el.getAttribute('href') || el.getAttribute('data-href') ||
+               el.getAttribute('data-url') || el.getAttribute('data-download') || '');
+        });
+      } catch (e) {}
+      // ② 全量属性扫描（已被禁用的元素也在内，取原始地址）
+      try {
+        const list = document.querySelectorAll('a[href],[data-href],[data-url],[data-download],[data-link],[data-src],[data-sf-original-href]');
+        for (let i = 0; i < list.length && i < 400 && out.length < 16; i++) {
+          const el = list[i];
+          push(el.getAttribute('href') || el.getAttribute('data-sf-original-href') ||
+               (el.dataset && el.dataset.sfOriginalHref) || el.getAttribute('data-href') ||
+               el.getAttribute('data-url') || el.getAttribute('data-download') ||
+               el.getAttribute('data-link') || el.getAttribute('data-src') || '');
+        }
+      } catch (e) {}
+      // ③ meta refresh 目标
+      try {
+        document.querySelectorAll('meta[http-equiv]').forEach(function (m) {
+          if (!/refresh/i.test(m.getAttribute('http-equiv') || '')) return;
+          const c = m.getAttribute('content') || '';
+          const mm = /url\s*=\s*['"]?([^'"\s]+)/i.exec(c);
+          if (mm) push(mm[1]);
+        });
+      } catch (e) {}
+      // ④ 内联脚本里的绝对 URL（只看前 30 个脚本、每个前 20KB，避免大页面卡顿）
+      try {
+        const scripts = document.querySelectorAll('script:not([src])');
+        for (let i = 0; i < scripts.length && i < 30 && out.length < 16; i++) {
+          const txt = (scripts[i].textContent || '').slice(0, 20000);
+          if (txt.indexOf('http') < 0) continue;
+          const re = /https?:\/\/[^\s"'<>\\`]+/g;
+          let m;
+          let guard = 0;
+          while ((m = re.exec(txt)) && guard++ < 200) push(m[0]);
+        }
+      } catch (e) {}
+      if (!out.length) return;
+      chrome.runtime.sendMessage(
+        { type: 'sf-learn-payload', pageHost: location.hostname, items: out },
+        function () { try { void chrome.runtime.lastError; } catch (e) {} }
+      );
     } catch (e) {}
   }
 
@@ -3449,7 +3593,7 @@
     //       故延后判定不会削弱 meta refresh 秒跳下载的防护。
     // ★ 2026-11-09：整段（等待 + 补强）纳入**从 run() 起算的 5s 硬预算**，
     //   保证「页面加载完成后 5s 内必有结论」。到点即用现有数据判定，绝不无限期等待。
-    //   注：ICP 后台侧另有 4.5s 自己的预算（见 queryIcp），两层兜底互不依赖。
+    //   注：ICP 后台侧另有 10s 自己的预算（见 queryIcp）；慢到的权威结论由「迟到重判」补上。
     // ★ 默认拒绝闸门的内容侧兜底：任何异常都按安全放行，绝不因内容脚本报错把用户下载卡死。
     try {
       const data = collectCore();
@@ -3458,7 +3602,18 @@
       await waitPageSettled(Math.min(2800, budgetLeft()));
       // ★ SPA：等待页面就绪期间换路由 → 本轮作废（否则会拿新路由的 DOM 判旧路由的 URL）
       if (_gen !== runGen) return;
-      await collectCriticalEnrichments(settings, data, budgetLeft());
+      await collectCriticalEnrichments(settings, data, budgetLeft(), function onLateIcp() {
+        // ★ 2026-11-24：ICP 权威结论迟到（uapis 对无备案域名要 8~10s）时的**升级重判**。
+        //   触发条件在 collectCriticalEnrichments 里已经收窄成「页面展示了备案号 + 权威库确认
+        //   本域名无记录」，所以这里只需再做三道护栏：SPA 换路由就丢弃、只重判一次、
+        //   先撤掉首屏那条「可疑」提示条（showHint 见到同 id 会早退，撤掉后才会按判危样式重绘）。
+        if (_gen !== runGen) return;
+        try {
+          const _hint = NATIVE.byId('sf-hint');
+          if (_hint) closeEl(_hint);
+        } catch (e) {}
+        analyzeAndAct(settings, chained, data, _gen);
+      });
       if (_gen !== runGen) return;
       // 载入域名级联动阻断集合（供子页连坐）：纯本地 storage 读，正常 <10ms；
       // 给个短上限兜底，避免极端情况下（集合极大 / storage 卡顿）拖延整体 5s 预算。
@@ -3467,6 +3622,8 @@
         new Promise((resolve) => setTimeout(resolve, Math.min(300, budgetLeft())))
       ]);
       if (_gen !== runGen) return;
+      // 标记「即将出结论」：此后到达的 ICP 结论走上面的升级重判，而不是被静默丢弃。
+      data._judged = true;
       analyzeAndAct(settings, chained, data, _gen);   // 单次权威判定（带代数校验）
       enrichDeepAsync(settings, chained, data, _gen);  // 后台深度补强（可能再重判一次，已去重）
     } catch (e) {
@@ -4162,6 +4319,16 @@
     // ★ 2026-11-20：后台跟随跳转端点后推回的「隐藏分发域」，已同时写入自动学习黑名单
     if (msg && msg.type === 'sf-resolver-hit') {
       try { showToast('🔎 已识别隐藏分发域名：' + (msg.host || '') + '，已加入下载黑名单'); } catch (e) {}
+    }
+    // ★ 2026-11-24：危险页「按钮背后的载荷地址」静态嗅探结果 → 后台已写入下载黑名单，这里只告知。
+    //   与解析器跟随的差异：这条完全不需要联网，地址本来就写在页面里（href / data-* / 内联脚本）。
+    if (msg && msg.type === 'sf-payload-learned') {
+      try {
+        const hs = (msg.hosts || []).filter(Boolean).slice(0, 4);
+        if (hs.length) {
+          showToast('🔎 已记录 ' + hs.length + ' 个分发域名：' + hs.join('、') + '（已加入下载黑名单）');
+        }
+      } catch (e) {}
     }
     // ★ 2026-11-22：云端名单同步完成 → 作废本页的旧名单副本，并挂一条「建议重判」横幅。
     //   为什么要在这里作废缓存：本页的 analyzer 名单集合是页面加载时灌进去的，
