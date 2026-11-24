@@ -1089,6 +1089,44 @@
 
   // 同步主采集：基础 DOM + 页面文本内嵌下载直链扫描（不含 .txt 异步解析）。
   // 必须同步、快速返回，以便 run() 在页面被 meta refresh 秒跳走之前完成判定。
+  // ★ 2026-11-24：「下载链接运行时改写」观测。
+  //   吸收自同类扩展的 href 变化统计：按钮 href 先是 javascript:void(0)/#，
+  //   页面加载后由脚本改成真实下载地址 —— 诱导下载站的标准做法，静态 HTML 看不到投递目标。
+  //   成本控制：只观察 href 属性、只认「占位 → 真实地址」且文案含「下载」的改写、
+  //   同一元素只计一次、上限 20（评分维度只判断 ≥2，更多次数没有额外信息价值）。
+  let _dlHrefRewrites = 0;
+  const _dlRewrittenEls = new Set();
+  let _dlHrefWatchOn = false;
+  function _isPlaceholderHref(v) {
+    const s = String(v == null ? '' : v).trim().toLowerCase().replace(/;$/, '');
+    return s === '' || s === '#' || s === 'javascript:;' || s === 'javascript:void(0)';
+  }
+  function installDownloadHrefWatch() {
+    if (_dlHrefWatchOn) return;
+    _dlHrefWatchOn = true;
+    try {
+      const mo = new MutationObserver(function (records) {
+        for (const r of records) {
+          if (_dlHrefRewrites >= 20) return;
+          if (r.type !== 'attributes' || r.attributeName !== 'href') continue;
+          const el = r.target;
+          if (!el || el.nodeType !== 1 || _dlRewrittenEls.has(el)) continue;
+          const nowHref = el.getAttribute('href') || '';
+          if (_isPlaceholderHref(nowHref)) continue;          // 仍是占位 → 不是改写
+          if (!_isPlaceholderHref(r.oldValue)) continue;      // 原值不是占位 → 不是「隐藏投递目标」
+          if (!/^https?:\/\//i.test(nowHref) && nowHref.charAt(0) !== '/') continue;
+          const t = String(el.innerText || el.textContent || '');
+          if (!/下载|download|安装|获取/i.test(t)) continue;
+          _dlRewrittenEls.add(el);
+          _dlHrefRewrites++;
+        }
+      });
+      mo.observe(document.documentElement || document, {
+        subtree: true, attributes: true, attributeFilter: ['href'], attributeOldValue: true
+      });
+    } catch (e) {}
+  }
+
   function collectCore() {
     const hostname = location.hostname;
     const scripts = [];
@@ -1143,7 +1181,9 @@
       if (isDlLink(u) && !seen.has(u)) { seen.add(u); links.push({ href: u, text: '(页面文本内嵌下载链接)' }); }
     }
 
-    return { hostname, title: document.title || '', html, scripts, links, iframeSrcs, metaRefreshUrls, _seen: seen };
+    return { hostname, title: document.title || '', html, scripts, links, iframeSrcs, metaRefreshUrls, _seen: seen,
+      // ★ 2026-11-24：供「下载链接运行时改写」维度使用（见 installDownloadHrefWatch）
+      hrefRewrites: _dlHrefRewrites };
   }
 
   // ★ ICP 权威核验的「值得查」门控（隐私优先）。
@@ -3057,7 +3097,7 @@
     //   口径（已与用户确认）：official === false → 合作者云端名单未收录 → 风险分 +45；
     //                        official === true  → 对方认得这是官网 → 完全不影响本地判定
     //                        （本地若判 warn/danger，仍以本地结论为准）。
-    //   刻意不注册为 THREAT_INTEL_PROVIDERS：不渲染横幅，也不进入设置页的 29 维权重。
+    //   刻意不注册为 THREAT_INTEL_PROVIDERS：不渲染横幅，也不进入设置页的 37 维权重。
     const _fx = data && data.foxapi;
     if (_fx && _fx.ok && _fx.official === false) {
       result.score = Math.min(100, (result.score || 0) + 45);
@@ -4361,6 +4401,8 @@
 
   // 启动：document_start 时先装硬钩子（此时 body 可能未就绪，run 等 DOM）
   installHardGuards();
+  // ★ 2026-11-24：装「下载链接运行时改写」观测（只观察 href，代价极低）
+  installDownloadHrefWatch();
   // ★ 2026-11-23：手势信标（后台自动下载拦截的依据）
   installGestureBeacon();
   // ★ 2026-11-23：进入页面即为「分析中」→ 立刻开始给下载入口置灰（DOM 未就绪时自行等 DOMContentLoaded）

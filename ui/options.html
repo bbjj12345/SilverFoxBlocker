@@ -297,7 +297,7 @@
                   <div class="row" style="border:0;padding:8px 0" data-page-node-id="sfTiRowFox">
                     <div class="rl" data-page-node-id="sfTiRlFox">
                       <div class="rt" data-page-node-id="sfTiRtFox">银狐防护云端名单列表（FoxAPI）</div>
-                      <div class="rd" data-page-node-id="sfTiRdFox">需自有 API Key。免费版（Go）额度有限（每秒 2 次查询）。Key 以<b>密文</b>形式保存（AES-GCM 加密，非明文落盘）。由我们的合作者 Yinbo 维护的云端白名单列表，可在短时间内查询当前页面是否为官网，可作为拦截危险网站的补充依据。为了缓解对方服务器的压力，我们对 Go 额度进行二次限制，通过本扩展每秒只允许进行 1 次查询。启用后<b>不显示任何横幅</b>：接口返回 <b>official:false</b> 时，在现有评分逻辑上加 45 分，并记一条「合作者黑名单」判据；返回 <b>official:true</b> 时不影响本地判断（本地判 warn / danger 仍以本地为准）。该判据仅在「威胁情报总开关 + 本项」都开启时生效，不参与设置页的 29 维权重。</div>
+                      <div class="rd" data-page-node-id="sfTiRdFox">需自有 API Key。免费版（Go）额度有限（每秒 2 次查询）。Key 以<b>密文</b>形式保存（AES-GCM 加密，非明文落盘）。由我们的合作者 Yinbo 维护的云端白名单列表，可在短时间内查询当前页面是否为官网，可作为拦截危险网站的补充依据。为了缓解对方服务器的压力，我们对 Go 额度进行二次限制，通过本扩展每秒只允许进行 1 次查询。启用后<b>不显示任何横幅</b>：接口返回 <b>official:false</b> 时，在现有评分逻辑上加 45 分，并记一条「合作者黑名单」判据；返回 <b>official:true</b> 时不影响本地判断（本地判 warn / danger 仍以本地为准）。该判据仅在「威胁情报总开关 + 本项」都开启时生效，不参与设置页的 37 维权重。</div>
                       <div class="ti-guide" data-page-node-id="sfTiGuideFox">
                         <button type="button" class="ti-guide-btn" aria-expanded="false" data-page-node-id="sfTiGuideBtnFox">如何获取 API？</button>
                         <div class="ti-guide-body">
@@ -819,7 +819,7 @@
 
 
   <script src="../rules/iocs.js"></script>
-  <script src="../rules/analyzer.js"></script>
+  <script src="../rules/analyzer.js?v=20261124"></script>
   <script src="../rules/liststore.js"></script>
   <script src="../crypto-helper.js"></script>
   <script src="feedback-config.js?v=20261102"></script>

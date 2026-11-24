@@ -3245,6 +3245,232 @@
     return mk(false, 0, '双扩展名伪装', '');
   }
 
+  // ============ 「流氓推广 / 诱导下载」（Grayware/Adware）专项维度（2026-11-24 新增）============
+  // 来源：对比另一款同类扩展（银狐拦截系统 2.0.0）的评分表后吸收的高价值项。
+  // 对方把「诱导下载链路」拆成十来个条目（JS 占位按钮、脚本集中下载地址、多平台共用同一安装包、
+  // 运行时改写链接、反开发者模式、黑产指纹域名…），而本扩展此前几乎全部精力在「银狐木马投递」
+  // 方向，对「灰产推广站 / 诱导下载站」缺少专门维度。
+  // 吸收原则（与该对比结论一致）：
+  //   ✔ 只收「机制类、可跨站复用」的特征 —— 判断的是投递手法，不是某个域名或某句文案；
+  //   ✘ 不收主观文本类（官方/安全/正版话术堆叠、大量表情符号、密集安全承诺）与纯 SEO 类
+  //     （canonical 模板、站长验证、外部统计脚本）：正规站同样常见，误报率极高且与威胁无关。
+  //   ✘ 不收「品牌是否与官网域名匹配」这类需要品牌库编辑距离的项 —— 本扩展已有域名仿冒维度覆盖。
+
+  // 占位下载按钮：`href="javascript:void(0)"` / `href="#"`，带「下载」字样，
+  //   真实地址在运行时由脚本写入。单看这一条在正规站也很常见（弹层按钮），
+  //   因此必须叠加「脚本集中下载地址 / 运行时取链 / 域名仿冒」之一才算命中。
+  const JS_VOID_HREF_RE = /^(?:javascript:\s*void(?:\(0\))?;?|javascript:\s*;|#)$/i;
+  function detJsVoidDownload(data) {
+    const links = data.links || [];
+    let voidBtn = 0;
+    for (const l of links) {
+      const href = String((l && l.href) || '').trim();
+      if (!JS_VOID_HREF_RE.test(href)) continue;
+      const text = String((l && l.text) || '');
+      if (/下载|download|安装包|安装|获取|免费/i.test(text)) voidBtn++;
+    }
+    if (voidBtn < 2) return mk(false, 0, '占位下载按钮', '');
+    // 门控：必须有「脚本集中下载地址 / 运行时取链 / 域名仿冒」之一
+    if (!(detScriptedDownload(data).hit || detRuntimeDownload(data).hit || !!getSpoof(data))) {
+      return mk(false, 0, '占位下载按钮', '');
+    }
+    return mk(true, 18, '占位下载按钮',
+      `${voidBtn} 个「下载」按钮使用 javascript:void(0)/# 占位，真实下载地址由脚本在运行时写入（点击前无法看到投递目标）`);
+  }
+
+  // 脚本集中下载地址：脚本里定义全局下载变量，全站按钮共用同一个「带参数、不带文件名」的端点。
+  //   与「运行时取链投递」的区别：这条看的是**静态存在**的集中地址常量（常见于国产 CMS 的
+  //   `GLOBAL_DOWNLOAD_URL = '/download.php?id=xx'`），不要求运行时再拉取。
+  const SCRIPTED_DL_VAR_RE = /\b(?:GLOBAL_DOWNLOAD_URL|DOWNLOAD_URL|DOWNLOAD_LINK|downloadUrl|download_url|down_url|file_url|apk_url|exe_url|soft_url|dl_url|downurl)\b\s*[:=]\s*['"]([^'"]{6,300})['"]/i;
+  function detScriptedDownload(data) {
+    const joined = data._joinedScripts;
+    if (!joined) return mk(false, 0, '脚本集中下载地址', '');
+    const m = joined.match(SCRIPTED_DL_VAR_RE);
+    if (!m) return mk(false, 0, '脚本集中下载地址', '');
+    const url = m[1];
+    // 该地址必须形如「下载端点」：路径以 download/down/dl/get/file/soft/setup 结尾，
+    //   或带 id/fid/file 等参数 —— 否则只是普通资源地址（如 logo、sdk），不予计分。
+    let endpointish = false;
+    try {
+      const u = new URL(url, 'https://' + (data.hostname || 'example.com'));
+      endpointish = /\/(?:download|down|dl|get|file|soft|setup|install)(?:\.php|\.asp|\.jsp|\.aspx|\.cgi)?$/i.test(u.pathname) ||
+        /(?:^|[?&])(?:id|fid|file|soft|aid|appid|dl)=/i.test(u.search);
+    } catch (e) {
+      endpointish = /download\.php\?/i.test(url);
+    }
+    if (!endpointish) return mk(false, 0, '脚本集中下载地址', '');
+    // 权重校准（2026-11-24）：旧值 40 —— 单条就占 danger 线（72）的 56%，而国产 CMS 的
+    //   官方下载页普遍存在 `GLOBAL_DOWNLOAD_URL = '/download/file.php?id=x'` 这类写法，
+    //   与「防复制脚本（+18）」「直链 exe（+12）」「官方话术（+4）」叠加即 74 分误拦。
+    //   新值 34：单条仍是最重的机制类证据，但留给其它维度的余量更大（同样的叠加为 68，停在 warn）。
+    // return mk(true, 40, '脚本集中下载地址',
+    return mk(true, 34, '脚本集中下载地址',
+      `脚本内集中定义了下载地址「${url.slice(0, 120)}」，页面各按钮共用这一个不带文件名的端点（真实载荷由服务端按参数投递，静态扫描看不到）`);
+  }
+
+  // 多平台共用同一安装包：同一个 .zip/.exe 被「Windows 版 / Mac 版 / Android 版」等多个
+  //   平台标签的按钮指向 —— 正规分发不会拿同一个包冒充多平台，属诱导下载站的典型做法。
+  const PLATFORM_LABEL_RES = [
+    /windows|win10|win11|win7|电脑版|pc版/i,
+    /macos|\bmac\b|苹果电脑/i,
+    /linux|ubuntu|debian|centos/i,
+    /android|安卓/i,
+    /ios|iphone|ipad/i,
+    /智能电视|tv版|电视版|android tv|fire tv/i
+  ];
+  function detSharedPackage(data) {
+    const groups = new Map();
+    for (const l of (data.links || [])) {
+      const href = String((l && l.href) || '').trim();
+      if (!href || SKIP_HREF_RE.test(href)) continue;
+      const c = classifyLinkCached(l);
+      if (c !== 'exec' && c !== 'archive') continue;
+      const text = String((l && l.text) || '');
+      if (!/下载|download|安装|获取/i.test(text)) continue;
+      if (!groups.has(href)) groups.set(href, { count: 0, plats: new Set() });
+      const g = groups.get(href);
+      g.count++;
+      for (const p of PLATFORM_LABEL_RES) if (p.test(text)) g.plats.add(String(p));
+    }
+    let best = null;
+    groups.forEach(function (g, href) {
+      if (g.count >= 3 && g.plats.size >= 2 && (!best || g.count > best.count)) {
+        best = { count: g.count, plats: g.plats.size, href: href };
+      }
+    });
+    if (!best) return mk(false, 0, '多平台共用同一安装包', '');
+    return mk(true, 26, '多平台共用同一安装包',
+      `${best.plats} 个不同平台的 ${best.count} 个下载按钮指向同一个安装包「${best.href.slice(0, 100)}」（正规分发不会用一个包冒充多平台）`);
+  }
+
+  // 下载链接运行时改写：由内容脚本统计（data.hrefRewrites）——
+  //   元素的 href 从占位值被脚本改成真实地址，且文案含「下载」。
+  function detHrefRewrite(data) {
+    const n = Number(data.hrefRewrites || 0);
+    if (!n || n < 2) return mk(false, 0, '下载链接运行时改写', '');
+    return mk(true, 20, '下载链接运行时改写',
+      `${n} 个「下载」链接的 href 在页面加载后被脚本从占位值改写为真实地址（点击前才确定投递目标）`);
+  }
+
+  // 品牌冒充 + 声明官方身份：单看「官方」字样在软件站太常见，故必须与域名仿冒同时成立。
+  function detBrandOfficialClaim(data) {
+    const s = getSpoof(data);
+    if (!s) return mk(false, 0, '品牌冒充并声明官方身份', '');
+    const t = data._titleHtmlLower || '';
+    if (!/官方网站|官网|官方下载|官方正版|官方客户端|唯一官方|授权下载|官方指定/.test(t)) {
+      return mk(false, 0, '品牌冒充并声明官方身份', '');
+    }
+    return mk(true, 20, '品牌冒充并声明官方身份', `${s.detail}；页面同时以「官方」身份自居`);
+  }
+
+  // 备案号格式可疑：页面展示了形如 ICP 备案号，但格式不符合法定规则。
+  //   与「盗用他人备案号」的分工：那条靠权威库查询（网络请求，失败即不判）；
+  //   这条只看**格式本身**，无需联网 —— 伪造站连编号规则都常写错（6 位流水号、全 0、顺子）。
+  //   护栏：权威库确认确有备案时不判；格式项至少要命中一条，正常备案站绝不会命中。
+  const ICP_PROV_RE = /^(?:京|津|冀|晋|蒙|辽|吉|黑|沪|苏|浙|皖|闽|赣|鲁|豫|鄂|湘|粤|桂|琼|渝|川|贵|云|藏|陕|甘|青|宁|新|兵|教|工信)/;
+  function detIcpFormat(data) {
+    const icp = data.icp || {};
+    const num = String(icp.icpNumber || '').replace(/\s+/g, '');
+    if (!num) return mk(false, 0, '备案号格式可疑', '');
+    const auth = data.icpAuth || {};
+    if (auth.queried && auth.hasIcp) return mk(false, 0, '备案号格式可疑', '');
+    const bits = [];
+    if (!ICP_PROV_RE.test(num)) bits.push('省份/行业缩写不在已知范围内');
+    const sm = num.match(/备(\d{1,12})号/);
+    const serial = sm ? sm[1] : '';
+    if (serial && serial.length < 6) bits.push('备案流水号仅 ' + serial.length + ' 位（法定为 8~10 位）');
+    const digits = (num.match(/\d+/g) || []).join('');
+    if (digits.length >= 6) {
+      if (/^(\d)\1+$/.test(digits)) bits.push('数字全部相同');
+      else if ('01234567890123456789'.indexOf(digits) !== -1 || '98765432109876543210'.indexOf(digits) !== -1) bits.push('数字为连号顺子');
+    }
+    if (!bits.length) return mk(false, 0, '备案号格式可疑', '');
+    // 权重校准（2026-11-24）：16 → 12。本条只看页脚字符串，与站点善恶无直接因果
+    //   （「ICP备12345678号」漏写省份缩写这类排版疏忽并不罕见），作为纯粹的临近阈值时的加分项。
+    // return mk(true, 16, '备案号格式可疑',
+    return mk(true, 12, '备案号格式可疑',
+      `页面展示的备案号「${num}」不符合法定格式（${bits.join('；')}），疑似伪造/占位`);
+  }
+
+  // 黑产基础设施指纹：命中即说明站点与已知灰产/黑产服务有直接引用关系。
+  //   adseo.com.cn —— 国产黑产 SEO 站群/跳转服务，正规站不会引用；
+  //   noah 域名的 /api.php —— 银狐系「运行时取链」投递后端（与 detNoahKit 互补：
+  //     那条要求脚本里出现 NOAH 专属标记，本条只认「引用了这个后端」，覆盖改名后的变种）。
+  const ADSEO_RE = /(?:https?:)?\/\/(?:[a-z0-9-]+\.)*adseo\.com\.cn(?=[\/:'"?\s]|$)/i;
+  // 旧（2026-11-24 前）：/\/\/(?:[a-z0-9-]+\.)*noah[a-z0-9.-]*\/[a-z0-9_\/\-]*api\.php/i
+  //   —— 直接对整段文本做无锚点匹配，`https://www.noah.com.cn/api.php`（诺亚一类正常品牌域）
+  //      或 `https://noahsoft.io/api.php` 都会被判成黑产后端，单条 +35 且计入中风险组合。
+  // 新：取主机名后过两道闸（同站自身后端不算；noah 后必须跟数字/连字符/下划线等基础设施式命名）。
+  const NOAH_API_RE = /(?:https?:)?\/\/((?:[a-z0-9-]+\.)*noah[a-z0-9.-]*)\/[a-z0-9_\/\-]*api\.php/gi;
+  function isNoahInfraHost(host, pageHost) {
+    host = String(host || '').toLowerCase();
+    if (!host) return false;
+    const h = host.replace(/^www\./, '');
+    const ph = String(pageHost || '').toLowerCase().replace(/^www\./, '');
+    // 闸①：与所在页面同站（互为后缀）= 本站自己的接口，不是外部黑产基础设施
+    if (ph && (h === ph || h.slice(-(ph.length + 1)) === '.' + ph || ph.slice(-(h.length + 1)) === '.' + h)) return false;
+    const labels = h.split('.');
+    // 闸②：找 noah 开头的标签；后缀是纯字母的视为品牌词（noahsoft / noahgroup），不计
+    for (let i = 0; i < labels.length; i++) {
+      const l = labels[i];
+      if (l.indexOf('noah') !== 0) continue;
+      const rest = l.slice(4);
+      if (!rest || !/^[a-z]+$/.test(rest)) return true;
+    }
+    return false;
+  }
+  function detBlackhatFingerprint(data) {
+    const hay = (data.html || '') + '\n' + (data._joinedScripts || '');
+    const hits = [];
+    if (ADSEO_RE.test(hay)) hits.push('adseo.com.cn（黑产 SEO 站群服务）');
+    NOAH_API_RE.lastIndex = 0;
+    let nm;
+    while ((nm = NOAH_API_RE.exec(hay))) {
+      if (isNoahInfraHost(nm[1], data.hostname)) { hits.push('noah 域名的 /api.php（银狐系取链后端）'); break; }
+      if (NOAH_API_RE.lastIndex === nm.index) NOAH_API_RE.lastIndex++;
+    }
+    if (!hits.length) return mk(false, 0, '黑产基础设施指纹', '');
+    // 权重校准（2026-11-24，第二轮）：35 → 45。原值只比「占位按钮」高一点，实测两种漏判：
+    //   ① 只有 adseo 引用的页面 = 35 分，连 warn 线（42）都不到，等于没预警；
+    //   ② adseo/noah + 脚本集中下载地址 = 69 分，两条**硬机制证据**叠加仍差 3 分不拦。
+    //   本条是「页面与已确认黑产后端存在直接引用关系」，与 blacklistedPayload(45)、
+    //   badPayloadName(45) 同属硬 IOC 量级，故对齐 45；实测 M4/M7 升到 79 判危，M3 升到 warn。
+    // return mk(true, 35, '黑产基础设施指纹',
+    return mk(true, 45, '黑产基础设施指纹', '页面引用已知黑产基础设施：' + hits.join('、'));
+  }
+
+  // 反开发者/反审查：页面主动阻止用户查看源代码、开控制台。
+  //   银狐与诱导下载站都爱用（debugger 死循环、禁右键、拦 F12），
+  //   但正规站也有「防复制」类脚本，故要求本页同时存在下载入口或域名仿冒才计分。
+  function detAntiDeveloper(data) {
+    // 门控放宽：除链接集合外，也从 HTML 里认「可下载文件直链」——
+    //   内容脚本的 links 只收 <a href>，而这类站常用 <button data-url> 或脚本拼接，
+    //   只看 links 会漏掉最典型的样本。
+    // ★ 2026-11-24 补：再认「脚本集中下载地址」与「运行时改写」两条 —— 恰好在最典型的一类页面上，
+    //   下载期望值本来就**不写在 href 里**（`javascript:void(0)` / `#`），
+    //   旧门控因此在这些页上恒为 false，导致「同一页既藏下载地址又反调试」只拿到 58~62 分（停在 warn）。
+    //   旧：const hasDl = hasDownloadLink(data) || !!getSpoof(data) ||
+    const hasDl = hasDownloadLink(data) || detScriptedDownload(data).hit ||
+      Number(data.hrefRewrites || 0) >= 2 || !!getSpoof(data) ||
+      /href\s*=\s*["'][^"']+\.(?:zip|rar|7z|exe|msi|apk|dmg|pkg)(?:[?#][^"']*)?["']/i.test(data.html || '');
+    if (!hasDl) return mk(false, 0, '反开发者/反审查', '');
+    const s = data._joinedScriptsLower || '';
+    if (!s) return mk(false, 0, '反开发者/反审查', '');
+    const sig = [];
+    if (/(?:setInterval|setTimeout)\s*\([\s\S]{0,160}?debugger/i.test(s) ||
+        /while\s*\(\s*(?:true|1)\s*\)\s*\{[\s\S]{0,160}?debugger/i.test(s)) {
+      sig.push('debugger 死循环');
+    }
+    if (/contextmenu[\s\S]{0,160}(?:preventDefault\s*\(|return\s+false)/i.test(s)) sig.push('禁用右键菜单');
+    if (/(?:keyCode|which|key|code)\s*={2,3}\s*(?:['"]?123['"]?|['"]?F12['"]?)/i.test(s)) sig.push('拦截 F12');
+    if (!sig.length) return mk(false, 0, '反开发者/反审查', '');
+    // 权重校准（2026-11-24，第二轮）：18 → 20。门控补认「脚本集中下载地址」后，本条在典型诱导页上
+    //   与「占位按钮 18 + 集中地址 34」合计只有 70 分，差 2 分不判危（实测：去掉「官方」话术即停在 warn）。
+    //   提到 20 后同页 = 72 达线；良性侧（防复制 + 直链 exe）由 30 升到 32，仍远低于可疑线。
+    // return mk(true, 18, '反开发者/反审查',
+    return mk(true, 20, '反开发者/反审查', '页面脚本针对审计操作设置障碍：' + sig.join('、'));
+  }
+
   function detSuspiciousTld(data) {
     const h = (data.hostname || '').toLowerCase();
     const tld = h.split('.').pop();
@@ -3310,8 +3536,15 @@
   // ⚠️ 2026-08-31：brandedSoftSite 由 STRONG/brandedExe 拆分降级至 WEAK —— 正规软件目录站
   //    与在线工具站的业态即「介绍品牌软件 + 提供下载」，无法据此区分善恶。
   const FEATURE_STRONG = ['domainImpersonation', 'vmDetection', 'brandedExe', 'doubleExt', 'icpStolen', 'noahKit', 'downloadRedirector', 'runtimeDownload', 'badPayloadName', 'payloadNamePattern'];
-  const FEATURE_MEDIUM = ['codeEngineering', 'linkAnalysis', 'cloudDiskDist', 'execDownload', 'passwordArchive', 'lureTheme', 'redirectIframe', 'domainAge', 'blacklistedPayload', 'obfuscatedJs'];
-  const FEATURE_WEAK   = ['icpMissing', 'lowQuality', 'socialEngineering', 'fakeOfficial', 'domainStructure', 'crossDomainDownload', 'friendlyLinks', 'brandedSoftSite'];
+  const FEATURE_MEDIUM = ['codeEngineering', 'linkAnalysis', 'cloudDiskDist', 'execDownload', 'passwordArchive', 'lureTheme', 'redirectIframe', 'domainAge', 'blacklistedPayload', 'obfuscatedJs',
+    // ★ 2026-11-24：诱导下载链路的机制类证据，与「链接分析/网盘分发」同属中风险量级
+    'scriptedDownload', 'blackhatFingerprint', 'sharedPackage'];
+  const FEATURE_WEAK   = ['icpMissing', 'lowQuality', 'socialEngineering', 'fakeOfficial', 'domainStructure', 'crossDomainDownload', 'friendlyLinks', 'brandedSoftSite',
+    // ★ 2026-11-24：仅在已有其它证据时才可能成立的弱信号（三条都以「另有一条风险证据」为前置）
+    'jsVoidDownload', 'hrefRewrite', 'brandOfficialClaim'];
+  // ⚠️ icpFormat（备案号格式可疑）与 antiDeveloper（反开发者）只参与计分、不进组合升级：
+  //   两者分别可能命中「备案号写错」与「防复制脚本」的正常站点，单独作为升级因子会放大误报；
+  //   作为加分项与其它维度叠加已足够影响 warn/danger 阈值。
 
   // ============ 判定稳定性（同一页面的多次重判）============
   // 症状：同一页面刚打开 71 分（safe/warn），十来秒后变成 81 分并突然拦截。
@@ -3405,7 +3638,16 @@
     { id: 'lureTheme', fn: detLureTheme },
     { id: 'fakeUpdate', fn: detFakeUpdate },
     { id: 'friendlyLinks', fn: detFriendlyLinks },
-    { id: 'doubleExt', fn: detDoubleExt }
+    { id: 'doubleExt', fn: detDoubleExt },
+    // ★ 2026-11-24：「流氓推广 / 诱导下载」专项（吸收自同类扩展的下载链路特征）
+    { id: 'jsVoidDownload', fn: detJsVoidDownload },
+    { id: 'scriptedDownload', fn: detScriptedDownload },
+    { id: 'sharedPackage', fn: detSharedPackage },
+    { id: 'hrefRewrite', fn: detHrefRewrite },
+    { id: 'brandOfficialClaim', fn: detBrandOfficialClaim },
+    { id: 'icpFormat', fn: detIcpFormat },
+    { id: 'blackhatFingerprint', fn: detBlackhatFingerprint },
+    { id: 'antiDeveloper', fn: detAntiDeveloper }
   ];
 
   /**
@@ -3637,7 +3879,17 @@
     { id: 'lureTheme', label: '银狐诱饵主题', weight: 28, desc: '页面含税务稽查/补贴/违规记录等银狐高频投递主题，且含下载入口' },
     { id: 'fakeUpdate', label: '伪造更新提示', weight: 22, desc: '页面含"版本过低/请更新插件"等伪造更新诱导，疑似银狐手法' },
     { id: 'friendlyLinks', label: '友情链接异常', weight: 30, desc: '页脚友情链接区块含≥3个与本站品牌无关的大牌外链，疑似批量模板站/钓鱼伪装' },
-    { id: 'doubleExt', label: '双扩展名伪装', weight: 30, desc: '下载链接使用 .pdf.exe 等双扩展名伪装成文档/压缩包' }
+    { id: 'doubleExt', label: '双扩展名伪装', weight: 30, desc: '下载链接使用 .pdf.exe 等双扩展名伪装成文档/压缩包' },
+    // ★ 2026-11-24：以下 8 项吸收自同类扩展（银狐拦截系统 2.0.0）的评分表，
+    //   聚焦「诱导下载 / 灰产推广站」的**投递机制**特征（对方的主观文案类与纯 SEO 类规则按对比结论不吸收）。
+    { id: 'jsVoidDownload', label: '占位下载按钮', weight: 18, desc: '≥2 个「下载」按钮用 javascript:void(0)/# 占位，真实地址运行时才写入；需叠加脚本集中下载地址/运行时取链/域名仿冒才计分' },
+    { id: 'scriptedDownload', label: '脚本集中下载地址', weight: 34, desc: '脚本内定义全局下载地址变量（GLOBAL_DOWNLOAD_URL 等），全站按钮共用一个不带文件名的下载端点' },
+    { id: 'sharedPackage', label: '多平台共用同一安装包', weight: 26, desc: '同一个 .zip/.exe 被 ≥3 个不同平台标签的下载按钮指向，正规分发不会用一个包冒充多平台' },
+    { id: 'hrefRewrite', label: '下载链接运行时改写', weight: 20, desc: '≥2 个「下载」链接的 href 在加载后被脚本从占位值改写为真实地址（点击前才确定投递目标）' },
+    { id: 'brandOfficialClaim', label: '品牌冒充并声明官方身份', weight: 20, desc: '域名仿冒某品牌，且页面同时以「官方网站/官方下载」身份自居' },
+    { id: 'icpFormat', label: '备案号格式可疑', weight: 12, desc: '页面展示的备案号不符合法定格式（省份缩写非法、流水号过短、全同数字或顺子），疑似伪造/占位（权威库确认有备案时不判）' },
+    { id: 'blackhatFingerprint', label: '黑产基础设施指纹', weight: 45, desc: '页面引用 adseo.com.cn（黑产 SEO 站群）或 noah 域名的 /api.php（银狐系取链后端）等已知灰产基础设施' },
+    { id: 'antiDeveloper', label: '反开发者/反审查', weight: 20, desc: 'debugger 死循环、禁用右键、拦截 F12 等阻止用户审查页面的脚本；需本页有下载入口或域名仿冒才计分' }
   ];
 
   const API = {

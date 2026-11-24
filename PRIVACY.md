@@ -2,14 +2,14 @@
 
 **SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期：2026-11-23　|　适用版本：v1.11.6（本次修订：**权限没有增减**，仍为 7 项 API 权限 + 1 项主机权限，也没有新增任何第三方、没有新增任何网络请求、没有新增任何数据外发；变化只在**名单判定**：新增三层「例外」放行层（云端 / 扩展内置 / 自定义），用来把「被名单误伤的站点」放回来，判定顺序为 云端例外 > 云端黑名单 > 内置例外 > 内置黑名单 > 自定义例外 > 自定义黑名单 > 三档白名单。数据全部走既有通道——云端例外是该扩展本就拉取的 `whitelist.json` 里新增的 `exceptions` 字段（纯域名数据，与名单同一次手动同步、同一套清洗，见 §3.3），自定义例外存在本机 `storage.local` 的 `exceptionDomains`（与自定义黑白名单同处，不上传），内置例外随扩展打包。另需注意两点语义：① 白名单只在「没有任何黑名单命中」时生效，例外才是唯一能推翻黑名单的放行层；② 自定义例外**只能**推翻自定义黑名单，压不住云端与内置黑名单——避免钓鱼站诱导用户点一次「信任」就突破防线）
+生效日期：2026-11-24　|　适用版本：v1.12.6（本次修订：**权限没有增减**，仍为 7 项 API 权限 + 1 项主机权限，也没有新增任何第三方、没有新增任何网络请求、没有新增任何数据外发。变化只在**本地检测的评分规则**：新增 8 个「诱导下载 / 灰产推广」检测维度（占位下载按钮、脚本集中下载地址、多平台共用同一安装包、下载链接运行时改写、品牌冒充并声明官方身份、备案号格式可疑、黑产基础设施指纹、反开发者/反审查），并对其中的权重与门控做了标定。这 8 项用到的数据全部来自内容脚本**已经在读取**的当前页内容（DOM、`<a>` 的 href 与文案、内联脚本文本、页面展示的备案号字符串），不新增任何外部请求，也不新增任何存储项。上一版（v1.11.6）引入的三层「例外」放行层与云端 `exceptions` 字段语义不变，见 §3.3）
 
 ---
 ## 一、概述
 
 本扩展的**检测、评分、名单比对与拦截全部在你的设备上完成**；不建立账号、不收集浏览历史、不向分析平台上报数据。默认开启的 RDAP / ICP 辅助核验只发送**域名**；「解析器跟随」只在**已被判危**的页面上、用一个不激活的后台标签页重访该页自己的跳转端点（见 3.1④）。除此之外，只有你**主动开启**的威胁情报源 / 社区名单、**主动点击**的云端名单同步、工具下载、反馈与名单上报，才会产生对应的外部请求。
 
-**请特别注意用户主动提交的数据（「名单上报」自 v1.6.1 起提供，v1.8.5 未改动其数据范围）**：点击「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」时，你填写的文字会发送到作者自建的后端并通过邮件送达作者，邮件中会包含来源 IP；不点击不会自动发送。完整的请求目标与内容见下文。
+**请特别注意用户主动提交的数据（「名单上报」自 v1.6.1 起提供，未改动其数据范围）**：点击「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」时，你填写的文字会发送到作者自建的后端并通过邮件送达作者，邮件中会包含来源 IP；不点击不会自动发送。完整的请求目标与内容见下文。
 
 ---
 
@@ -294,13 +294,15 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## English Summary
 
-**SilverFoxBlocker v1.11.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
+**SilverFoxBlocker v1.12.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
 
 **Automatic requests (on by default, disableable):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`); limited reads of resources already referenced by the page you are visiting for download discovery. Any list hit short-circuits these lookups.
 
 **Download handling (v1.10.x):** high-risk files (`.exe`/`.msi`/`.zip`/`.dmg` and cloud-disk share links) are **not** exempted by allowlists any more. A download that starts without a matching user gesture is paused and a small non-blocking bar offers "keep blocked / continue"; one confirmation authorizes the rest of that page (revoked on navigation or reload), and the **first** executable download from each site must be confirmed once (registrable domain + timestamp kept locally, 180-day expiry, ≤2,000 entries, never uploaded; declining does not record it). Page grants, gesture timestamps and pending downloads live in `chrome.storage.session` and are cleared when the browser closes. When a download is allowed as user intent, a 10-second dismissible notice appears in the bottom-left corner. After a **safe** verdict, previously held downloads are **not** restarted automatically — you click again. The resolver-follow probe (dangerous pages only) now has an explicit on/off switch (Settings → Behavior, on by default).
 
-**Lists and exceptions (v1.11.6):** beyond the six local lists (cloud / builtin / custom, each with a block and an allow side), three "exception" layers can override blocklists: **cloud exceptions** arrive as the `exceptions` field inside the same `whitelist.json` you already fetch only when you click "update from cloud" (plain domain strings, no new request), **builtin exceptions** ship inside the extension, and **your own exceptions** are typed into the options page and kept in `chrome.storage.local` (`exceptionDomains`) — never uploaded. Your own exceptions override only your own blocklist, never the cloud or builtin ones. No new permissions, no new network requests, no new data collection.
+**Detection scoring (v1.12.6):** eight additional local heuristics target lure-download and greyware-promotion pages — placeholder "download" buttons, a single scripted download endpoint reused by every button, one archive offered as the "Windows / Mac / Android" build, `href` values rewritten at runtime, a spoofed brand claiming to be "official", a malformed ICP licence number shown in the footer, references to known blackhat infrastructure, and anti-devtools scripts. All of them read only what the content script already collects from the page you are on (DOM, anchor `href` and text, inline script text, the licence string displayed in the footer). No new request, no new storage key, no new permission.
+
+**Lists and exceptions (v1.11.6, unchanged in v1.12.6):** beyond the six local lists (cloud / builtin / custom, each with a block and an allow side), three "exception" layers can override blocklists: **cloud exceptions** arrive as the `exceptions` field inside the same `whitelist.json` you already fetch only when you click "update from cloud" (plain domain strings, no new request), **builtin exceptions** ship inside the extension, and **your own exceptions** are typed into the options page and kept in `chrome.storage.local` (`exceptionDomains`) — never uploaded. Your own exceptions override only your own blocklist, never the cloud or builtin ones. No new permissions, no new network requests, no new data collection.
 
 **Optional requests (off by default):** VirusTotal receives base64url domain/URL IDs; Google Safe Browsing receives the **full page URL** (v4 Lookup); FoxAPI receives the **domain**. All three use your own API key, stored **only as AES-GCM ciphertext** (`v1.salt.iv.ciphertext`); plaintext exists only briefly inside the background service worker, never in storage or page scripts. FoxAPI results never render a banner — they only adjust the local score (`official:false` adds 45 points), and calls are throttled to 1/second with a 10-minute per-domain cache. URLhaus receives domain + page URL; NetAPI receives the domain; community blocklists (OpenPhish, PhishDestroy, HaGeZi TIF, uBlock Origin Badware risks, Dandelion Sprout Anti-Malware) are downloaded as one-way GETs from jsDelivr/GitHub mirrors; the two AdBlock-format lists are reduced to `||domain^` host rules only — IPs, paths, regexes, cosmetic and exception rules are discarded and never executed. VT keys saved as plaintext by older versions are automatically re-encrypted once you open the options page; until then the background still accepts them.
 
