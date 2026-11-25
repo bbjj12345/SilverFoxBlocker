@@ -1722,20 +1722,34 @@ async function fetchOpenPhishFeed() {
   return { ok: false, error: errMsg, attempts: failures.length };
 }
 
+// ★ 2026-11-26：手动「立即更新」= 无条件强制更新（force === true）。
+//   背景：社区名单的自动更新有两条时间护栏（24 小时内已更新跳过、失败后 30 分钟再试），
+//   以前 force 只跳过这两条，但**总开关 / 名单子开关未开启时仍会直接 skipped**——
+//   于是「长期关着总开关 → 打开开关（还没点保存）→ 立刻点立即更新」会被判成
+//   「master-off」，设置页又把它显示成「24 小时内已更新」，用户只能干等次日自动更新。
+//   现在：只要 force，时间护栏、总开关、名单子开关一律不看，真的去抓一次；
+//   命中判定那边仍受 communityListsOn() 约束，所以总开关确实关着时不会因此误拦。
+//   结果统一打上 manual:true，设置页据此区分「自动跳过」与「手动结果」。
+function sfResIsManual(res, manual) {
+  if (manual && res && typeof res === 'object') res.manual = true;
+  return res;
+}
+
 async function maybeUpdateOpenPhish(force) {
+  const manual = force === true;   // 手动「立即更新」：跳过下面所有护栏
   const s = await getSettings();
-  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
+  if (!manual && !(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
   const op = (s && s.openphish) || {};
-  if (!op.enabled && !force) return { ok: false, skipped: true };
+  if (!manual && !op.enabled) return { ok: false, skipped: true, reason: 'list-off' };
   let last = (_opMeta && _opMeta.updated) || 0;
   if (!last) {
     const meta = await new Promise((res) => chrome.storage.local.get({ [SF_OP_META_KEY]: { updated: 0 } }, res));
     last = (meta[SF_OP_META_KEY] && meta[SF_OP_META_KEY].updated) || 0;
     if (!_opMeta && meta[SF_OP_META_KEY]) _opMeta = meta[SF_OP_META_KEY];
   }
-  // 非强制更新：24 小时内已更新则跳过，避免频繁请求
-  if (!force && (Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: (_opDomains ? _opDomains.size : 0) };
-  return fetchOpenPhishFeed();
+  // 非强制更新：24 小时内已更新则跳过，避免频繁请求（手动点击永不受此限）
+  if (!manual && (Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: (_opDomains ? _opDomains.size : 0) };
+  return sfResIsManual(await fetchOpenPhishFeed(), manual);
 }
 
 // OpenPhish 每日自动更新（仅启用时由后台 alarm 触发）；手动更新复用一次性 alarm，保证 SW 在抓取期间存活
@@ -1839,10 +1853,11 @@ async function fetchPhishDestroyFeed() {
 }
 
 async function maybeUpdatePhishDestroy(force) {
+  const manual = force === true;   // 手动「立即更新」：跳过下面所有护栏
   const s = await getSettings();
-  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
+  if (!manual && !(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
   const pd = (s && s.phishdestroy) || {};
-  if (!pd.enabled && !force) return { ok: false, skipped: true };
+  if (!manual && !pd.enabled) return { ok: false, skipped: true, reason: 'list-off' };
   let last = (_pdMeta && _pdMeta.updated) || 0;
   if (!last) {
     const meta = await new Promise((res) => chrome.storage.local.get({ [PD_META_KEY]: { updated: 0 } }, res));
@@ -1850,8 +1865,8 @@ async function maybeUpdatePhishDestroy(force) {
     if (!_pdMeta && meta[PD_META_KEY]) _pdMeta = meta[PD_META_KEY];
   }
   // 非强制：24 小时内已更新则跳过（每日自动更新即靠这条幂等约束，避免 SW 重启反复抓取）
-  if (!force && (Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: (_pdDomains ? _pdDomains.size : 0) };
-  return fetchPhishDestroyFeed();
+  if (!manual && (Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: (_pdDomains ? _pdDomains.size : 0) };
+  return sfResIsManual(await fetchPhishDestroyFeed(), manual);
 }
 
 function notifyPhishDestroyUpdated(r) {
@@ -2208,10 +2223,11 @@ async function fetchHaGeZiFeed(variant) {
 
 async function maybeUpdateHaGeZi(force) {
   if (_hgUpdating) return { ok: false, skipped: true, busy: true };   // 单飞：避免并发下载大名单
+  const manual = force === true;   // 手动「立即更新」：跳过下面所有护栏
   const s = await getSettings();
-  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
+  if (!manual && !(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
   const hg = (s && s.hagezi) || {};
-  if (!hg.enabled && !force) return { ok: false, skipped: true };
+  if (!manual && !hg.enabled) return { ok: false, skipped: true, reason: 'list-off' };
   let meta = _hgMeta;
   if (!meta || (!meta.updated && !meta.lastAttempt)) {
     try {
@@ -2221,17 +2237,17 @@ async function maybeUpdateHaGeZi(force) {
   }
   const last = (meta && meta.updated) || 0;
   const lastTry = (meta && meta.lastAttempt) || 0;
-  if (!force) {
+  if (!manual) {
     if ((Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: _hgCount };
-    if (lastTry && (Date.now() - lastTry) < 30 * 60 * 1000) return { ok: false, skipped: true };  // 失败后 30 分钟内不再重试
+    if (lastTry && (Date.now() - lastTry) < 30 * 60 * 1000) return { ok: false, skipped: true, reason: 'retry-cooling' };  // 失败后 30 分钟内不再重试
   }
   const variant = (hg.variant === 'medium') ? 'medium' : 'full';
-  // 版本切换后必须重新抓取（旧位图与新版名单不对应）
-  const variantChanged = !!(_hgMeta && _hgMeta.variant && _hgMeta.variant !== variant);
-  if (variantChanged) force = true;
+  // 版本切换（full/medium）后旧位图与新版名单不对应，fetchHaGeZiFeed 会按新 variant 重写；
+  // ★ 2026-11-26：原先这里写 `if (variantChanged) force = true;`——但护栏在上方已按 manual 判完，
+  //   此处再改 force 对本次调用毫无作用（死赋值），删掉以免误读成"换版本能绕过护栏"。
   _hgUpdating = true;
   try {
-    return await fetchHaGeZiFeed(variant);
+    return sfResIsManual(await fetchHaGeZiFeed(variant), manual);
   } finally {
     _hgUpdating = false;
   }
@@ -2484,10 +2500,11 @@ async function maybeUpdateAdl(id, force) {
   const st = _adl[id];
   if (!cfg || !st) return { ok: false, skipped: true };
   if (st.updating) return { ok: false, skipped: true, busy: true };
+  const manual = force === true;   // 手动「立即更新」：跳过下面所有护栏
   const s = await getSettings();
-  if (!(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
+  if (!manual && !(s && s.communityLists && s.communityLists.enabled)) return { ok: false, skipped: true, reason: 'master-off' };
   const cfgUser = (s && s[id]) || {};
-  if (!cfgUser.enabled && !force) return { ok: false, skipped: true };
+  if (!manual && !cfgUser.enabled) return { ok: false, skipped: true, reason: 'list-off' };
   if (!st.meta) {
     try {
       st.meta = await new Promise(function (r) {
@@ -2497,13 +2514,13 @@ async function maybeUpdateAdl(id, force) {
   }
   const last = (st.meta && st.meta.updated) || 0;
   const lastTry = (st.meta && st.meta.lastAttempt) || 0;
-  if (!force) {
+  if (!manual) {
     if ((Date.now() - last) < 24 * 3600 * 1000) return { ok: true, skipped: true, count: st.count };
-    if (lastTry && (Date.now() - lastTry) < 30 * 60 * 1000) return { ok: false, skipped: true };
+    if (lastTry && (Date.now() - lastTry) < 30 * 60 * 1000) return { ok: false, skipped: true, reason: 'retry-cooling' };
   }
   st.updating = true;
   try {
-    return await fetchAdlFeed(id);
+    return sfResIsManual(await fetchAdlFeed(id), manual);
   } finally {
     st.updating = false;
   }
@@ -4277,6 +4294,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (msg.type === 'sf-openphish-update') {
     // 解耦长任务：立即 ACK，真正的抓取交给一次性 alarm（alarm 回调期间 Chrome 保证 SW 存活），
     // 抓取结果通过单向消息 sf-openphish-updated 推送给设置页——避免「长连接 + 后台被回收」导致 port closed。
+    // ★ 2026-11-26：设置页点「立即更新」会先把开关写进 storage.sync 再发这条消息；
+    //   sync 的 onChanged 与 message 之间没有先后保证，这里直接丢一次设置缓存，
+    //   确保本次抓取与「是否参与拦截」的判定用的是刚保存的开关值。
+    _settingsCache = null;
     try { chrome.alarms.create('sfOpenPhishManual', { when: Date.now() + 200 }); } catch (e) {}
     try { sendResponse({ started: true }); } catch (e) {}
     return true;
@@ -4300,6 +4321,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   // ===== PhishDestroy 本地钓鱼黑名单 =====
   if (msg.type === 'sf-phishdestroy-update') {
     // 与 OpenPhish 相同：立即 ACK，抓取交给一次性 alarm，结果用单向消息回推设置页
+    // ★ 2026-11-26：设置页点「立即更新」会先把开关写进 storage.sync 再发这条消息；
+    //   sync 的 onChanged 与 message 之间没有先后保证，这里直接丢一次设置缓存，
+    //   确保本次抓取与「是否参与拦截」的判定用的是刚保存的开关值。
+    _settingsCache = null;
     try { chrome.alarms.create('sfPhishDestroyManual', { when: Date.now() + 200 }); } catch (e) {}
     try { sendResponse({ started: true }); } catch (e) {}
     return true;
@@ -4321,6 +4346,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   // ===== HaGeZi's TIF 本地威胁情报黑名单 =====
   if (msg.type === 'sf-hagezi-update') {
     // 同 OpenPhish / PhishDestroy：立即 ACK，抓取交给一次性 alarm（完整版约 36MB，下载耗时较长，避免长连接被回收）
+    // ★ 2026-11-26：设置页点「立即更新」会先把开关写进 storage.sync 再发这条消息；
+    //   sync 的 onChanged 与 message 之间没有先后保证，这里直接丢一次设置缓存，
+    //   确保本次抓取与「是否参与拦截」的判定用的是刚保存的开关值。
+    _settingsCache = null;
     try { chrome.alarms.create('sfHaGeZiManual', { when: Date.now() + 200 }); } catch (e) {}
     try { sendResponse({ started: true }); } catch (e) {}
     return true;
@@ -4345,6 +4374,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     const id = String(msg.id || '');
     if (!ADL_LISTS[id]) { try { sendResponse({ started: false, error: '未知名单' }); } catch (e) {}
       return true; }
+    // ★ 2026-11-26：设置页点「立即更新」会先把开关写进 storage.sync 再发这条消息；
+    //   sync 的 onChanged 与 message 之间没有先后保证，这里直接丢一次设置缓存，
+    //   确保本次抓取与「是否参与拦截」的判定用的是刚保存的开关值。
+    _settingsCache = null;
     try { chrome.alarms.create('sfAdlManual_' + id, { when: Date.now() + 200 }); } catch (e) {}
     try { sendResponse({ started: true }); } catch (e) {}
     return true;

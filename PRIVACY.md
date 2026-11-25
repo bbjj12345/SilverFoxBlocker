@@ -2,7 +2,7 @@
 
 **SilverFoxBlocker**（以下简称「本扩展」）
 
-生效日期：2026-11-24　|　适用版本：v1.13.6（本次修订：**权限没有增减**，仍为 7 项 API 权限 + 1 项主机权限，也没有新增任何第三方、没有新增任何网络请求、没有新增任何数据外发。变化只在**本地域名仿冒的评分规则**：把仿冒检测拆成「精确匹配」与「重排 / 插字 / 分片拼接变体」两条独立判定线（取最高分并短路，变体分支没有独立开关、随「域名仿冒」维度），新增「数字形近」判定（把域名里的数字当作字母的多种读法，只有与品牌词等长且非数字位逐字相同才命中），并修掉四个既有判定缺陷（形近折叠吃掉数字、剥词缀的严格比较、typo 结构护栏造成的漏检、窗口拼接对「品牌词 + 站点性质词」的误伤）；缓存淘汰由「整表清空」改为 LRU 单条淘汰；仿冒判定对「通用行业缩写 + 裸域」（如 erp.com）不再计分；并适配 ICP 备案查询接口的改版（「无备案」由 200 文案改为 HTTP 404）与应答延迟差异（有备案约 200ms、无备案要 8~10 秒），查询改为两个原有接口对冲并发、权威结论可能晚于首屏判定到达；仍然只查原来那两个公共接口，没有新增请求目标、没有新增任何存储。以上全部只读内容脚本**已经在读取**的域名与页面内容，不新增外部请求、不新增存储项。上一版（v1.12.6）新增的 8 个「诱导下载 / 灰产推广」维度与 v1.11.6 引入的三层「例外」放行层语义均不变，见 §3.3）
+生效日期：2026-11-26　|　适用版本：v1.13.7（本次修订：**权限没有增减**，仍为 7 项 API 权限 + 1 项主机权限，也没有新增任何第三方、没有新增任何网络请求、没有新增任何数据外发。变化只有一处**本地交互与写入时机**：设置页「社区维护的本地黑名单」里的五个「立即更新」按钮，现在会先把你在这个区块勾选的开关状态（社区名单总开关 + 五份名单的子开关 + HaGeZi 名单版本，共 6 个键）写入 `chrome.storage.sync`，再发起抓取——等价于点一次「保存设置」，但只写这 6 个键，不触碰白名单、自定义名单、评分权重、外观等任何其它设置，也不是新增的存储项（这 6 个键本来就在设置里）；不点这个按钮就不会有任何写入。数据仍然只存在浏览器本地，不上传、不外发。上一版（v1.13.6）的变化在**本地域名仿冒的评分规则**：把仿冒检测拆成「精确匹配」与「重排 / 插字 / 分片拼接变体」两条独立判定线（取最高分并短路，变体分支没有独立开关、随「域名仿冒」维度），新增「数字形近」判定（把域名里的数字当作字母的多种读法，只有与品牌词等长且非数字位逐字相同才命中），并修掉四个既有判定缺陷（形近折叠吃掉数字、剥词缀的严格比较、typo 结构护栏造成的漏检、窗口拼接对「品牌词 + 站点性质词」的误伤）；缓存淘汰由「整表清空」改为 LRU 单条淘汰；仿冒判定对「通用行业缩写 + 裸域」（如 erp.com）不再计分；并适配 ICP 备案查询接口的改版（「无备案」由 200 文案改为 HTTP 404）与应答延迟差异（有备案约 200ms、无备案要 8~10 秒），查询改为两个原有接口对冲并发、权威结论可能晚于首屏判定到达；仍然只查原来那两个公共接口，没有新增请求目标、没有新增任何存储。以上全部只读内容脚本**已经在读取**的域名与页面内容，不新增外部请求、不新增存储项。上一版（v1.12.6）新增的 8 个「诱导下载 / 灰产推广」维度与 v1.11.6 引入的三层「例外」放行层语义均不变，见 §3.3）
 
 ---
 ## 一、概述
@@ -68,6 +68,8 @@
 
 **社区黑名单更新（默认关闭，需先开总开关）**
 开启后，扩展会按天（或手动点击「立即更新」时）从 jsDelivr / fastly / gcore / testingcf / raw.githubusercontent.com / gh-proxy.com 等镜像**下载**公开名单文件（OpenPhish、PhishDestroy、HaGeZi's TIF、uBlock Origin - Badware risks、Dandelion Sprout's Anti-Malware List）。这是单向 GET，**不上传任何内容**，也不包含你的访问记录。
+
+点击某份名单的「立即更新」时，扩展会**先**把本区块的开关状态（总开关 + 五份名单子开关 + HaGeZi 名单版本共 6 个键）写入 `chrome.storage.sync`，再发起下载——等价于点一次「保存设置」，但只写这 6 个键，不触碰白名单、自定义名单、权重与外观，也不会因此产生任何额外请求。
 
 ### 3.3 云端黑 / 白名单同步（默认不发请求，需你手动点击）
 
@@ -294,7 +296,9 @@ https://api.silverfoxblocker.dpdns.org/list?type=black&_=<时间戳>
 
 ## English Summary
 
-**SilverFoxBlocker v1.13.6** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
+**SilverFoxBlocker v1.13.7** runs all detection, scoring, list matching and blocking **on your device**. There are no accounts, no analytics, no telemetry, and no upload of browsing history, cookies, credentials or page content.
+
+**Community blocklists (v1.13.7):** the five "update now" buttons in Settings → Community-maintained local blocklists now first persist the toggles of that very section (master switch + five per-list switches + the HaGeZi variant — six keys that already exist in your settings) into `chrome.storage.sync`, then start the fetch. It is the same write as pressing "Save settings", but limited to those six keys: allowlists, custom lists, scoring weights and appearance are untouched, nothing new is stored, nothing is uploaded, and no request is made unless you press one of those buttons.
 
 **Automatic requests (on by default, disableable):** registrable domain → public RDAP servers (domain age); domain → public ICP lookup services (`uapis.cn`, `cn.apihz.cn`); limited reads of resources already referenced by the page you are visiting for download discovery. Any list hit short-circuits these lookups.
 

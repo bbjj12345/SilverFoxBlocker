@@ -60,6 +60,8 @@
       ['G Data', 'gdata-software.com', '歌德塔，来自德国的反恶意软件厂商（2026-11-12 修正：原收录的 gdata.com 归属无法确认，已换为实测官网 gdata-software.com）'],
       ['Comodo', 'comodo.com', '科摩多，又称毛豆，来自美国的反恶意软件厂商'],
       ['微步在线', 'threatbook.cn threatbook.com safeskill.cn', '微步在线威胁情报平台'],
+      ['VirusTotal', 'virustotal.com', 'VirusTotal 是 Google 旗下的聚合扫描服务平台，提供在线文件 / URL 扫描'],
+      ['ANY.RUN', 'any.run', 'ANY.RUN 云沙箱分析平台，提供在线文件 / URL 扫描'],
       ['AdGuard', 'adguard.com adguardteam.com adguard-vpn.com adguard-dns.io adguard-wallet.com adguard-mail.com', '广告拦截 / 隐私保护'],
       ['其他海外安全软件', 'pandasecurity.com zonealarm.com emsisoft.com', 'Panda / ZoneAlarm / Emsisoft 等（2026-11-12 修正：原收录的 panda.com 是待售停放页，已换为官网 pandasecurity.com）'],
       ['官网表补录', '360totalsecurity.com', '来源：CORRECT_SITE_CATALOG 同名大类（2026-11-21 两表合并），均为官网表已核实的官方主机名'],
@@ -547,6 +549,8 @@
       ['G DATA 歌德塔', 'gdata', 'gdata-software.com', '白名单已于 2026-11-12 从 gdata.com 修正为 gdata-software.com'],
       ['Comodo 科摩多', 'comodo', 'comodo.com', '企业产品已更名 Xcitium'],
       ['微步在线', 'threatbook', 'threatbook.cn', 'threatbook.com 会 301 跳转到 threatbook.cn'],
+      ['VirusTotal', 'virustotal VT', 'virustotal.com', 'VirusTotal 是 Google 旗下的聚合扫描服务平台，提供在线文件 / URL 扫描'],
+      ['ANY.RUN', 'any.run anyrun', 'any.run', 'ANY.RUN 云沙箱分析平台，提供在线文件 / URL 扫描'],
       ['AdGuard', 'adguard', [
         { url: 'adguard.com', label: 'AdGuard官网' },
         { url: 'adguard-dns.io', label: 'AdGuard DNS官网' },

@@ -4389,8 +4389,8 @@
 
   // 维度元信息（供设置面板渲染：开关、权重、说明）
   const CATEGORIES = [
-    { id: 'domainImpersonation', label: '域名仿冒官方品牌', weight: 60, desc: '域名含品牌词/编辑距离近似，命中 121+ 品牌中任意一个即按视频 8 项规则加 60 分' },
-    { id: 'icpMissing', label: '缺备案号(ICP)', weight: 18, desc: '面向国内却无 ICP 备案号（权重已下调：备案信息常由 JS 渲染或置于子页，缺失不等于恶意）' },
+    { id: 'domainImpersonation', label: '域名仿冒官方品牌', weight: 60, desc: '域名含品牌词/编辑距离近似，命中任意一个品牌词即加 60 分' },
+    { id: 'icpMissing', label: '缺备案号(ICP)', weight: 18, desc: '面向国内却无 ICP 备案号（权重已下调：备案信息常由 JS 渲染或置于子页，缺失不视为直接恶意）' },
     { id: 'icpStolen', label: '盗用他人备案号', weight: 55, desc: '页面展示备案号但权威备案库查无此域名记录，属盗用他人备案伪装合规' },
     { id: 'codeEngineering', label: '代码工程化低', weight: 28, desc: 'DOM 极简、无主流框架、外部资源极少、脚本打包异常，疑似手搓/模板站（前端渲染未完成的页面已豁免）' },
     { id: 'linkAnalysis', label: '链接分析异常', weight: 50, desc: '外链/下载链接/重复链接/跨域分发等维度综合评分，封顶 50 分（#4 重构后链接来源增多，已下调以防误报）' },
@@ -4406,12 +4406,12 @@
     { id: 'fakeOfficial', label: '假冒官方话术', weight: 16, desc: '非官方域名却使用"官方下载/安全下载"等话术' },
     { id: 'redirectIframe', label: '重定向/注入', weight: 12, desc: '存在外部 iframe 嵌套或 meta refresh 自动跳转（权重已下调：第三方跨域 iframe 在正规站极常见，仅作辅助信号）' },
     { id: 'noahKit', label: 'NOAH 投递组件', weight: 50, desc: '内联脚本含 NOAH 运行时取链投递组件（多中继动态拉取 download_link，规避静态 URL 检测）' },
-    { id: 'downloadRedirector', label: '极简自跳转下载页', weight: 45, desc: '空白页用 JS/meta 自跳转下载参数地址、服务端直接吐二进制附件，属银狐「瞬间下载」中转页' },
+    { id: 'downloadRedirector', label: '极简自跳转下载页', weight: 45, desc: '空白页用 JS/meta 自跳转下载参数地址、服务端直接分发二进制附件，属于银狐木马的「瞬间下载」中转页' },
     { id: 'runtimeDownload', label: '运行时取链投递', weight: 50, desc: '内联脚本运行时从外部中继/配置动态拉取下载链接并创建隐藏锚点触发下载，与组件名/落地域名无关，通用识别此类投递手法' },
     { id: 'domainStructure', label: '可疑域名结构', weight: 20, desc: '使用高风险后缀或含无语义随机字符串段' },
     { id: 'brandedExe', label: '品牌仿冒安装包', weight: 40, desc: '下载链接文件名含品牌词且为可执行/压缩包，银狐木马化正版软件投递' },
     { id: 'brandedSoftSite', label: '品牌软件下载站', weight: 10, desc: '页面以某品牌软件名义提供下载。软件目录站/工具站的正常业态，仅作堆叠时的辅助弱信号' },
-    { id: 'badPayloadName', label: '已知木马化投递物', weight: 45, desc: '下载链接文件名命中已知银狐木马化安装包（如 bzy.exe / shanlian_VPN_64.exe），样本静态分析确认的 IOC' },
+    { id: 'badPayloadName', label: '已知木马化投递物', weight: 45, desc: '下载链接文件名命中已知银狐木马化安装包、或样本静态分析确认的 IOC' },
     { id: 'payloadNamePattern', label: '可疑载荷文件名', weight: 40, desc: '下载文件名与 Windows 系统进程同名、双扩展名伪装、纯随机串或中文诱饵命名（正规站不会出现的命名形态）' },
     { id: 'passwordArchive', label: '带密码压缩包', weight: 26, desc: '网盘/压缩包分发并附解压密码，规避杀软查杀' },
     { id: 'lureTheme', label: '银狐诱饵主题', weight: 28, desc: '页面含税务稽查/补贴/违规记录等银狐高频投递主题，且含下载入口' },
@@ -4422,7 +4422,7 @@
     //   聚焦「诱导下载 / 灰产推广站」的**投递机制**特征（对方的主观文案类与纯 SEO 类规则按对比结论不吸收）。
     { id: 'jsVoidDownload', label: '占位下载按钮', weight: 18, desc: '≥2 个「下载」按钮用 javascript:void(0)/# 占位，真实地址运行时才写入；需叠加脚本集中下载地址/运行时取链/域名仿冒才计分' },
     { id: 'scriptedDownload', label: '脚本集中下载地址', weight: 34, desc: '脚本内定义全局下载地址变量（GLOBAL_DOWNLOAD_URL 等），全站按钮共用一个不带文件名的下载端点' },
-    { id: 'sharedPackage', label: '多平台共用同一安装包', weight: 26, desc: '同一个 .zip/.exe 被 ≥3 个不同平台标签的下载按钮指向，正规分发不会用一个包冒充多平台' },
+    { id: 'sharedPackage', label: '多平台共用同一安装包', weight: 26, desc: '同一个 .zip/.exe 被 ≥3 个不同平台标签的下载按钮指向，正规分发不会用同一个包冒充多个平台的产品' },
     { id: 'hrefRewrite', label: '下载链接运行时改写', weight: 20, desc: '≥2 个「下载」链接的 href 在加载后被脚本从占位值改写为真实地址（点击前才确定投递目标）' },
     { id: 'brandOfficialClaim', label: '品牌冒充并声明官方身份', weight: 20, desc: '域名仿冒某品牌，且页面同时以「官方网站/官方下载」身份自居' },
     { id: 'icpFormat', label: '备案号格式可疑', weight: 12, desc: '页面展示的备案号不符合法定格式（省份缩写非法、流水号过短、全同数字或顺子），疑似伪造/占位（权威库确认有备案时不判）' },

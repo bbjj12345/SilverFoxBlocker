@@ -2541,7 +2541,7 @@
 
     const subText =
       '当前站点 <b>' + escapeHtml(location.hostname) + '</b> 命中 ' + reasons.length +
-      ' 项风险特征（风险分 ' + (result.score || 0) + ' / 阈值 ' + (result.threshold || 0) + '）。<br>为防止木马植入，已自动禁用本页所有下载入口。';
+      ' 项风险特征（风险分 ' + (result.score || 0) + ' / 阈值 ' + (result.threshold || 0) + '）。<br>为了保障您的安全，已自动禁用本页所有下载入口。';
 
     card.innerHTML =
       SHIELD_SVG +
@@ -2566,7 +2566,7 @@
       '<div class="sf-actions sf-actions-correct">' +
       '<button class="sf-btn sf-btn-correct" id="sf-correct-site" data-sf-act="open-correct" type="button">访问正确的页面</button>' +
       '</div>' +
-      '<p class="sf-foot">银狐木马常通过仿冒官网投递带毒安装包，请勿轻易放行下载。<br>若已安装 IDM 等第三方下载器，请临时关闭其「浏览器接管」，以免其从链接直接抓取下载。</p>';
+      '<p class="sf-foot">银狐木马及流氓软件常通过仿冒官网分发加载器，请勿轻易放行下载。<br>若已安装 IDM、迅雷等第三方下载器，请临时关闭其对浏览器下载功能的接管，以免其绕过扩展拦截，直接抓取链接并开始下载。</p>';
 
     // 若该域名已在自定义恶意域名黑名单中，按钮直接显示「✓ 已在自定义恶意域名黑名单」并禁用
     syncBlacklistButton(card);
@@ -2808,14 +2808,14 @@
     const html =
       '<div class="sf-card">' + SHIELD_SVG +
       '<h2 class="sf-title">下载已被拦截</h2>' +
-      '<p class="sf-sub">SilverFoxBlocker 已阻止来自 <b>' + escapeHtml(host) + '</b> 的可疑下载文件。该站点被判定为高风险站点，下载可能植入木马。</p>' +
+      '<p class="sf-sub">SilverFoxBlocker 已阻止来自 <b>' + escapeHtml(host) + '</b> 的可疑下载文件。该站点被判定为高风险站点，下载此文件可能使您的设备暴露在风险中。</p>' +
       '<div class="sf-actions">' +
       '<button class="sf-btn sf-btn-leave" id="sf-dl-keep" data-sf-act="dl-keep" type="button">保持拦截</button>' +
       '<button class="sf-btn sf-btn-continue" id="sf-dl-allow" data-sf-act="dl-allow" type="button">仍要下载</button>' +
       '</div>' +
       '<p class="sf-foot">仅当您明确信任该文件来源时才选择「仍要下载」。</p>' +
       // ★ 2026-11-23：下载器接管提示（有条件显示，设置页可关）。见 showExeConfirmBar 上方说明。
-      (dlMgrNoticeOn ? '<p class="sf-foot">若已安装 IDM / 迅雷 等下载器，它可能在点击瞬间就接管了该链接；本扩展无法拦截原生下载器，请到下载器里检查并取消对应任务。</p>' : '') +
+      (dlMgrNoticeOn ? '<p class="sf-foot">若已安装 IDM、迅雷等下载器，它可能在点击瞬间就绕过扩展拦截，直接抓取链接并开始下载；本扩展无法拦截原生下载器。如果这不是您的本意，请到对应的下载器页面检查并取消相关下载任务。</p>' : '') +
       '</div>';
     let overlayRef = null;
     const mounted = sfMountOverlay({
@@ -2941,7 +2941,7 @@
       const msg = {
         type: 'sf-notify',
         title: '⚠️ SilverFoxBlocker：发现高风险站点',
-        message: '检测到 ' + host + ' 为高风险站点，疑似银狐木马投递站点，已弹出页面警告并禁用下载/跳转链接。'
+        message: '检测到 ' + host + ' 为高风险站点，疑似钓鱼或流量落地页，已弹出页面警告并禁用下载/跳转链接。'
       };
       if (chrome.runtime && chrome.runtime.sendMessage) chrome.runtime.sendMessage(msg);
     } catch (e) {}

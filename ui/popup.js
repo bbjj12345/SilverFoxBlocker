@@ -129,7 +129,7 @@ function loadCurrentSite() {
     official: { text: '已跳过评分', lvl: 'official', reason: '扩展内置白名单：该域名在扩展内置的信任域名白名单中，未进入评分引擎。' },
     disabled: { text: '防护已关闭', lvl: 'unknown', reason: '防护已全局关闭，未参与评分。' },
     protocol: { text: '不适用', lvl: 'unknown', reason: '非 http(s) 页面，不参与评分。' },
-    localhost: { text: '本地地址', lvl: 'official', reason: '本地开发地址（localhost / 127.0.0.1），未进入评分引擎。' }
+    localhost: { text: '本地地址', lvl: 'official', reason: '本地回环地址（localhost / 127.0.0.1），未进入评分引擎。' }
   };
   const render = (r, fallbackHost) => {
     const host = r.hostname || fallbackHost || '—';

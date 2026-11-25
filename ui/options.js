@@ -5,6 +5,12 @@
 // 官网/软件宝库的最新 64 位独立版直链；仅当自动抓取失败时才回退到此处。
 const RESCUE_DOWNLOAD_URL = 'https://dl.360safe.com/360c0mpkill_5.1.64.1289-0701.zip';
 
+// 360 系统急救箱 WinPE 版（64 位）官方直链：与 KVRT / AdwCleaner 一样是「固定文件名地址」，
+// 360 更新时原地替换文件，所以这条本身永远指向最新版，不需要探测版本号（官网 guide 页给的
+// 就是这一条：down.360safe.com/SuperKillerWinPE64.zip；32 位版是 SuperKillerWinPE.zip）。
+// 用途：系统已被破坏到无法正常启动时，在 WinPE 环境里解压运行 SuperKillerWinPE.exe 查杀。
+const RESCUE_360_PE_URL = 'https://down.360safe.com/SuperKillerWinPE64.zip';
+
 // 火绒专杀工具（无签名版）官方下载直链（备用种子）。点击按钮时会自动探测火绒 CDN 的最新无签名版；
 // 该工具可解除银狐木马对常规杀毒软件的打开限制；因无签名，Windows Defender 与安全下载检测会拦截——属正常现象，用户放行即可。
 // 有签名版同样会被银狐类病毒拦截，故只提供无签名版。自动抓取失败时才回退到此种子直链。
@@ -426,16 +432,19 @@ function setupUpdateToast() {
   let curVer = '0';
   try { curVer = (chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '0'; } catch (e) {}
   const vt = $('updVer'); if (vt) vt.textContent = 'v' + curVer;
+  // ★ 2026-11-25 停用「本次更新要点」列表：options.html 里对应的 #updPoints 已整体注释，
+  //   这里同步注释掉生成逻辑。整套 upd-toast 从未配套 CSS，弹出时是未约束尺寸的巨大盾牌
+  //   + 裸 <li> 文本，刷新后才消失，属于遗留的半成品。恢复时连同 options.html 那段一起放开。
   // 本次更新要点（发布新版时更新此数组；第三人称客观语气，禁止提及用户）
-  const UPD_HIGHLIGHTS = [
-    '扫描算法重构，误报率大幅下降，知名官网不再被误拦',
-    '官网白名单扩容至千余条法人站点，下载站与论坛社区免于误报',
-    '扩展性能优化，大页面扫描耗时不升反降',
-    '压缩包解压扫描修复，自解压包内木马投递物可被识别',
-    '新增一键加入白名单，误拦站点可即时拉黑放行'
-  ];
-  const ul = $('updPoints');
-  if (ul) ul.innerHTML = UPD_HIGHLIGHTS.map(function (h) { return '<li>' + h + '</li>'; }).join('');
+  // const UPD_HIGHLIGHTS = [
+  //   '扫描算法重构，误报率大幅下降，知名官网不再被误拦',
+  //   '官网白名单扩容至千余条法人站点，下载站与论坛社区免于误报',
+  //   '扩展性能优化，大页面扫描耗时不升反降',
+  //   '压缩包解压扫描修复，自解压包内木马投递物可被识别',
+  //   '新增一键加入白名单，误拦站点可即时拉黑放行'
+  // ];
+  // const ul = $('updPoints');
+  // if (ul) ul.innerHTML = UPD_HIGHLIGHTS.map(function (h) { return '<li>' + h + '</li>'; }).join('');
 
   if (!hasStorage()) return;   // 非扩展环境（直接预览）不弹，避免误报
   chrome.storage.local.get({ sfLastVer: '' }, (r) => {
@@ -458,7 +467,7 @@ function setupUpdateToast() {
    ---------------------------------------------------------------------
    ★ 文件格式：`[ { "name": "爱发电用户 <用户名>" }, … ]`
      —— name 就是要显示的文字，用「爱发电用户 + 用户名」的写法（银泊 2026-10-15 定）。
-     数组为空 / 文件缺失 ⇒ 整个鸣谢区块隐藏（不显示空的「以下赞助者」标题）。
+     数组为空 / 文件缺失 ⇒ 整个鸣谢区块隐藏（不显示空的「以下用户」标题）。
    ★★ 两个容易忘的坑：
      ① `sponsors.json` **必须同时写进 manifest 的 `web_accessible_resources`** ——
         否则 options 页 fetch 它会被 Chrome 拦（403），静默走 catch，区块永远是隐藏的
@@ -518,7 +527,7 @@ const NAV_OLD = [
   { targets: ['behavior'], label: '拦截行为',title: '拦截行为', desc: '命中风险时如何提醒与处置',   icon: 'shield' },
   { targets: ['rules'],   label: '规则与名单',title: '规则与名单', desc: '信任域名、自定义关键词与黑名单', icon: 'doc' },
   { targets: ['stats'],   label: '防护统计', title: '防护统计', desc: '已拦截风险与下载次数',       icon: 'chart' },
-  { targets: ['rescue'],  label: '银狐急救', title: '银狐急救', desc: '中招后的下载与查杀引导',     icon: 'cross' },
+  { targets: ['tools'],   label: '急救与工具', title: '急救与工具', desc: '目前提供「银狐急救工具」和「流氓软件清除工具」', icon: 'cross' },
   { targets: ['about'],   label: '关于',     title: '关于',     desc: '版本信息与说明',             icon: 'info' }
 ];
 // 新版（8 项分组导航，默认）：同类合并、语义归类
@@ -532,7 +541,7 @@ const NAV_NEW_GROUPS = [
   },
   {
     label: '工具', items: [
-      { targets: ['tools'], label: '急救与工具', title: '急救与工具', desc: '中招后的下载与查杀引导', icon: 'cross' }
+      { targets: ['tools'], label: '急救与工具', title: '急救与工具', desc: '目前提供「银狐急救工具」和「流氓软件清除工具」', icon: 'cross' }
     ]
   },
   {
@@ -789,19 +798,126 @@ function renderCategories(settings) {
   });
 }
 
+// ★ 2026-11-26：手动「立即更新」与后台自动更新共用同一条单向推送通道，
+//   每日 alarm 的「跳过」结果也会广播到本页，把「正在抓取…」覆盖成「24 小时内已更新」，
+//   用户会误以为手动更新没生效。这里给每次手动点击打时间戳：手动结果回来前，
+//   忽略**非手动**的 skipped 推送。（后台 force 之后不会再因 24 小时护栏跳过，见 background.js）
+const _sfManualPending = {};
+function sfMarkManualPending(key) { _sfManualPending[key] = Date.now(); }
+function sfClearManualPending(key) { delete _sfManualPending[key]; }
+function sfIsManualPending(key) {
+  const t = _sfManualPending[key] || 0;
+  if (!t) return false;
+  if (Date.now() - t > 180000) { delete _sfManualPending[key]; return false; }   // 3 分钟兜底，避免永久挂起
+  return true;
+}
+// 手动强制更新成功后，若总开关或该名单的子开关其实没勾选（名单下载了但不会参与拦截），补一句提醒。
+//   ★ 2026-11-26：「立即更新」现在会先自动保存开关，所以这里读 DOM 的勾选状态就等于读落盘值；
+//   仍然可能不参与拦截的唯一情形，是用户压根没勾总开关 / 没勾这份名单——明说出来，
+//   免得又变成「下载成功但页面没变化」的困惑。
+function sfMasterOffNote(listId) {
+  const master = document.getElementById('communityListsEnabled');
+  const list = listId ? document.getElementById(listId) : null;
+  const off = [];
+  if (master && !master.checked) off.push('社区名单总开关未勾选');
+  if (list && !list.checked) off.push('这份名单的开关未勾选');
+  return off.length ? ('；注意：' + off.join('、') + '，这份名单不会参与拦截') : '';
+}
+// 跳过类结果的原因文案：不再把所有 skipped 都说成「24 小时内已更新」
+function sfSkipReasonText(r) {
+  r = r || {};
+  if (r.busy) return '已有更新任务正在进行，请等它结束（状态行会实时显示下载进度）';
+  if (r.reason === 'master-off') return '未更新：社区维护的本地黑名单总开关处于关闭状态（点「立即更新」会自动保存开关，正常情况下不会再看到这条）';
+  if (r.reason === 'list-off') return '未更新：该名单的开关未开启';
+  if (r.reason === 'retry-cooling') return '更新跳过（距上次失败不足 30 分钟，稍后再试）' + (r.count ? '（共 ' + r.count + ' 条域名）' : '');
+  return '更新跳过（24 小时内已更新）' + (r.count ? '（共 ' + r.count + ' 条域名）' : '');
+}
+
+/* ---------------------------------------------------------------------------
+ * ★ 2026-11-26：手动「立即更新」= 先保存、再强制抓取（对齐「从云端更新名单」的点击即生效）
+ * ----------------------------------------------------------------------------
+ * 问题：社区名单开关与其它设置一样，要点「保存设置」才会写进 storage.sync，而「立即更新」
+ *   只发抓取指令。于是「打开总开关（还没点保存）→ 点某份名单的立即更新」会出现
+ *   「名单下载成功、界面上开关亮着，但后台读到的 communityLists.enabled 仍是 false」——
+ *   名单不参与拦截，而文案只说「24 小时内已更新」，用户查不出原因。
+ *
+ * 做法：点「立即更新」时先把本区块的开关状态落盘（与点「保存设置」等价），再发抓取指令。
+ *   · 只写这 6 个键（总开关 + 五份名单），**不碰**白名单、自定义名单、评分权重、外观等
+ *     其它设置——所以它不会顺带把页面上其它未保存的改动一起提交；
+ *   · 写入失败（sync 配额 / 无存储环境）不阻断抓取：名单照常下载，只是可能不参与拦截，
+ *     状态行会在结果后面补一句提示，让用户去点「保存设置」；
+ *   · 保存成功后同步回写 window.__sfSettings，避免页面上其它逻辑读到陈旧值。
+ * ------------------------------------------------------------------------- */
+const SF_COMMUNITY_PATCH_KEYS = ['communityLists', 'openphish', 'phishdestroy', 'hagezi', 'badware', 'dsam'];
+let _sfCommunityPersistErr = '';
+
+function sfCommunityPatch() {
+  const ck = function (id) { const el = $(id); return !!(el && el.checked); };
+  const hv = $('hageziVariant');
+  return {
+    communityLists: { enabled: ck('communityListsEnabled') },
+    openphish: { enabled: ck('openphishEnabled') },
+    phishdestroy: { enabled: ck('phishdestroyEnabled') },
+    hagezi: { enabled: ck('hageziEnabled'), variant: (hv && hv.value === 'medium') ? 'medium' : 'full' },
+    badware: { enabled: ck('badwareEnabled') },
+    dsam: { enabled: ck('dsamEnabled') }
+  };
+}
+
+// 永远 resolve（不 reject）：保存失败只记录原因，调用方照常发抓取指令
+function sfPersistCommunity() {
+  _sfCommunityPersistErr = '';
+  return new Promise(function (resolve) {
+    let patch;
+    try { patch = sfCommunityPatch(); } catch (e) { _sfCommunityPersistErr = (e && e.message) || String(e); resolve(false); return; }
+    if (!hasStorage() || !chrome.storage || !chrome.storage.sync || !chrome.storage.sync.set) {
+      _sfCommunityPersistErr = '当前环境无扩展存储';
+      resolve(false);
+      return;
+    }
+    try {
+      chrome.storage.sync.set(patch, function () {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          _sfCommunityPersistErr = err.message || String(err);
+          console.error('[SilverFoxBlocker][社区名单] 开关自动保存失败：', err);
+          resolve(false);
+          return;
+        }
+        if (window.__sfSettings) SF_COMMUNITY_PATCH_KEYS.forEach(function (k) { window.__sfSettings[k] = patch[k]; });
+        resolve(true);
+      });
+    } catch (e) {
+      _sfCommunityPersistErr = (e && e.message) || String(e);
+      resolve(false);
+    }
+  });
+}
+
+// 结果文案后缀：保存失败时提醒（成功时为空串，不污染状态行）
+function sfPersistNote() {
+  return _sfCommunityPersistErr
+    ? '；⚠ 开关设置未能保存（' + _sfCommunityPersistErr + '），这份名单可能暂不参与拦截，请点「保存设置」重试'
+    : '';
+}
+
 // 手动/自动触发 OpenPhish 名单更新：发指令后即返回，真正结果与状态由后台单向推送（见下方 onMessage 监听），
 // 避免「长连接 + MV3 后台被回收」导致的“消息端口已关闭”错误。
 function updateOpenPhish(statusEl) {
   try {
+    sfMarkManualPending('openphish');
     const btn = $('openphishUpdateBtn');
     if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
-    if (statusEl) statusEl.textContent = '正在抓取 OpenPhish 名单…';
-    chrome.runtime.sendMessage({ type: 'sf-openphish-update' }, function () {
-      // 此处仅收到后台 ACK（{started:true}）或端口异常；真正结果在 sf-openphish-updated 推送里
-      if (chrome.runtime.lastError) {
-        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
-        if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
-      }
+    if (statusEl) statusEl.textContent = '正在保存开关设置并抓取 OpenPhish 名单…';
+    // 先落盘开关，再抓取：否则后台读到的 communityLists.enabled 还是旧值，名单下载了也不参与拦截
+    sfPersistCommunity().then(function () {
+      chrome.runtime.sendMessage({ type: 'sf-openphish-update' }, function () {
+        // 此处仅收到后台 ACK（{started:true}）或端口异常；真正结果在 sf-openphish-updated 推送里
+        if (chrome.runtime.lastError) {
+          if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+          if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
+        }
+      });
     });
   } catch (e) {
     if (statusEl) statusEl.textContent = '更新请求发送失败：' + ((e && e.message) || e);
@@ -810,15 +926,19 @@ function updateOpenPhish(statusEl) {
 
 function updatePhishDestroy(statusEl) {
   try {
+    sfMarkManualPending('phishdestroy');
     const btn = $('phishdestroyUpdateBtn');
     if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
-    if (statusEl) statusEl.textContent = '正在抓取 PhishDestroy 名单（约 14 万条，首次略慢）…';
-    chrome.runtime.sendMessage({ type: 'sf-phishdestroy-update' }, function () {
-      // 仅收到后台 ACK；真正结果在 sf-phishdestroy-updated 推送里
-      if (chrome.runtime.lastError) {
-        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
-        if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
-      }
+    if (statusEl) statusEl.textContent = '正在保存开关设置并抓取 PhishDestroy 名单（约 14 万条，首次略慢）…';
+    // 先落盘开关，再抓取（同 OpenPhish，避免「下载成功但不参与拦截」）
+    sfPersistCommunity().then(function () {
+      chrome.runtime.sendMessage({ type: 'sf-phishdestroy-update' }, function () {
+        // 仅收到后台 ACK；真正结果在 sf-phishdestroy-updated 推送里
+        if (chrome.runtime.lastError) {
+          if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+          if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
+        }
+      });
     });
   } catch (e) {
     if (statusEl) statusEl.textContent = '更新请求发送失败：' + ((e && e.message) || e);
@@ -827,15 +947,19 @@ function updatePhishDestroy(statusEl) {
 
 function updateHaGeZi(statusEl) {
   try {
+    sfMarkManualPending('hagezi');
     const btn = $('hageziUpdateBtn');
     if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
-    if (statusEl) statusEl.textContent = '正在抓取 HaGeZi TIF 名单（首次可能需要 10~60 秒）…';
-    chrome.runtime.sendMessage({ type: 'sf-hagezi-update' }, function () {
-      // 仅收到后台 ACK；真正结果在 sf-hagezi-updated 推送里
-      if (chrome.runtime.lastError) {
-        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
-        if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
-      }
+    if (statusEl) statusEl.textContent = '正在保存开关设置并抓取 HaGeZi TIF 名单（首次可能需要 10~60 秒）…';
+    // 先落盘开关（含「名单版本」下拉），再抓取
+    sfPersistCommunity().then(function () {
+      chrome.runtime.sendMessage({ type: 'sf-hagezi-update' }, function () {
+        // 仅收到后台 ACK；真正结果在 sf-hagezi-updated 推送里
+        if (chrome.runtime.lastError) {
+          if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+          if (statusEl) { statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载且后台在运行）'; statusEl.style.color = '#c0392b'; }
+        }
+      });
     });
   } catch (e) {
     if (statusEl) statusEl.textContent = '更新请求发送失败：' + ((e && e.message) || e);
@@ -887,6 +1011,10 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, _sendResponse) {
     const name = isOp ? 'OpenPhish' : 'PhishDestroy';
     const statusEl = $(isOp ? 'openphishStatus' : 'phishdestroyStatus');
     const btn = $(isOp ? 'openphishUpdateBtn' : 'phishdestroyUpdateBtn');
+    // 手动点击在等结果时，忽略自动更新推来的「跳过」，别把「正在抓取…」覆盖掉
+    const pKey = isOp ? 'openphish' : 'phishdestroy';
+    if (r.manual) sfClearManualPending(pKey);
+    else if (r.skipped && !r.busy && sfIsManualPending(pKey)) return;
     if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
     if (!statusEl) return;
     if (r.ok) {
@@ -894,10 +1022,10 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, _sendResponse) {
       const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
       const s = r.source || '';
       const srcNote = s ? ('，源：' + (s.indexOf('gh-proxy') >= 0 ? 'GitHub 反代' : (s.indexOf('jsdelivr') >= 0 ? 'jsDelivr 镜像' : (s.indexOf('raw.githubusercontent') >= 0 ? 'GitHub raw' : name + ' 官方')))) : '';
-      statusEl.textContent = '更新成功：' + ds + '（共 ' + (r.count || 0) + ' 条域名' + srcNote + '）';
+      statusEl.textContent = '更新成功：' + ds + '（共 ' + (r.count || 0) + ' 条域名' + srcNote + '）' + sfMasterOffNote(isOp ? 'openphishEnabled' : 'phishdestroyEnabled') + sfPersistNote();
       statusEl.style.color = '';
     } else if (r.skipped) {
-      statusEl.textContent = '更新跳过（24 小时内已更新，共 ' + (r.count || 0) + ' 条域名）';
+      statusEl.textContent = sfSkipReasonText(r) + sfPersistNote();
       statusEl.style.color = '';
     } else {
       statusEl.textContent = '更新失败（全部源均不可达）：' + (r.error || '未知错误');
@@ -913,6 +1041,8 @@ chrome.runtime.onMessage.addListener(function (msg) {
     const r = msg.result || {};
     const statusEl = $('hageziStatus');
     const btn = $('hageziUpdateBtn');
+    if (r.manual) sfClearManualPending('hagezi');
+    else if (r.skipped && !r.busy && sfIsManualPending('hagezi')) return;
     if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
     if (!statusEl) return;
     const fmt = function (ts) {
@@ -922,13 +1052,10 @@ chrome.runtime.onMessage.addListener(function (msg) {
     if (r.ok) {
       const s = r.source || '';
       const srcNote = s ? ('，源：' + (s.indexOf('gh-proxy') >= 0 ? 'GitHub 反代' : (s.indexOf('jsdelivr') >= 0 ? 'jsDelivr 镜像' : (s.indexOf('raw.githubusercontent') >= 0 ? 'GitHub raw' : '官方源')))) : '';
-      statusEl.textContent = '更新成功：' + fmt(Date.now()) + '（共 ' + (r.count || 0) + ' 条域名' + srcNote + '）';
-      statusEl.style.color = '';
-    } else if (r.busy) {
-      statusEl.textContent = '已有更新任务正在进行，请等它结束（状态行会实时显示下载进度）';
+      statusEl.textContent = '更新成功：' + fmt(Date.now()) + '（共 ' + (r.count || 0) + ' 条域名' + srcNote + '）' + sfMasterOffNote('hageziEnabled') + sfPersistNote();
       statusEl.style.color = '';
     } else if (r.skipped) {
-      statusEl.textContent = '更新跳过（24 小时内已成功更新，或距上次失败不足 30 分钟）' + (r.count ? '（共 ' + r.count + ' 条域名）' : '');
+      statusEl.textContent = sfSkipReasonText(r) + sfPersistNote();
       statusEl.style.color = '';
     } else {
       statusEl.textContent = '更新失败（全部源均不可达，已保留本地旧名单）：' + (r.error || '未知错误');
@@ -981,18 +1108,22 @@ function refreshAdlStatus(id) {
 function updateAdl(id, statusEl) {
   const cfg = ADL_UI[id];
   if (!cfg) return;
+  sfMarkManualPending('adl:' + id);
   const btn = $(cfg.btn);
   if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
-  if (statusEl) { statusEl.style.color = ''; statusEl.textContent = '正在连接下载源…'; }
+  if (statusEl) { statusEl.style.color = ''; statusEl.textContent = '正在保存开关设置并连接下载源…'; }
   try {
-    chrome.runtime.sendMessage({ type: 'sf-adlist-update', id: id }, function () {
-      if (chrome.runtime.lastError) {
-        if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
-        if (statusEl) {
-          statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载）';
-          statusEl.style.color = '#c0392b';
+    // 先落盘开关，再抓取（两份 AdBlock 名单共用同一段逻辑，id 只决定 DOM/存储键）
+    sfPersistCommunity().then(function () {
+      chrome.runtime.sendMessage({ type: 'sf-adlist-update', id: id }, function () {
+        if (chrome.runtime.lastError) {
+          if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+          if (statusEl) {
+            statusEl.textContent = '启动更新失败：' + (chrome.runtime.lastError.message || '后台未响应') + '（请确认扩展已重载）';
+            statusEl.style.color = '#c0392b';
+          }
         }
-      }
+      });
     });
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
@@ -1026,16 +1157,15 @@ chrome.runtime.onMessage.addListener(function (msg) {
     const r = msg.result || {};
     const btn = $(cfg.btn);
     const statusEl = $(cfg.status);
+    if (r.manual) sfClearManualPending('adl:' + id);
+    else if (r.skipped && !r.busy && sfIsManualPending('adl:' + id)) return;
     if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
     if (!statusEl) return;
     if (r.ok) {
-      statusEl.textContent = '更新成功：' + adlFmtTime(Date.now()) + '（共 ' + (r.count || 0) + ' 条域名' + adlSourceNote(r.source) + '）';
-      statusEl.style.color = '';
-    } else if (r.busy) {
-      statusEl.textContent = '已有更新任务正在进行，请稍候';
+      statusEl.textContent = '更新成功：' + adlFmtTime(Date.now()) + '（共 ' + (r.count || 0) + ' 条域名' + adlSourceNote(r.source) + '）' + sfMasterOffNote(id + 'Enabled') + sfPersistNote();
       statusEl.style.color = '';
     } else if (r.skipped) {
-      statusEl.textContent = '更新跳过（24 小时内已成功更新，或距上次失败不足 30 分钟）' + (r.count ? '（共 ' + r.count + ' 条域名）' : '');
+      statusEl.textContent = sfSkipReasonText(r) + sfPersistNote();
       statusEl.style.color = '';
     } else {
       statusEl.textContent = '更新失败（全部源均不可达，已保留本地旧名单）：' + (r.error || '未知错误');
@@ -1478,11 +1608,11 @@ function sfRescueDownload(tool) {
         kv[cfg.store] = res.url;
         chrome.storage.local.set(kv);
       } catch (e) {}
-      showToast(res.fallback ? '自动获取失败，已用备用直链开始下载' : ('已开始下载：' + (res.filename || res.url)));
+      showToast(res.fallback ? '自动获取失败，已使用备用直链开始下载' : ('已开始下载：' + (res.filename || res.url)));
     } else {
       // 后台未触发下载：兜底直接下载备用直链
       sfRescueDirect(btn, urlEl, fallbackUrl, originalText, null);
-      showToast('获取失败，已用备用直链开始下载');
+      showToast('获取失败，已使用备用直链开始下载');
     }
   });
 }
@@ -1511,6 +1641,9 @@ function bindRescue() {
     const btn = $(cfg.btn);
     if (btn) btn.addEventListener('click', function () { sfRescueDownload(tool); });
   });
+
+  // WinPE 版只有一条固定直链（无版本号可探测），直接写进去 + 绑定点击复制
+  bindRescueCopy($('rescue360PeUrl'), RESCUE_360_PE_URL);
 
   // 优先显示上次抓取到的直链（秒显），没有再用内置备用直链
   try {
@@ -1830,7 +1963,7 @@ function bindRulesIO() {
           // ★ 2026-11-23：例外名单随规则一起导出 / 导入
           if (Array.isArray(data.exceptionDomains)) patch.exceptionDomains = data.exceptionDomains;
           if (!Object.keys(patch).length) { alert('文件中没有可导入的白名单 / 规则数据。'); return; }
-          if (!confirm('导入将覆盖当前「自定义信任域名白名单 / 自定义风险关键词 / 自定义恶意域名黑名单 / 自定义黑名单例外」四项内容，确定继续？')) return;
+          if (!confirm('导入将覆盖当前「自定义信任域名白名单 / 自定义风险关键词 / 自定义恶意域名黑名单 / 自定义黑名单例外」四项内容，确定导入吗？')) return;
           // ★ 2026-11-12：导入同样要把域名名单写进 storage.local（sync 单键 8KB 会截断大名单）
           if (hasStorage()) {
             const all = Object.assign({}, patch);
