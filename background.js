@@ -573,6 +573,82 @@ function _cancelAndErase(id) {
   };
   setTimeout(wipe, 300);
 }
+// ★★ 2026-11-26：把「取消 + 重下」改成「暂停 + 继续」
+//   旧做法：命中闸门就 cancel + erase；用户点「继续下载」时由后台 chrome.downloads.download()
+//   重新发一次请求。实测三个问题（对照本机 IDM Integration Module 6.43.18 源码）：
+//     ① 重新发起的是「扩展发起的下载」，没有 mousedown→mouseup→click 这一串页面事件。
+//        IDM 的内容脚本挂在 window 捕获阶段，只把这串事件上报给原生进程；它的
+//        downloads.onCreated 兜底又被「开关 + 2~4 小时节流」双重限制。
+//        ⇒ IDM 两头都收不到信号，浏览器自己下完，IDM 全程无反应。
+//     ② 重新发起丢掉原请求的 Referer / Cookie，需要站内鉴权的直链直接 403。
+//     ③ 我们先 cancel + erase，IDM 若已 pause 住同一条，接管会静默失败（它手里的记录指向已消失的条目）。
+//   新做法：downloads.pause() 挂住**同一条**下载（条目保留在下载栏，显示「已暂停」），
+//   用户点「继续下载」→ downloads.resume() 让同一个请求继续跑：不新建请求、不丢鉴权上下文，
+//   也不会和 IDM 的 pause→cancel 流程互相破坏。
+//   失败回落：pause 只对「进行中且未暂停」的下载有效。失败时先**看状态**再决定 ——
+//   若它已经被暂停（很可能是 IDM 刚 pause 住、正准备交给原生接管），绝不能 cancel，
+//   否则就又回到「毁掉下载器接管」的老问题上；只有「仍在下载却停不住」才强制取消。
+// ★ 2026-11-26（二）：暂停失败后的「要不要强停」逻辑已并入 _pauseDownload 的状态判定，
+//   本函数目前没有调用点（保留备回滚）。
+function _forceStopIfRunning(id) {
+  try {
+    chrome.downloads.search({ id: id }, function (items) {
+      const it = items && items[0];
+      if (!it) return;
+      if (it.paused || it.state !== 'in_progress') return;   // 已暂停 / 已中断 / 已完成：不动
+      _cancelAndErase(id);
+    });
+  } catch (e) {}
+}
+// ★ 2026-11-26（二）：改为回调式 —— cb(ok) 里的 ok 表示「这条下载现在确实处在暂停态」。
+//   为什么需要这个结果：别的下载器（NDM/FDM/迅雷/BitComet/Ghost/ABDM）在 onCreated 里直接
+//   cancel+erase 就把下载接走了，我们的 pause 会失败、条目也没了。旧代码不管结果一律弹
+//   「已暂停，继续下载 / 保持拦截」——用户点「继续下载」时 resume 找不到条目，只能按 URL 重放，
+//   于是和下载器里那份撞成**重复下载**。现在把结果交给调用方，条目没了就不弹确认条。
+function _pauseDownload(id, cb) {
+  cb = cb || function () {};
+  if (id == null) { cb(false, null); return; }
+  let done = false;
+  const finish = function (ok, it) { if (!done) { done = true; cb(ok, it || null); } };
+  // 失败/异常时靠状态判断：已中断或已不存在 = 被别人接管了；已暂停 = 目标达成（不管谁按的）
+  const check = function () {
+    try {
+      chrome.downloads.search({ id: id }, function (items) {
+        const it = items && items[0];
+        if (!it) { finish(false, null); return; }                    // 条目已被下载器 erase
+        if (it.state !== 'in_progress') { finish(false, it); return; } // 已完成 / 已中断
+        if (it.paused) { finish(true, it); return; }                  // 已经有别人暂停 → 也算按住
+        _cancelAndErase(id);                                          // 仍在下载却停不住 → 兜底取消
+        finish(false, it);
+      });
+    } catch (e) { finish(false, null); }
+  };
+  try {
+    chrome.downloads.pause(id, function () {
+      if (chrome.runtime.lastError) { check(); return; }
+      finish(true, null);
+    });
+  } catch (e) { check(); }
+}
+// 继续一条被我们暂停的下载。回调 ok=true 表示「现在它已经在跑」或「本来就是跑着的」；
+// 找不到 / 已 complete / 已被 cancel（例如 IDM 接管后又取消）→ ok=false，调用方走兜底。
+function _resumeDownload(id, cb) {
+  cb = cb || function () {};
+  if (id == null) { cb(false, null); return; }
+  try {
+    chrome.downloads.search({ id: id }, function (items) {
+      const it = items && items[0];
+      if (!it || it.state !== 'in_progress') { cb(false, it || null); return; }
+      if (!it.paused) { cb(true, it); return; }
+      try {
+        chrome.downloads.resume(id, function () {
+          const err = chrome.runtime.lastError;
+          cb(!err, it);
+        });
+      } catch (e) { cb(false, it); }
+    });
+  } catch (e) { cb(false, null); }
+}
 // 计一次「拦截下载」（三个拦截路径共用）
 function _bumpBlockStatOnce() {
   try {
@@ -626,62 +702,113 @@ function blockAutoDownload(item, tabId, reason) {
   console.log('[auto-dl] 已拦截自动下载（' + reason + '）：' + item.url);
 }
 // ★ 2026-11-24：高危文件「暂停 + 询问」。
-//   与 blockAutoDownload 的区别：不是一刀切拦死，而是取消本次下载 + 在页面上挂一条
-//   **非阻塞**确认条（来自[域名]的[文件]已暂停，继续下载 / 保持拦截）。
+//   与 blockAutoDownload 的区别：不是一刀切拦死，而是「暂停本次下载 + 在页面上挂一条
+//   **非阻塞**确认条」（来自[域名]的[文件]已暂停，继续下载 / 保持拦截）。
+//   ★ 2026-11-26：由「取消」改为「暂停」—— 用户点「继续下载」时 resume 同一条下载，
+//     而不是由后台用 URL 重新发一次请求（理由见 _pauseDownload 注释）。
 //   为什么要给出口：华军软件园这类大站本身在信任名单里，用户也可能是真的要下某个软件；
 //   一味静默拦截会把正常下载也误杀。但「高危文件必须过一次人工确认」这条，
 //   对任何主机都成立 —— 灰产利用的正是「整站信任」，所以这里刻意不看白名单。
 function confirmHighRiskDownload(item, tabId, reason, siteKey) {
   const host = parseHost(item.url) || '';
   const filename = item.filename || _fileOfUrl(item.url) || '';
-  _cancelAndErase(item.id);
-  const tid = (tabId != null && tabId >= 0) ? tabId : _dlUiTab(item);
-  // ★ 2026-11-23（授权模型）：把这次被取消的下载放进「待确认队列」。
-  //   为什么要存：cancel 之后前台只剩一个按钮，用户点「继续下载」时要靠这里的 url 重新发起；
-  //   存 session 是为了后台休眠 30s 后（MV3 常态）点了按钮仍能取到它。
-  //   ★ 2026-11-23（每站首次确认）：siteKey 一并存进来 —— 用户点「继续下载」时用它把该站
-  //     写进「已确认」名单，否则下次又会问一遍（见 sf-allow-download 处理）。
-  if (tid != null && tid >= 0) {
-    try {
-      _sfAuth.pending[tid] = {
-        url: item.url || '',
-        filename: filename,
-        host: host,
-        origin: _originOfUrl(lastTopUrl[tid] || ''),
-        siteKey: siteKey || _siteKeyOfItem(item),
-        at: Date.now()
-      };
-      _authPersist();
-    } catch (e) {}
-  }
-  if (tid != null && tid >= 0) {
-    try {
-      safeTabMsg(tid, {
-        type: 'sf-exe-confirm',
-        url: item.url || '',
-        host: host,
-        filename: filename,
-        reason: reason || 'guard',
-        // 前台据此加一句「这是该站第一次下载可执行文件」的说明
-        siteFirst: !!siteKey
-      });
-    } catch (e) {}
-  } else {
-    // 实在归不到任何标签页（极端：无 referrer 的后台下载）→ 退回系统通知，别让用户一头雾水
-    try {
-      if (chrome.notifications && chrome.notifications.create) {
-        chrome.notifications.create('sf-exe-' + Date.now(), {
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-          title: '已暂停一个可执行文件下载',
-          message: '来自 ' + (host || '未知站点') + ' 的 ' + (filename || '文件') + ' 可能不是由你的点击触发的，已暂停。',
-          priority: 1
-        }, function () { void chrome.runtime.lastError; });
-      }
-    } catch (e) {}
-  }
-  _bumpBlockStatOnce();
-  console.log('[auto-dl] 已暂停高危下载待确认（' + (reason || 'guard') + '）：' + item.url);
+  // ★★ 2026-11-26：取消 + 擦除 → 改为**暂停**（见文件上方 _pauseDownload 注释）。
+  //   暂停后条目留在下载栏（「已暂停」），用户点「继续下载」走 resume，同一个请求继续，
+  //   不再新建请求，也不会打断 IDM 的接管流程。
+  // _cancelAndErase(item.id);   // 旧实现：取消 + 擦除，再由后台 chrome.downloads.download() 重下
+  // ★★ 2026-11-26（二）：只有「确实暂停住了」才挂确认条。
+  //   若条目已被别的下载器 cancel+erase 接走（NDM/FDM/迅雷/BitComet/Ghost/ABDM 都是这种打法），
+  //   再挂确认条就是坑：用户点「继续下载」→ resume 失败 → 按 URL 重放 → 和下载器里那份撞成双下载。
+  //   这种情况只发一条「已被下载器接管」的告知，不提供「继续」入口。
+  _pauseDownload(item.id, function (pausedOk) {
+    const tid = (tabId != null && tabId >= 0) ? tabId : _dlUiTab(item);
+    if (!pausedOk) {
+      try {
+        if (tid != null && tid >= 0) {
+          safeTabMsg(tid, { type: 'sf-dl-taken-over', host: host, filename: filename });
+        }
+      } catch (e) {}
+      console.log('[auto-dl] 下载已被下载器接管，未弹确认条：' + item.url);
+      return;
+    }
+    // ★ 2026-11-23（授权模型）：把这次「暂停待确认」的下载放进「待确认队列」。
+    //   ★ 2026-11-26：队列里现在存下载 id —— 用户点「继续下载」时直接 resume 它（同一条下载继续跑）；
+    //     url 仍保留，作为 resume 不成立时（条目已被下载器接管取消 / 已完成）页面侧重放的兜底。
+    //     存 session 是为了后台休眠 30s 后（MV3 常态）点了按钮仍能取到它。
+    //   ★ 2026-11-23（每站首次确认）：siteKey 一并存进来 —— 用户点「继续下载」时用它把该站
+    //     写进「已确认」名单，否则下次又会问一遍（见 sf-allow-download 处理）。
+    if (tid != null && tid >= 0) {
+      try {
+        _sfAuth.pending[tid] = {
+          // ★ 2026-11-26：记住这条被暂停的下载 id —— 「继续下载」时直接 resume 它，
+          //   而不是用 URL 重新发一次请求（理由见 _pauseDownload 注释）。
+          id: (typeof item.id === 'number') ? item.id : null,
+          url: item.url || '',
+          filename: filename,
+          host: host,
+          origin: _originOfUrl(lastTopUrl[tid] || ''),
+          siteKey: siteKey || _siteKeyOfItem(item),
+          at: Date.now()
+        };
+        _authPersist();
+      } catch (e) {}
+    }
+    if (tid != null && tid >= 0) {
+      try {
+        safeTabMsg(tid, {
+          type: 'sf-exe-confirm',
+          url: item.url || '',
+          host: host,
+          filename: filename,
+          reason: reason || 'guard',
+          // 前台据此加一句「这是该站第一次下载可执行文件」的说明
+          siteFirst: !!siteKey
+        });
+      } catch (e) {}
+    } else {
+      // 实在归不到任何标签页（极端：无 referrer 的后台下载）→ 退回系统通知，别让用户一头雾水
+      try {
+        if (chrome.notifications && chrome.notifications.create) {
+          // ★ 2026-11-26：通知 id 里带上**下载 id**，并给两个按钮。
+          //   为什么把 id 塞进通知 id 而不是内存 Map：MV3 的 service worker 30s 就休眠，
+          //   用户过一会儿再点按钮时内存早没了；通知 id 是浏览器跨唤醒保留的，解析出来最稳。
+          const nid = 'sf-exe-' + ((item.id != null) ? String(item.id) : ('x' + Date.now()));
+          chrome.notifications.create(nid, {
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+            title: '已暂停一个可执行文件下载',
+            // ★ 2026-11-26：现在是真的「暂停」而不是取消 —— 告诉用户去哪里恢复
+            message: '来自 ' + (host || '未知站点') + ' 的 ' + (filename || '文件') + ' 可能不是由你的点击触发的，已暂停。点「继续下载」放行，或到下载栏里恢复 / 删除。',
+            priority: 1,
+            // 没有页面内确认条可挂时的唯一出口，必须给「继续」和「保持拦截」两条路
+            buttons: [{ title: '继续下载' }, { title: '保持拦截' }],
+            requireInteraction: false
+          }, function () { void chrome.runtime.lastError; });
+        }
+      } catch (e) {}
+    }
+    _bumpBlockStatOnce();
+    console.log('[auto-dl] 已暂停高危下载待确认（' + (reason || 'guard') + '）：' + item.url);
+  });
+}
+// ★ 2026-11-26：系统通知按钮 → 恢复 / 取消那条被暂停的下载（通知兜底路径的出口）。
+//   通知 id 形如 `sf-exe-<downloadId>`（或 sf-exe-x<ts>，后者拿不到 id，点了只能清掉）。
+if (chrome.notifications && chrome.notifications.onButtonClicked) {
+  chrome.notifications.onButtonClicked.addListener(function (nid, btnIndex) {
+    if (!nid || nid.indexOf('sf-exe-') !== 0) return;
+    const raw = nid.slice('sf-exe-'.length);
+    const dlId = /^\d+$/.test(raw) ? Number(raw) : null;
+    try { chrome.notifications.clear(nid, function () { void chrome.runtime.lastError; }); } catch (e) {}
+    if (dlId == null) return;
+    if (btnIndex === 0) {
+      // 继续下载：resume 同一条下载（不新建请求）。resume 不成立说明它已被下载器接管/已完成，
+      // 这时什么都不做 —— 用户要的文件已经在别处，不要再凭空下第二次。
+      _resumeDownload(dlId, function () {});
+    } else {
+      // 保持拦截：取消 + 擦除，语义与页面内确认条的「保持拦截」一致
+      _cancelAndErase(dlId);
+    }
+  });
 }
 // 返回 true 表示已经拦截（调用方直接 return）
 function checkAutoDownload(item, settings, tabId) {
@@ -4128,6 +4255,12 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     // ★ 2026-11-23：用户在确认条上选「保持拦截」→ 清掉待确认队列，避免下次误用旧 URL。
     const tid = sender.tab ? sender.tab.id : null;
     if (tid != null) {
+      // ★ 2026-11-26：现在那条下载是**暂停**着的，光删记录它会一直躺在下载栏里。
+      //   「保持拦截」的语义是「不要这个文件」→ 显式取消 + 擦除。
+      try {
+        const p = _sfAuth.pending[tid];
+        if (p && p.id != null) _cancelAndErase(p.id);
+      } catch (e) {}
       try { delete _sfAuth.pending[tid]; } catch (e) {}
       _authPersist();
     }
@@ -4137,6 +4270,20 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     // 来自「页面内钩子」(fromPage) 时由页面自身执行下载（已在收到回执后触发），
     // 后台不必重下，避免双下载；来自「后台大弹窗」(下载已被取消) 时则由后台重新触发下载。
     const url = (msg && msg.url) ? String(msg.url).trim() : '';
+    // ★★ 2026-11-26：优先走 resume —— 把被暂停的**同一条**下载继续跑。
+    //   取值顺序：pending 里登记的下载 id（confirmHighRiskDownload 存的）→ 消息里显式带的 dlId。
+    //   resume 成功就不需要任何重放/重下（既不新建请求，也不会和 IDM 抢）。
+    //   resume 失败（条目已被 IDM 接管取消 / 已完成 / 从未暂停）才回落：
+    //     ① fromPage → 页面侧按正常链路重放点击（IDM 能看到的“点击链”）；
+    //     ② 非 fromPage → 后台 chrome.downloads.download() 兜底（旧行为）。
+    let pendingId = null;
+    try {
+      const p0 = (sender.tab && sender.tab.id != null) ? _sfAuth.pending[sender.tab.id] : null;
+      if (p0 && p0.id != null) pendingId = p0.id;
+    } catch (e) {}
+    if (pendingId == null && msg && msg.dlId != null) {
+      pendingId = (typeof msg.dlId === 'number') ? msg.dlId : null;
+    }
     // ★ 2026-11-23（授权模型）：用户点「继续下载」= 明确授权本页。
     //   授权后本页后续的同站下载不再重复询问（直到用户刷新/导航，见 tabs.onUpdated）。
     if (msg && msg.grantPage && sender.tab && sender.tab.id != null) {
@@ -4152,35 +4299,59 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       try { delete _sfAuth.pending[sender.tab.id]; } catch (e) {}
       _authPersist();
     }
-    if (url) {
-      addAllowedDownload(url);
-      if (!msg.fromPage && chrome.downloads && chrome.downloads.download) {
-        chrome.downloads.download({ url: url }, function () {
-          if (chrome.runtime.lastError) {
-            // 无法直接重下（如 blob / 需站内鉴权），提示前台让用户手动在站内下载
-            try {
-              if (sender.tab && sender.tab.id != null) safeTabMsg(sender.tab.id, { type: 'sf-download-allow-failed', url });
-            } catch (e2) {}
-          }
-        });
+    // 放行名单 / 临时窗口 / 兜底重下：统一在 resume 结果出来后执行（resume 是异步的）
+    const _finishAllow = function (resumed) {
+      if (url) {
+        addAllowedDownload(url);
+        // ★ 2026-11-26：resumed=true 表示同一条下载已经在跑 → 绝不能再 download() 一次，
+        //   否则就是双下载（旧实现每次点「继续下载」都重新发一次请求，正是 IDM 抓不到的主因之一）。
+        //   fromPage=true 时正常由页面侧重放；只有页面侧明确回报「重放失败」(forceBgDownload)
+        //   才在这里用 downloads.download() 兜底。
+        if (!resumed && (!msg.fromPage || msg.forceBgDownload) && chrome.downloads && chrome.downloads.download) {
+          chrome.downloads.download({ url: url }, function () {
+            if (chrome.runtime.lastError) {
+              // 无法直接重下（如 blob / 需站内鉴权），提示前台让用户手动在站内下载
+              try {
+                if (sender.tab && sender.tab.id != null) safeTabMsg(sender.tab.id, { type: 'sf-download-allow-failed', url });
+              } catch (e2) {}
+            }
+          });
+        }
       }
-    }
-    // 页面内「仍要下载」(fromPage)：用户已明确放行本页下载，额外给来源标签一个短暂放行窗口，
-    // 兜底「链接 href 与最终下载 URL 经重定向不一致」等精确匹配失败的情况，确保浏览器能真正下到文件。
-    if (msg && msg.fromPage) {
-      const tid = sender.tab ? sender.tab.id : null;
-      // ★ 2026-11-19：4s → 6s。内容脚本现在会在回执之后才重放点击，
-      //   站点自身的取链/鉴权可能再花一两秒，窗口太短会让重放再次落进闸门。
-      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 6000);
-    }
-    if (!url) {
-      // 无具体 URL（如 JS 触发 / 表单提交下载）：仅靠上面的临时放行窗口覆盖后续下载
-      const tid = sender.tab ? sender.tab.id : null;
-      if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 8000);
-    }
-    // 回执确认：内容脚本在收到回执后才真正触发本页下载，确保本 URL 已登记进放行名单，
-    // 避免「消息异步未达、onCreated 先取消」的竞态（导致「仍要下载」后仍被拦截）。
-    try { sendResponse({ ok: true, url: url }); } catch (e) {}
+      // 页面内「仍要下载」(fromPage)：用户已明确放行本页下载，额外给来源标签一个短暂放行窗口，
+      // 兜底「链接 href 与最终下载 URL 经重定向不一致」等精确匹配失败的情况，确保浏览器能真正下到文件。
+      if (msg && msg.fromPage) {
+        const tid = sender.tab ? sender.tab.id : null;
+        // ★ 2026-11-19：4s → 6s。内容脚本现在会在回执之后才重放点击，
+        //   站点自身的取链/鉴权可能再花一两秒，窗口太短会让重放再次落进闸门。
+        if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 6000);
+      }
+      if (!url) {
+        // 无具体 URL（如 JS 触发 / 表单提交下载）：仅靠上面的临时放行窗口覆盖后续下载
+        const tid = sender.tab ? sender.tab.id : null;
+        if (tid != null) tempAllowedTabs[tid] = Date.now() + (msg && msg.tempMs ? msg.tempMs : 8000);
+      }
+      // 回执确认：内容脚本在收到回执后才真正触发本页下载，确保本 URL 已登记进放行名单，
+      // 避免「消息异步未达、onCreated 先取消」的竞态（导致「仍要下载」后仍被拦截）。
+      // ★ 2026-11-26：多带 resumed —— 内容脚本据此决定「还要不要重放点击」（true 则不要，避免双下载）。
+      try { sendResponse({ ok: true, url: url, resumed: !!resumed }); } catch (e) {}
+    };
+    _resumeDownload(pendingId, function (ok) {
+      if (ok) { _finishAllow(true); return; }
+      // ★ 2026-11-26（二）：resume 失败 ≠ 用户不能继续。两种常见情形要先排除：
+      //   ① 下载器已经 pause 住同一条、但还没 cancel+erase（条目还在，只是不在我们手里）；
+      //   ② 下载器用同一个 URL 另起了一条（原生接管前的浏览器残留）。
+      //   这时如果再按 URL 重放，就会和它撞成重复下载 —— 先查一眼，有在跑的直接当「已继续」。
+      //   只认 in_progress（含 paused）：已 completed 的历史下载不能算，否则用户重下同一文件会被误吞。
+      if (!url) { _finishAllow(false); return; }
+      try {
+        chrome.downloads.search({ url: url }, function (items) {
+          const live = (items || []).some(function (x) { return x && x.state === 'in_progress'; });
+          _finishAllow(live);
+        });
+      } catch (e) { _finishAllow(false); }
+    });
+    return true;   // ★ 2026-11-26：resume 是异步的，回执必须延后（否则 sendResponse 通道已关闭）
   } else if (msg.type === 'sf-record-blocked-download') {
     // 内容脚本在页面级（点击/入口/表单）拦截了一次下载——后台并未走 chrome.downloads 取消流程，
     // 故在此补计「拦截下载次数」并把载荷域名写入自动学习的下载黑名单（与 cancelDownload 同源逻辑）。
@@ -4537,7 +4708,12 @@ function holdDownload(tabId, item) {
   // ★ 2026-11-23：擦除改为延迟重试（_cancelAndErase），否则条目还在取消中会留下「已中断」残影。
   // try { chrome.downloads.cancel(item.id); } catch (e) {}
   // try { chrome.downloads.erase(item.id); } catch (e) {}
-  _cancelAndErase(item.id);
+  // _cancelAndErase(item.id);   // 旧实现：取消 + 擦除（判安后再由用户重新点击）
+  // ★★ 2026-11-26：改为**暂停**。分析窗口只有 0.5–11s，用户并没有做错什么，
+  //   把下载凭空抹掉（取消+擦除）既让 IDM 的接管失效，也让用户必须重下一次。
+  //   暂停后条目留在下载栏；判定 safe 时 resume 同一条下载，判定 danger 时才 cancel。
+  //   失败回落同 confirmHighRiskDownload：先看状态，已暂停/已中断就不 cancel。
+  _pauseDownload(item.id);
 }
 function flushHeld(tabId) {
   const held = heldDownloads[tabId];
@@ -4560,12 +4736,25 @@ function flushHeld(tabId) {
 //   原因：静默重下等于「用户没确认、扩展替他把文件拉下来」，与「默认不信任」的定位相悖；
 //   而且自动重下会绕过用户刚刚看到的拦截提示（用户可能正是想放弃这次下载）。
 //   行为：记录数 >0 时给该标签一条提示，让用户知道要重新点。
+// ★ 2026-11-26：已弃用（保留函数体，方便回滚）。
+//   现在挂起走 _pauseDownload / 判定走 resume，不再需要「删记录 + 提示重新点击」这套。
 function dropHeld(tabId, reason) {
   const held = heldDownloads[tabId];
   if (!held || !held.length) { delete heldDownloads[tabId]; return 0; }
   const n = held.length;
   delete heldDownloads[tabId];
   try { safeTabMsg(tabId, { type: 'sf-held-dropped', count: n, reason: reason || '' }); } catch (e) {}
+  return n;
+}
+// ★ 2026-11-26：超时未出结论 → 保持「已暂停」，不自动放行、也不抹掉条目。
+//   旧 dropHeld 会连记录一起删掉并提示「已取消」；现在下载还在下载栏里（显示已暂停），
+//   用户自己决定是恢复还是删掉，扩展不替他做选择。
+function keepHeldPaused(tabId) {
+  const held = heldDownloads[tabId];
+  if (!held || !held.length) { delete heldDownloads[tabId]; return 0; }
+  const n = held.length;
+  delete heldDownloads[tabId];
+  try { safeTabMsg(tabId, { type: 'sf-held-timeout', count: n }); } catch (e) {}
   return n;
 }
 function resolveAnalysis(tabId, level) {
@@ -4580,6 +4769,9 @@ function resolveAnalysis(tabId, level) {
         // 闸门挂起期间的下载在判危后等同于「已拦截」，其载荷域名同样入库（#16）
         try { dlBlacklistAdd(parseHost(h.url), { filename: h.filename, from: lastTopUrl[tabId] ? parseHost(lastTopUrl[tabId]) : '' }); } catch (e) {}
         try { safeTabMsg(tabId, { type: 'sf-download-blocked', host: parseHost(h.url), url: h.url, filename: h.filename }); } catch (e) {}
+        // ★ 2026-11-26：挂起方式已改为 pause，这里必须显式取消，否则会一直停在「已暂停」。
+        //   判危场景就是要拦死，取消 + 擦除是最终结果。
+        _cancelAndErase(h.id);
       });
     }
     delete heldDownloads[tabId];
@@ -4587,7 +4779,16 @@ function resolveAnalysis(tabId, level) {
     // flushHeld(tabId); // 安全：静默重下挂起下载
     // ★ 2026-11-22：改为「只丢弃、不重下」。判定 safe 也不恢复分析期间被取消的下载，
     //   用户必须重新点击才能触发（旧行为见上一行注释）。
-    dropHeld(tabId, 'safe');
+    // dropHeld(tabId, 'safe');
+    // ★★ 2026-11-26：改为 resume 同一条下载。与上面那条 2026-11-22 的规则不冲突 ——
+    //   它针对的是「cancel 之后用 URL 重下」（等于扩展替用户重新发起一次请求）；
+    //   现在没有 cancel、也没有新请求，恢复的是用户自己点的那一次下载，只是把暂停解除。
+    const held = heldDownloads[tabId];
+    delete heldDownloads[tabId];
+    if (held && held.length) {
+      held.forEach(function (h) { _resumeDownload(h.id, function () {}); });
+      try { safeTabMsg(tabId, { type: 'sf-held-resumed', count: held.length }); } catch (e) {}
+    }
   }
 }
 function armAnalysis(tabId) {
@@ -4598,7 +4799,9 @@ function armAnalysis(tabId) {
       analysisState[tabId] = 'safe';
       // flushHeld(tabId); // 失效开放：内容脚本无回应也按安全放行挂起下载
       // ★ 2026-11-22：超时同样不自动重下，只提示用户重新点击（理由见 dropHeld 注释）。
-      dropHeld(tabId, 'timeout');
+      // dropHeld(tabId, 'timeout');
+      // ★★ 2026-11-26：超时保持暂停（见 keepHeldPaused），不再假装「已取消」。
+      keepHeldPaused(tabId);
     }
     delete analysisTimers[tabId];
   }, ANALYSIS_TIMEOUT_MS);

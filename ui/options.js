@@ -2395,7 +2395,7 @@ async function init() {
         const done = function (err) {
           if (err) {
             console.error('[SilverFoxBlocker][设置] 保存失败：', err);
-            alert('设置保存失败：' + (err.message || err) + '（域名名单已改存本地，不受 sync 配额限制；此项多半是其它设置超限）');
+            alert('设置保存失败：' + (err.message || err) + '（域名名单已改存本地，不受 sync 配额限制；此项可能是其它设置超限）');
           } else {
             showToast(); loadStats();
           }

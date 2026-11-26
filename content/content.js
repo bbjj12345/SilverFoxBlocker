@@ -386,6 +386,31 @@
   //   · 保持拦截 → 只收起提示，下载已取消，不重试。
   // 为什么不做全屏蒙版：场景是「用户本来在浏览大站、后台偷偷推了个安装包」，
   //   蒙版反而打断阅读；一条能看清来源域名的轻提示足够，且不会让用户以为页面坏了。
+  // ★ 2026-11-26：在本页「按正常链路」重放一次下载（fromPage 兜底）。
+  //   为什么要有它：后台 chrome.downloads.download() 发起的是「扩展发起的下载」，
+  //   页面上没有 mousedown→mouseup→click 事件链，IDM / 迅雷这类下载器扩展的内容脚本
+  //   完全看不到（它们挂在 window 捕获阶段读这串事件），结果就是浏览器自己下完、下载器毫无反应。
+  //   用页面里的一次真实 <a> 点击发起，至少让下载器有机会看到「从页面来的下载」。
+  //   注意：这里的 click 仍是合成的（isTrusted=false），但 IDM 不校验 isTrusted，只看事件流。
+  function replayDownloadByUrl(url) {
+    if (!url) return false;
+    if (/^(blob:|data:)/i.test(url)) return false;   // 这两类只能由页面自己触发
+    try { allowNextAction(1500); } catch (e) {}       // 让本页的点击守卫放行这次重放
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '';
+      // target=_blank 与页面原有「仍要下载」重放保持一致：万一服务器没给 Content-Disposition，
+      // 也是在后台标签里打开文件，不会把用户当前页导航走。
+      // 不设 rel=noreferrer —— 这类直链常靠 Referer 校验，去掉反而会被 403。
+      a.target = '_blank';
+      a.style.display = 'none';
+      (document.body || document.documentElement).appendChild(a);
+      a.click();
+      setTimeout(function () { try { a.remove(); } catch (e) {} }, 100);
+      return true;
+    } catch (e) { return false; }
+  }
   let exeBarEl = null, exeBarTimer = null;
   function _removeExeBar() {
     if (exeBarTimer) { clearTimeout(exeBarTimer); exeBarTimer = null; }
@@ -455,16 +480,34 @@
       ok.addEventListener('click', function (e) {
         try { e.preventDefault(); e.stopPropagation(); } catch (e2) {}
         _removeExeBar();
-        if (!url) { showToast('拿不到下载地址，请回到页面手动点击一次下载'); return; }
+        // ★ 2026-11-26：优先让后台 resume 那条**被暂停的同一条下载**（同一个请求继续跑，
+        //   不新建请求、不丢 Referer/Cookie，也不会打断 IDM 的接管流程）。
+        //   只有 resume 不成立（条目已被下载器接管取消 / 已完成 / 从未暂停）才在本页重放一次下载，
+        //   并且一律带 fromPage:true —— 让后台不要再自己 download() 一次（那是双下载的源头）。
         try {
           chrome.runtime.sendMessage(
             // grantPage：用户已确认「本页可以下载」→ 后台记一条页面授权，
             // 本页后续下载不再逐条询问（直到刷新/导航）。
-            { type: 'sf-allow-download', url: url, hostname: host, origin: String(location.origin || ''), grantPage: true, tempMs: 15000 },
-            function () { try { void chrome.runtime.lastError; } catch (e3) {} }
+            { type: 'sf-allow-download', url: url, hostname: host, origin: String(location.origin || ''), grantPage: true, fromPage: true, tempMs: 15000 },
+            function (resp) {
+              try { void chrome.runtime.lastError; } catch (e3) {}
+              if (resp && resp.resumed) { showToast('已继续下载'); return; }
+              if (!url) { showToast('拿不到下载地址，请回到页面手动点击一次下载'); return; }
+              if (replayDownloadByUrl(url)) { showToast('已放行本次下载，正在重新开始…'); return; }
+              // ★ 2026-11-26：页面侧重放不成立（blob:/data: 或 DOM 不可用）→ 退回后台
+              //   chrome.downloads.download() 兜底（与 fromPage 的“优先页面侧”顺序相反，是最后一道）。
+              try {
+                chrome.runtime.sendMessage(
+                  { type: 'sf-allow-download', url: url, hostname: host, forceBgDownload: true },
+                  function () {
+                    try { void chrome.runtime.lastError; } catch (e4) {}
+                    showToast('已放行本次下载，正在由浏览器重新下载…');
+                  }
+                );
+              } catch (e4) { showToast('放行失败，请回到页面手动点击一次下载'); }
+            }
           );
         } catch (e3) {}
-        showToast('已放行本次下载，正在重新开始…');
       }, true);
 
       const put = NATIVE.appendChild;
@@ -2861,7 +2904,12 @@
               // 否则会出现点了「仍要下载」仍被静默拦截。无法提取 URL 时后台会临时放行本标签兜底。
               chrome.runtime.sendMessage(
                 { type: 'sf-allow-download', url: url, hostname: host, fromPage: true },
-                function () { try { void chrome.runtime.lastError; } catch (e) {} trigger(); }
+                function (resp) {
+                  try { void chrome.runtime.lastError; } catch (e) {}
+                  // ★ 2026-11-26：后台若已 resume 那条被暂停的下载，就不要再重放（会变成双下载）。
+                  if (resp && resp.resumed) { showToast('已继续下载'); return; }
+                  trigger();
+                }
               );
               return;
             } catch (e) {}
@@ -4295,6 +4343,15 @@
         showToast('🛑 已拦截自动下载' + why + '：' + f + ' 可能不是由你的点击触发的。如确需下载，请回到页面手动点击一次。');
       } catch (e) {}
     }
+    // ★ 2026-11-26（二）：高危下载在我们来得及暂停之前，就已被别的下载器（IDM / 迅雷 / NDM / FDM /
+    //   BitComet / Ghost / ABDM）cancel + erase 接走了。后台此时**不挂确认条**，只告知一声 ——
+    //   挂了也没用：条目已不在，「继续下载」只能按 URL 重放，会和下载器里那份撞成重复下载。
+    if (msg && msg.type === 'sf-dl-taken-over') {
+      try {
+        const f = msg.filename ? ('「' + String(msg.filename).slice(0, 80) + '」') : '该文件';
+        showToast('该下载（' + f + '）已被 IDM / 迅雷 等下载器接管，扩展未再重复发起。若不是你要的文件，请到下载器里取消。');
+      } catch (e) {}
+    }
     // ★ 2026-11-24：高危文件「暂停 + 询问」——后台已取消本次下载，这里挂非阻塞确认条。
     //   为什么不是 toast：toast 2.6s 就消失、也没法点；这个场景必须留出「继续下载」的出口，
     //   同时把来源域名与文件名摆明，让用户自己判断是不是页面在偷推安装包。
@@ -4314,6 +4371,21 @@
       try {
         const n = Number(msg.count) || 0;
         showToast('分析已完成，刚才被拦下的 ' + n + ' 个下载已取消，不会自动重试；如仍需下载请重新点击。');
+      } catch (e) {}
+    }
+    // ★ 2026-11-26：分析期挂起方式改为「暂停」——
+    //   safe → 后台 resume 同一条下载（不再新建请求），这里只做轻提示；
+    //   timeout（判不出结论）→ 保持暂停，告诉用户可以去下载栏自行恢复或删除。
+    if (msg && msg.type === 'sf-held-resumed') {
+      try {
+        const n = Number(msg.count) || 0;
+        showToast('安全检查通过，已继续刚才暂停的 ' + n + ' 个下载。');
+      } catch (e) {}
+    }
+    if (msg && msg.type === 'sf-held-timeout') {
+      try {
+        const n = Number(msg.count) || 0;
+        showToast('安全检查未在预期时间内完成，' + n + ' 个下载仍处于暂停状态；可在浏览器下载栏手动恢复或删除。');
       } catch (e) {}
     }
     // ★ 2026-11-20：后台跟随跳转端点后推回的「隐藏分发域」，已同时写入自动学习黑名单
