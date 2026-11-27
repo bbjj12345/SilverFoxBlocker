@@ -25,6 +25,11 @@ if (start < 0 || end < 0 || end <= start) {
 }
 const frag = src.slice(start, end);
 
+// 签名用到的 webcrypto / TextEncoder 与反馈配置（window.SFB_FEEDBACK）都要注入，
+// 否则 sfbPostFeedback 会在签名阶段就抛错，测不到 HTTP 分流。
+const SECRET = 'test-secret-0123456789abcdef';
+const { webcrypto } = require('crypto');
+
 const ctx = {
   URL: URL,
   setTimeout: setTimeout,
@@ -32,6 +37,14 @@ const ctx = {
   AbortController: typeof AbortController !== 'undefined' ? AbortController : undefined,
   JSON: JSON, String: String, Error: Error, RegExp: RegExp, console: console,
   navigator: { onLine: true },
+  crypto: webcrypto,
+  TextEncoder: TextEncoder,
+  window: {
+    SFB_FEEDBACK: {
+      decode: function (a) { return a.map(function (c) { return String.fromCharCode(c); }).join(''); },
+      secretCodes: Array.from(SECRET).map(function (c) { return c.charCodeAt(0); }),
+    },
+  },
   fetch: null,
 };
 ctx.globalThis = ctx;
@@ -268,6 +281,75 @@ function setFetch(fn) { ctx.fetch = fn; }
     t('扩展 ID 行在「常见原因」之后', L.indexOf(idLine[0]) === 2, L.indexOf(idLine[0]) + '');
     ctx.chrome = undefined;
     t('无 chrome 上下文时不输出空 ID 行', describe(new TypeError('Failed to fetch'), EP).indexOf('本机扩展 ID') === -1);
+  }
+
+  // ---------- 7. 签名（HMAC-SHA256）：/send 与 ALLOWED_ORIGINS 解耦的关键 ----------
+  {
+    const nodeCrypto = require('crypto');
+    const sign = ctx.sfbSignHeaders;
+    t('签名：实现存在', typeof sign === 'function');
+
+    const payload = { message: '你好\n测试', contact: 'a@b.c' };
+    const bodyText = JSON.stringify(payload);
+    const headers = await sign(EP, bodyText);
+    t('签名：带上 X-SF-Ts', !!headers && /^\d{10,}$/.test(headers['X-SF-Ts']), JSON.stringify(headers));
+    t('签名：带上 X-SF-Sig（64 位小写 hex）', !!headers && /^[0-9a-f]{64}$/.test(headers['X-SF-Sig']), JSON.stringify(headers));
+    t('签名：时间戳是「当前时间」量级（毫秒）', Math.abs(Number(headers['X-SF-Ts']) - Date.now()) < 5000);
+
+    // 与服务端公式逐字对齐：path + "\n" + ts + "\n" + body
+    const path = new URL(EP).pathname;
+    const expect = nodeCrypto.createHmac('sha256', SECRET)
+      .update(path + '\n' + headers['X-SF-Ts'] + '\n' + bodyText).digest('hex');
+    t('签名：与服务端公式完全一致', headers['X-SF-Sig'] === expect, headers['X-SF-Sig'] + ' vs ' + expect);
+
+    // 端到端：post 必须把签名头与「同一份 body 字符串」发出去
+    let seen = null;
+    setFetch(function (url, opts) { seen = { url: url, opts: opts }; return Promise.resolve(resp(200, '{"success":true}')); });
+    await post(EP, payload);
+    t('发起请求：带 Content-Type', seen.opts.headers['Content-Type'] === 'application/json');
+    t('发起请求：带签名两件套', !!seen.opts.headers['X-SF-Ts'] && !!seen.opts.headers['X-SF-Sig']);
+    t('发起请求：body 与签名的原文逐字相同', seen.opts.body === bodyText, seen.opts.body);
+    const verify = nodeCrypto.createHmac('sha256', SECRET)
+      .update(new URL(seen.url).pathname + '\n' + seen.opts.headers['X-SF-Ts'] + '\n' + seen.opts.body).digest('hex');
+    t('发起请求：签名可被服务端用同一密钥复算通过', verify === seen.opts.headers['X-SF-Sig']);
+
+    // 篡改：body 改一个字节，签名即失效
+    const tampered = nodeCrypto.createHmac('sha256', SECRET)
+      .update(path + '\n' + headers['X-SF-Ts'] + '\n' + bodyText + ' ').digest('hex');
+    t('篡改请求体后签名不再匹配', tampered !== headers['X-SF-Sig']);
+  }
+  {
+    // 没有密钥：不发半成品请求，且给出「签名阶段」的可读文案
+    const saved = ctx.window.SFB_FEEDBACK;
+    let called = false;
+    setFetch(function () { called = true; return Promise.resolve(resp(200, '{}')); });
+    ctx.window.SFB_FEEDBACK = { decode: saved.decode, secretCodes: [] };
+    let e2 = null;
+    try { await post(EP, { message: 'x' }); } catch (e) { e2 = e; }
+    ctx.window.SFB_FEEDBACK = saved;
+    t('无密钥：抛「签名阶段」错误', e2 && e2.sfbStage === 'sign', e2 && e2.sfbStage);
+    t('无密钥：一个请求都不发', called === false);
+    const txt = e2 ? describe(e2, EP) : '';
+    t('无密钥：文案点出「无法为反馈签名」', /无法为反馈签名/.test(txt), txt);
+    t('无密钥：文案不误导去查网络/DNS', !/DNS|跨域/.test(txt), txt);
+  }
+  {
+    // 服务端 401：签名被拒也要能读懂
+    const e3 = new Error('HTTP 401');
+    e3.sfbStage = 'http'; e3.sfbStatus = 401;
+    e3.sfbCode = 'TIMESTAMP_EXPIRED';
+    e3.sfbDetail = 'TIMESTAMP_EXPIRED：时间戳超出 ±5 分钟窗口：多为本机时间不准，或这条请求被重放。';
+    const txt = describe(e3, EP);
+    t('HTTP 401：指出签名/时间窗问题', /签名|时间/.test(txt), txt);
+    t('HTTP 401：带上服务端的错误码', /TIMESTAMP_EXPIRED/.test(txt), txt);
+  }
+  {
+    // 503：服务端没配 SECRET_DATA
+    const e4 = new Error('HTTP 503');
+    e4.sfbStage = 'http'; e4.sfbStatus = 503;
+    e4.sfbCode = 'FEEDBACK_DISABLED';
+    e4.sfbDetail = 'FEEDBACK_DISABLED：服务端未配置反馈签名密钥（SECRET_DATA），该接口暂时关闭。';
+    t('HTTP 503：指出服务端未配密钥', /密钥/.test(describe(e4, EP)), describe(e4, EP));
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

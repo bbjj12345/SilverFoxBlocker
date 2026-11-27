@@ -24,6 +24,27 @@ id = "112de06669d341c5acad07e950411df3"
 [vars]
 GITEE_OWNER = "bbjj12345"
 GITEE_REPO = "silver-fox-blocker-cloud"
+# ============================================================================
+# ⚠️ 反馈接口的签名密钥 **不要** 写在这里（v1.13.11 起）
+#   POST 反馈现在只认 HMAC-SHA256 签名，密钥放在 Cloudflare Secret 里：
+#       npx wrangler secret put SECRET_DATA --name silverfoxblocker
+#   为什么不写进 [vars]：这个文件会进仓库，写进来等于把密钥连同仓库一起公开；
+#   Secret 只在 Worker 运行时可见，也不会出现在 `wrangler deploy` 的差异里。
+#   没配 SECRET_DATA 时接口以 503 关闭（FEEDBACK_DISABLED），属预期行为。
+#   两端必须一致：扩展端在 ui/feedback-config.js 的 secretCodes（字符码数组）。
+# ============================================================================
+# ============================================================================
+# 人机验证（Cloudflare Turnstile，v1.13.12 起）
+#   TURNSTILE_SITE_KEY  公开值，写在这里没问题（它会出现在发给浏览器的挑战页 HTML 里）。
+#   TURNSTILE_SECRET_KEY 必须用 Secret：
+#       npx wrangler secret put TURNSTILE_SECRET_KEY --name silverfoxblocker
+#   两者都配才生效；只配 secret 不配 site key → 挑战页明确报错（不会静默放行）。
+#   都不配 → 接口退回「只验 HMAC 签名」，与 v1.13.11 行为一致，老部署直接升级不受影响。
+#   注意：这个 site key 必须是「给 api.silverfoxblocker.dpdns.org 用」的那个 widget，
+#   Turnstile 后台可以限制 hostname；限制错了会显示 invalid-hostname。
+# ============================================================================
+# TURNSTILE_SITE_KEY = "0x4AAAAAAGVz3ovQlQiJuifk"
+
 # 巡检结果邮件的收件人（可选）。
 # 默认发到 feedback@silverfoxblocker.dpdns.org，再由 Cloudflare Email Routing 转发到
 # 你真正的邮箱 —— 私人地址不必写进代码或仓库，换邮箱只改面板里的路由规则。

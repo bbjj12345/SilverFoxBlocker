@@ -1804,6 +1804,15 @@ html.theme-light .rescue-ico.shield-suspicious { color: #b9791a; }
 .fb-card .seg { display: flex; width: 100%; box-sizing: border-box; }
 .fb-card .seg button { flex: 1 1 0; min-width: 0; padding: 9px 6px; white-space: nowrap; }
 .fb-card .fb-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 人机验证（2026-11-27）：嵌的是 Worker 的 /challenge 页面，尺寸由 Turnstile widget 决定。
+   固定高度会切掉 Cloudflare 的交互式挑战按钮，所以给一个最小值 + 自动高度（iframe 内部
+   用 min-height:72px 自适应），宽度上限 320px 恰好是 managed 模式的默认宽度。 */
+.fb-challenge { margin-top: 10px; }
+.fb-challenge iframe {
+  display: block; width: 100%; max-width: 320px; height: 78px;
+  border: 0; border-radius: 10px; background: transparent; color-scheme: normal;
+}
+html.theme-light .fb-challenge iframe { background: rgba(255,255,255,.6); }
 .fb-card .btn-sec {
   cursor: pointer; font-family: inherit; font-weight: 700;
   font-size: calc(13px * var(--sf-scale)); padding: 11px 18px; border-radius: 12px;

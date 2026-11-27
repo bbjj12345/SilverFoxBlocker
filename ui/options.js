@@ -20,8 +20,8 @@
  */
 var SFB_MAIL_HTTP_HINT = {
   400: '请求被服务端拒绝：反馈内容为空、格式不对或超过 2000 字',
-  401: '服务端鉴权失败：Worker 的发信密钥可能已失效',
-  403: '被服务端拒绝：来源不在允许列表，或该接口已关闭',
+  401: '服务端鉴权失败：签名缺失、已过期或密钥不一致（多为本机时间偏差超过 5 分钟）',
+  403: '被服务端拒绝：该来源未被允许，或该接口已关闭',
   404: '接口地址不存在：Worker 可能已改名、未部署或被回滚',
   405: '请求方法不被允许：接口契约已变更',
   408: '服务端等待请求超时',
@@ -30,7 +30,7 @@ var SFB_MAIL_HTTP_HINT = {
   429: '提交过于频繁：已触发服务端限流，或达到当日发送上限',
   500: '服务端内部错误：通常是发信服务（Brevo）返回异常',
   502: '网关错误：Worker 上游服务不可用',
-  503: '服务暂不可用：Worker 过载或正在维护',
+  503: '服务暂不可用：Worker 未配置签名密钥，或正在维护',
   504: '网关超时：Worker 未及时响应'
 };
 
@@ -38,8 +38,8 @@ function sfbEndpointHost(endpoint) {
   try { return new URL(endpoint).host; } catch (e) { return ''; }
 }
 
-// 本机扩展 ID：新电脑上「加载已解压」的 ID 由解压路径决定，与 Worker 端 ALLOWED_ORIGINS 里
-// 写死的那几个通常对不上 —— 这是「换台电脑就发不出去」最常见的原因，失败时应当场告诉用户。
+// 本机扩展 ID：不再参与「能不能发出反馈」（/send 已改为签名鉴权，与来源无关），
+// 但仍保留在失败提示里 —— 它能把「这个浏览器实例是谁」写进截图，方便作者复现问题。
 function sfbExtId() {
   try {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) return String(chrome.runtime.id);
@@ -126,6 +126,22 @@ function sfbDescribeMailFailure(err, endpoint) {
   var e = err || {};
   if (e.sfbStage === 'http') {
     var st = e.sfbStatus;
+    // 人机验证的几个错误码语义完全不同，不能被 403 的通用解释盖掉：
+    //   过期/重复用 → 让用户重试并重新勾选；未通过 → 重试；未配置/连不上 → 找作者。
+    var tcode = String(e.sfbCode || '');
+    if (tcode === 'TURNSTILE_EXPIRED') {
+      return '发送失败：人机验证已过期（每张凭据只能用一次）\n请再点一次发送，重新完成验证即可。';
+    }
+    if (tcode === 'TURNSTILE_FAILED') {
+      return '发送失败：人机验证未通过\n请再点一次发送，重新勾选「我是真人」后再试。';
+    }
+    if (tcode === 'TURNSTILE_REQUIRED') {
+      return '发送失败：服务端要求人机验证，但本次没有拿到凭据\n请重试一次；若反复出现，可能是验证页面被拦截。';
+    }
+    if (tcode === 'TURNSTILE_UNREACHABLE' || tcode === 'TURNSTILE_MISCONFIGURED') {
+      return '发送失败：人机验证服务暂时不可用（' + tcode + '）\n'
+        + '这是服务端侧的问题，不是你的网络；可稍后再试，或先用「发送反馈到GitHub Issue」。';
+    }
     var hint = SFB_MAIL_HTTP_HINT[st] || ('服务端返回了未预期的 HTTP ' + st);
     // 文档版式：第一行「发送失败：HTTP xxx」，第二行解释（不再用「·」串成一行）
     var out = '发送失败：HTTP ' + st + '\n' + hint;
@@ -134,6 +150,18 @@ function sfbDescribeMailFailure(err, endpoint) {
     var detail = String(e.sfbDetail || '').trim();
     if (detail && detail !== hint && detail.indexOf(hint) === -1) out += '\n服务端说明：' + detail;
     return out;
+  }
+  // 签名阶段的失败：请求根本没发出去，与网络、CORS 都无关，别让人去查网络
+  if (e.sfbStage === 'sign') {
+    return '发送失败：无法为反馈签名\n'
+      + String(e.sfbDetail || e.message || '扩展里缺少签名密钥')
+      + '\n可先更新扩展（必要时重装）后再试；若仍失败，多半是服务端还在跑旧版本。';
+  }
+  // 人机验证阶段的失败：请求还没发出去（或验证页没加载出来），别让人去查 DNS/防火墙
+  if (e.sfbStage === 'turnstile') {
+    return '发送失败：人机验证没有完成\n'
+      + '原因：' + String(e.sfbDetail || e.message || '验证组件未能加载')
+      + '\n可重试；若反复失败，请确认能正常打开 challenges.cloudflare.com，或改用「发送反馈到GitHub Issue」。';
   }
   if (!sfbIsNetError(e)) return '发送失败：' + String(e.message || e || '未知错误');
   // 已知离线时当场下结论；其余情况留白，交给 sfbReportMailFailure 探测后补「诊断」行
@@ -260,8 +288,232 @@ function sfbReportMailFailure(err, endpoint, render) {
   }, function () {});
 }
 
-// 统一发出反馈请求：15 秒超时 + 非 2xx 时读取 body 的 { error } 再抛出带阶段信息的错误。
-// 回报 Promise<Response>，调用方自行处理成功分支。
+/* ===== 反馈签名（2026-11-27）=====
+ * 目的：让 /send 彻底脱离 Cloudflare Worker 的 ALLOWED_ORIGINS 白名单 ——
+ *   白名单挡不住「换台电脑 ID 就变」，而一旦写成 chrome-extension://* 又等于对所有人开放。
+ *   改成共享密钥 + HMAC 之后，能不能发出去只取决于「有没有密钥」，与来源、扩展 ID 都无关。
+ *
+ * 与 Worker 端 verifyFeedbackSignature 必须逐字对齐：
+ *   待签名串 = 相对路径 + "\n" + 毫秒时间戳 + "\n" + 请求体原文
+ *   签名     = HMAC-SHA256(密钥, 待签名串) 的小写 hex
+ *   请求头   = X-SF-Ts: <时间戳>   X-SF-Sig: <签名>
+ * body 只在 sfbPostFeedback 里 stringify 一次、签名与发送共用同一个字符串（二次序列化可能不同）。
+ */
+function sfbSignError(detail) {
+  var er = new Error(detail);
+  er.sfbStage = 'sign';
+  er.sfbDetail = detail;
+  return er;
+}
+
+function sfbFeedbackSecret() {
+  try {
+    var cfg = (typeof window !== 'undefined') ? window.SFB_FEEDBACK : null;
+    if (cfg && typeof cfg.decode === 'function' && cfg.secretCodes) {
+      return String(cfg.decode(cfg.secretCodes) || '');
+    }
+  } catch (e) {}
+  return '';
+}
+
+function sfbBytesToHex(buf) {
+  var b = new Uint8Array(buf), out = '';
+  for (var i = 0; i < b.length; i++) out += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+  return out;
+}
+
+function sfbHmacHex(secret, msg) {
+  if (typeof crypto === 'undefined' || !crypto.subtle || typeof TextEncoder === 'undefined') {
+    return Promise.reject(sfbSignError('当前环境不支持 crypto.subtle，无法为反馈签名'));
+  }
+  var enc = new TextEncoder();
+  return crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  ).then(function (key) {
+    return crypto.subtle.sign('HMAC', key, enc.encode(msg));
+  }).then(sfbBytesToHex);
+}
+
+function sfbSignHeaders(endpoint, bodyText) {
+  var secret = sfbFeedbackSecret();
+  if (!secret) {
+    return Promise.reject(sfbSignError('扩展里没有反馈签名密钥（feedback-config.js 的 secretCodes 为空），'
+      + '请更新到最新版本'));
+  }
+  var path = '/';
+  try { path = new URL(endpoint).pathname || '/'; } catch (e) {}
+  var ts = String(Date.now());
+  return sfbHmacHex(secret, path + '\n' + ts + '\n' + bodyText).then(function (sig) {
+    return { 'X-SF-Ts': ts, 'X-SF-Sig': sig };
+  });
+}
+
+// 统一发出反馈请求：先签名（本地计算，毫秒级）→ 15 秒超时 POST → 非 2xx 时读取 body 的
+// { error, detail } 再抛出带阶段信息的错误。回报 Promise<Response>，调用方自行处理成功分支。
+function sfbPostFeedback(endpoint, payload) {
+  var bodyText = JSON.stringify(payload);
+  // 签名失败（无密钥 / 环境不支持）直接抛，不发半成品请求——服务端反正会 401
+  return sfbSignHeaders(endpoint, bodyText).then(function (signHeaders) {
+    var ctrl = null, timer = null;
+    try {
+      ctrl = new AbortController();
+      timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 15000);
+    } catch (e) { ctrl = null; }
+    var headers = { 'Content-Type': 'application/json' };
+    for (var k in signHeaders) {
+      if (Object.prototype.hasOwnProperty.call(signHeaders, k)) headers[k] = signHeaders[k];
+    }
+    var opts = { method: 'POST', headers: headers, body: bodyText };
+    if (ctrl) opts.signal = ctrl.signal;
+    return fetch(endpoint, opts).then(function (res) {
+      if (res.ok) { if (timer) clearTimeout(timer); return res; }
+      return res.text().then(function (t) {
+        if (timer) clearTimeout(timer);
+        var detail = '', code = '';
+        try {
+          var j = JSON.parse(t);
+          code = (j && j.error) || '';
+          var extra = (j && j.detail) || '';
+          detail = extra ? (code ? code + '：' + extra : extra) : code;
+        } catch (e2) {
+          detail = String(t || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+        }
+        var er = new Error('HTTP ' + res.status);
+        er.sfbStage = 'http';
+        er.sfbStatus = res.status;
+        er.sfbCode = String(code || '');
+        er.sfbDetail = String(detail || '').trim();
+        throw er;
+      }, function () {
+        if (timer) clearTimeout(timer);
+        var er = new Error('HTTP ' + res.status + '（响应体读取失败）');
+        er.sfbStage = 'http';
+        er.sfbStatus = res.status;
+        er.sfbCode = '';
+        er.sfbDetail = '';
+        throw er;
+      });
+    }, function (err) {
+      if (timer) clearTimeout(timer);
+      throw err;
+    });
+  });
+}
+
+/* ===== 人机验证（Turnstile，2026-11-27，方案二）=====
+ * 为什么走「Worker 的 /challenge 页面 + iframe」而不是直接引 Cloudflare 的 api.js：
+ *   MV3 扩展页面的 CSP 是 script-src 'self'，远程脚本一律被拒；iframe 不受这条限制。
+ *   挑战页由我们自己的 Worker 现场渲染，site key 只配在服务端，扩展里不需要知道；
+ *   验证通过后页面用 postMessage 把 token 交给这里，这里把它拼进请求体、与正文一起签名。
+ *   附带好处：Turnstile 的开/关、widget 模式（managed / invisible）、主题都能在服务端改，不必发版。
+ *
+ * 触发时机是「服务端说要才要」：先照常发一次，Worker 回 403 TURNSTILE_REQUIRED 才弹验证框，
+ *   验完自动重发。这样没开 Turnstile 的部署完全不受影响，也不存在「扩展配置与服务端不同步」。
+ * token 单次有效（Cloudflare 侧 5 分钟过期、用过即废），所以每次重试都重新换一张。
+ */
+var SFB_TS_TIMEOUT_MS = 90000;   // 等用户勾选的上限；超时说明挑战页根本没加载出来
+
+function sfbTsError(reason, detail) {
+  var er = new Error(detail || '人机验证未完成');
+  er.sfbStage = 'turnstile';
+  er.sfbReason = String(reason || '');
+  er.sfbDetail = String(detail || '');
+  return er;
+}
+
+// 挑战页地址：与反馈接口同源，只是把 path 换成 /challenge。
+//   theme 跟随设置页当前外观（挑战页自己不会读存储，只能由这里告知）。
+function sfbChallengeUrl(endpoint) {
+  var u;
+  try { u = new URL('/challenge', endpoint); } catch (e) { return ''; }
+  var light = false;
+  try { light = !!(document.documentElement && document.documentElement.classList
+    && document.documentElement.classList.contains('theme-light')); } catch (e) {}
+  u.searchParams.set('theme', light ? 'light' : 'dark');
+  u.searchParams.set('v', '20261127');
+  return u.toString();
+}
+
+// 在 mount 里插一张 iframe，等挑战页回话。返回 Promise<token>：
+//   · 拿到 token            → resolve(token)
+//   · 服务端没开人机验证    → resolve('')   （照常发送，不带 token）
+//   · 加载/配置/渲染失败    → reject(带 sfbStage='turnstile' 的错误)
+function sfbTurnstileWait(endpoint, mount) {
+  return new Promise(function (resolve, reject) {
+    var src = sfbChallengeUrl(endpoint);
+    if (!mount || !src) { reject(sfbTsError('mount', '页面上没有放置人机验证的位置')); return; }
+    var origin = new URL(src).origin;
+    var iframe = document.createElement('iframe');
+    var settled = false, timer = null;
+
+    function cleanup() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      try { window.removeEventListener('message', onMsg); } catch (e) {}
+      try { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); } catch (e) {}
+      try { mount.innerHTML = ''; } catch (e) {}
+      mount.hidden = true;
+    }
+    function finish(err, token) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (err) reject(err); else resolve(token);
+    }
+    // 三条校验同时成立才采信：来源是我们自己的 Worker、窗口就是这张 iframe、载荷带我们的标记。
+    //   缺一条都可能被同页面的其它脚本（或恶意扩展）伪造一张「验证已通过」。
+    function onMsg(ev) {
+      if (!ev || ev.origin !== origin) return;
+      if (ev.source !== iframe.contentWindow) return;
+      var d = ev.data;
+      if (!d || typeof d !== 'object' || d.source !== 'sfb-challenge') return;
+      if (d.type === 'token' && typeof d.token === 'string' && d.token) { finish(null, d.token); return; }
+      if (d.type === 'off') { finish(null, ''); return; }
+      if (d.type === 'error') { finish(sfbTsError(String(d.reason || ''), sfbTsReasonText(d.reason))); return; }
+    }
+
+    try { window.addEventListener('message', onMsg); } catch (e) {}
+    iframe.src = src;
+    iframe.setAttribute('title', '人机验证');
+    iframe.setAttribute('loading', 'eager');
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    mount.hidden = false;
+    mount.appendChild(iframe);
+    timer = setTimeout(function () {
+      finish(sfbTsError('timeout', '人机验证组件 90 秒内没有完成（可能被网络、代理或拦截工具挡住）'));
+    }, SFB_TS_TIMEOUT_MS);
+  });
+}
+
+function sfbTsReasonText(reason) {
+  var r = String(reason || '');
+  if (r === 'no-sitekey') return '服务端只配了 TURNSTILE_SECRET_KEY，没配 TURNSTILE_SITE_KEY，人机验证无法显示';
+  if (r === 'script') return '验证组件脚本加载失败（浏览器或网络拦截了 challenges.cloudflare.com）';
+  if (r === 'timeout') return '验证组件 12 秒内没有渲染出来（多为网络问题）';
+  if (r === 'render') return '验证组件初始化失败（site key 与域名不匹配？）';
+  return '验证组件报错：' + (r || '未知原因');
+}
+
+// 一次完整的「发送」：先照常发；服务端要求人机验证时弹验证框再发一次。
+//   ui.mount      放置 iframe 的容器（必须有）
+//   ui.onChallenge 需要验证时的回调（用于改提示文案 / 转圈状态）
+function sfbSendFeedback(endpoint, payload, ui) {
+  var opts = ui || {};
+  function post(token) {
+    var p = {};
+    for (var k in payload) {
+      if (Object.prototype.hasOwnProperty.call(payload, k)) p[k] = payload[k];
+    }
+    if (token) p.turnstileToken = token;
+    return sfbPostFeedback(endpoint, p);
+  }
+  return post('').catch(function (err) {
+    if (!err || err.sfbCode !== 'TURNSTILE_REQUIRED') throw err;
+    if (typeof opts.onChallenge === 'function') { try { opts.onChallenge(); } catch (e) {} }
+    return sfbTurnstileWait(endpoint, opts.mount).then(post);
+  });
+}
+
+/* 旧实现（2026-11-27 之前）：不带签名，直接 POST，请求头只有 Content-Type
 function sfbPostFeedback(endpoint, payload) {
   var ctrl = null, timer = null;
   try {
@@ -273,37 +525,9 @@ function sfbPostFeedback(endpoint, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   };
-  if (ctrl) opts.signal = ctrl.signal;
-  return fetch(endpoint, opts).then(function (res) {
-    if (res.ok) { if (timer) clearTimeout(timer); return res; }
-    // 旧实现：if (!res.ok) throw new Error('HTTP ' + res.status);  —— 状态码有，但后端的中文原因被丢掉
-    return res.text().then(function (t) {
-      if (timer) clearTimeout(timer);
-      var detail = '';
-      try {
-        var j = JSON.parse(t);
-        detail = (j && (j.error || j.message)) || '';
-      } catch (e2) {
-        detail = String(t || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
-      }
-      var er = new Error('HTTP ' + res.status);
-      er.sfbStage = 'http';
-      er.sfbStatus = res.status;
-      er.sfbDetail = String(detail || '').trim();
-      throw er;
-    }, function () {
-      if (timer) clearTimeout(timer);
-      var er = new Error('HTTP ' + res.status + '（响应体读取失败）');
-      er.sfbStage = 'http';
-      er.sfbStatus = res.status;
-      er.sfbDetail = '';
-      throw er;
-    });
-  }, function (err) {
-    if (timer) clearTimeout(timer);
-    throw err;
-  });
+  ...
 }
+*/
 
 // 360 系统急救箱官方下载直链。现为「备用直链」：点击按钮时会自动抓取
 // 官网/软件宝库的最新 64 位独立版直链；仅当自动抓取失败时才回退到此处。
@@ -2617,9 +2841,15 @@ async function init() {
           //   fetch(endpoint, { method: 'POST', headers: {...}, body: JSON.stringify({...}) })
           //     .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); ... })
           //     .catch(function () { show('发送失败，请稍后重试。', 'warn'); ... });
-          // 新：走 sfbPostFeedback —— 15 秒超时；非 2xx 时先读 body 里的 { error }，
-          //   再抛出带 sfbStage / sfbStatus / sfbDetail 的错误，供 sfbDescribeMailFailure 拼成可读原因。
-          sfbPostFeedback(endpoint, { message: payload, contact: contact })
+          // 新：走 sfbSendFeedback —— 先照常发；服务端回 TURNSTILE_REQUIRED 时在 #fbChallenge
+          //   里弹出人机验证，验完自动重发（token 每次重试都重新换一张）。
+          //   仍保留 sfbPostFeedback 的全部失败诊断：15 秒超时、错误码、阶段说明。
+          sfbSendFeedback(endpoint, { message: payload, contact: contact }, {
+            mount: $('fbChallenge'),
+            onChallenge: function () {
+              show('为防止垃圾信息，本次发送需要先完成一次人机验证；通过后会自动发出。', '');
+            }
+          })
             .then(function (res) {
               show('感谢您的反馈！', 'ok');
               if ($('fbText')) { $('fbText').value = ''; updateFbCount(); }
@@ -4040,8 +4270,9 @@ async function updateCloudLists(btn) {
 (function initListMail() {
   var MAX = 2000; // 与 Worker 端 feedbackText.length > 2000 的校验保持一致
   var JOBS = [
-    { btn: 'mailWhiteBtn', ta: 'allowlist', spin: 'mailWhiteSpin', msg: 'mailWhiteMsg', kind: '自定义白名单' },
-    { btn: 'mailBlackBtn', ta: 'customBadDomains', spin: 'mailBlackSpin', msg: 'mailBlackMsg', kind: '自定义黑名单' }
+    // mount：人机验证的落点（与反馈页共用同一套 Turnstile 流程，见 sfbSendFeedback）
+    { btn: 'mailWhiteBtn', ta: 'allowlist', spin: 'mailWhiteSpin', msg: 'mailWhiteMsg', mount: 'mailWhiteChallenge', kind: '自定义白名单' },
+    { btn: 'mailBlackBtn', ta: 'customBadDomains', spin: 'mailBlackSpin', msg: 'mailBlackMsg', mount: 'mailBlackChallenge', kind: '自定义黑名单' }
   ];
 
   function setMsg(el, text, kind) {
@@ -4092,8 +4323,14 @@ async function updateCloudLists(btn) {
     if (spin) spin.hidden = false;
     setMsg(msgEl, '', '');
     // 旧：fetch(...).then(res => { if (!res.ok) throw ... }).catch(function () { setMsg(..., '发送失败，请稍后重试。', 'warn'); })
-    // 新：与反馈页共用 sfbPostFeedback / sfbDescribeMailFailure，失败时显示错误码与解释
-    sfbPostFeedback(endpoint, { message: body, contact: '' })
+    // 新：与反馈页共用 sfbSendFeedback / sfbDescribeMailFailure —— 需要人机验证时在同一位置
+    //   弹出验证框，验完自动重发；失败时显示错误码与解释。
+    sfbSendFeedback(endpoint, { message: body, contact: '' }, {
+      mount: $(job.mount),
+      onChallenge: function () {
+        setMsg(msgEl, '为防止垃圾信息，本次上报需要先完成一次人机验证；通过后会自动发出。', '');
+      }
+    })
       .then(function (res) {
         setMsg(msgEl, '已发送 ' + list.length + ' 个域名，感谢你的贡献！', 'ok');
       })

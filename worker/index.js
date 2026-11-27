@@ -116,7 +116,7 @@ function corsHeadersFor(origin) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
+    "Access-Control-Allow-Headers": "Content-Type, X-API-Key, X-SF-Ts, X-SF-Sig",
     // 扩展侧要能读到「这份数据来自哪个源」，自定义响应头必须显式暴露
     "Access-Control-Expose-Headers": "X-Data-Source, X-Data-Path",
     "Access-Control-Max-Age": "86400",
@@ -131,14 +131,276 @@ function corsRejectHeadersFor(origin) {
 }
 
 // 返回 { ok, headers }：ok=false 表示来源不在白名单 → 调用方直接 403
-function corsFor(request, env) {
+// openSigned=true 时（反馈接口 /send）不做来源判定：那里的门禁是 HMAC 签名，与 Origin 无关，
+//   任何来源都必须拿到 CORS 头，否则网页侧 / 扩展侧都读不到 401 的原因，又退回「Failed to fetch」。
+function corsFor(request, env, openSigned) {
   var origin = request.headers.get("Origin") || "";
   if (!origin) return { ok: true, headers: {} };   // 非浏览器请求：给数据、不给跨源许可
+  if (openSigned) return { ok: true, headers: corsHeadersFor(origin) };
   // 被拒时**也**回显 CORS 头（数据一个字节都不给，只给 403 的 JSON 说明）。
   //   旧行为是被拒就不带 CORS 头，于是浏览器把 403 折成 TypeError('Failed to fetch')，
   //   扩展侧只能笼统说「连不上」，用户和作者都分不清「网络不通」与「来源被拒」。
   if (!allowedOriginHit(env, origin)) return { ok: false, headers: corsRejectHeadersFor(origin) };
   return { ok: true, headers: corsHeadersFor(origin) };
+}
+
+// ============================================================================
+// 反馈接口鉴权：共享密钥 + HMAC-SHA256（2026-11-27）
+//
+// 为什么不在 Origin 白名单上继续加码：本地「加载已解压」的扩展 ID 由解压路径决定，
+//   换台电脑就换一个，白名单永远追不上；而一旦为了省事写成 `chrome-extension://*`，
+//   就等于「任何装了的扩展都能往作者邮箱灌垃圾」。
+//
+// 现在的分工：/send 只认签名，不认 Origin。
+//   · 扩招端内置同一把密钥，用 密钥 + (路径 + 时间戳 + 请求体) 算 HMAC-SHA256，
+//     把 时间戳 与 签名 放进 X-SF-Ts / X-SF-Sig 两个请求头。
+//   · Worker 端用 SECRET_DATA（Cloudflare Secret，不进仓库、不进扩展包）重算并逐字节比对；
+//     同时要求时间戳落在 ±5 分钟内，超窗即拒 —— 截获的旧请求过一会儿就自动作废。
+//   · 没有密钥的人（爬虫、脚本、别的网站）算不出有效签名，连限流配额都碰不到，
+//     因为验签在限流之前、也在发信之前。
+//
+// 边界（必须说清）：密钥随扩展包分发，解包就能看到，所以它挡的是「随手打接口」，
+//   不是「有决心逆向的人」。真被人拿去刷，改 SECRET_DATA（`wrangler secret put`）
+//   并发一版扩展即可止血，历史请求的签名分布对新密钥全部失效。
+// ============================================================================
+var FEEDBACK_TS_SKEW_MS = 5 * 60 * 1000;     // 允许的时间偏差（同时充当重放窗口）
+var SIGN_SECRET_MIN_LEN = 16;                // 太短的密钥直接当没配
+
+// 哪些请求属于「反馈提交」，从而不看 Origin、改看签名：
+//   现有路由只有 GET /list、GET /health 与「其它一律当反馈 POST」，
+//   所以这里用排除法，避免把签名的路径写死成某个具体字符串（以后加路径不会漏配）。
+function isFeedbackPath(pathname) {
+  return pathname !== "/list" && pathname !== "/health";
+}
+
+function hexFromBytes(bytes) {
+  var out = "";
+  for (var i = 0; i < bytes.length; i++) {
+    out += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
+  }
+  return out;
+}
+
+// 定长逐字节比较，不做提前返回：避免用响应时间逐个试出签名的前缀
+function constantTimeEqualHex(a, b) {
+  a = String(a || "").toLowerCase();
+  b = String(b || "").toLowerCase();
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// 待签名串：路径 + "\n" + 时间戳 + "\n" + 请求体
+//   路径参与签名，防止把 /list 上的签名搬到 /send 上复用；
+//   "\n" 分隔是为了让各段边界明确（否则 路径+时间戳 的拼接可以被挪位）。
+function feedbackSignString(pathname, ts, body) {
+  return pathname + "\n" + ts + "\n" + body;
+}
+
+async function feedbackHmacHex(secret, msg) {
+  var enc = new TextEncoder();
+  var key = await crypto.subtle.importKey(
+    "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  var mac = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
+  return hexFromBytes(new Uint8Array(mac));
+}
+
+// 返回 { ok } 或 { ok:false, status, error, detail }
+//   error 用英文常量（便于脚本判断 / 记录日志），detail 是给人看的中文
+async function verifyFeedbackSignature(request, bodyText, env) {
+  var secret = String((env && env.SECRET_DATA) || "");
+  if (secret.length < SIGN_SECRET_MIN_LEN) {
+    return {
+      ok: false, status: 503, error: "FEEDBACK_DISABLED",
+      detail: "服务端未配置反馈签名密钥（SECRET_DATA），该接口暂时关闭。"
+    };
+  }
+  var ts = String(request.headers.get("X-SF-Ts") || "").trim();
+  var sig = String(request.headers.get("X-SF-Sig") || "").trim();
+  if (!ts || !sig) {
+    return { ok: false, status: 401, error: "SIGNATURE_REQUIRED", detail: "缺少签名头 X-SF-Ts / X-SF-Sig。" };
+  }
+  var t = Number(ts);
+  if (!isFinite(t) || t <= 0) {
+    return { ok: false, status: 401, error: "TIMESTAMP_INVALID", detail: "时间戳不是有效的毫秒数。" };
+  }
+  var skew = Date.now() - t;
+  if (skew > FEEDBACK_TS_SKEW_MS || skew < -FEEDBACK_TS_SKEW_MS) {
+    return {
+      ok: false, status: 401, error: "TIMESTAMP_EXPIRED",
+      detail: "时间戳超出 ±5 分钟窗口：多为本机时间不准，或这条请求被重放。"
+    };
+  }
+  var pathname = new URL(request.url).pathname;
+  var expect = await feedbackHmacHex(secret, feedbackSignString(pathname, ts, bodyText));
+  if (!constantTimeEqualHex(expect, sig)) {
+    return { ok: false, status: 401, error: "BAD_SIGNATURE", detail: "签名校验失败（密钥不一致，或请求体被改动）。" };
+  }
+  return { ok: true };
+}
+
+// ============================================================================
+// 人机验证：Cloudflare Turnstile（2026-11-27，方案二）
+//
+// 为什么需要：HMAC 密钥随扩展包分发（本仓库公开，等于人人可见），它挡得住「随手打接口」，
+//   挡不住把密钥抄出来跑脚本的人。Turnstile 是第二道闸：一次请求必须附一张「Cloudflare 现场
+//   签发、只能用一次、5 分钟过期」的凭据，而这张凭据只能由真实浏览器在 widget 里换出来。
+//
+// 三个角色：
+//   ① 挑战页 GET /challenge —— 本 Worker 自己吐的一小段 HTML，里面加载 Turnstile 官方脚本，
+//      验证通过后用 postMessage 把 token 交给发起方。
+//      为什么不让扩展直接引 challenges.cloudflare.com 的 api.js：MV3 扩展页面的 CSP 是
+//      script-src 'self'，远程脚本一律被拒；iframe 不受这条限制。放在服务端还有个好处 ——
+//      site key、widget 模式（managed / invisible）、主题都能在 Cloudflare 后台改，不必发版。
+//   ② 提交 POST / —— 请求体多带一个 turnstileToken，验完签名、验完内容之后调 siteverify。
+//   ③ 失败即关闭：只配了 site key 却没配 secret 时不生效（见 turnstileEnabled）。
+//
+// 与 HMAC 的关系：两道闸都开、且顺序是「验签 → 验人机」——签名不合格的请求连 siteverify
+//   的子请求都不会发出去（不烧配额、不给 Cloudflare 添负载）。
+// 未配置 TURNSTILE_SECRET_KEY 时整段透明跳过：老部署升级 Worker 不会突然收不到反馈。
+// ============================================================================
+var TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+var TURNSTILE_API_JS = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=sfbTsOnload";
+var TURNSTILE_MAX_TOKEN = 2048;              // 正常 token 约 1~2 KB，超长直接拒
+var TURNSTILE_TIMEOUT_MS = 6000;             // siteverify 超时：宁可让人重试，也别让请求挂死
+var TURNSTILE_SECRET_MIN_LEN = 16;
+
+function turnstileSiteKey(env) { return String((env && env.TURNSTILE_SITE_KEY) || "").trim(); }
+function turnstileSecret(env) { return String((env && env.TURNSTILE_SECRET_KEY) || "").trim(); }
+
+// 只认 secret：只有 site key 时页面能画出 widget，服务端却验不了，那是最坏的「看起来能用」。
+function turnstileEnabled(env) {
+  return turnstileSecret(env).length >= TURNSTILE_SECRET_MIN_LEN;
+}
+
+// 返回 { ok:true, mode:'off'|'pass' } 或 { ok:false, status, error, detail }
+//   error 是英文常量（扩展据此决定「弹验证框重试」还是「直接报错」），detail 是给人看的中文。
+async function verifyTurnstile(token, ip, env) {
+  if (!turnstileEnabled(env)) return { ok: true, mode: "off" };
+  token = String(token || "").trim();
+  if (!token) {
+    return {
+      ok: false, status: 403, error: "TURNSTILE_REQUIRED",
+      detail: "该接口需要人机验证：请重新点击发送，并在验证框里完成验证。"
+    };
+  }
+  if (token.length > TURNSTILE_MAX_TOKEN) {
+    return { ok: false, status: 400, error: "TURNSTILE_BAD_TOKEN", detail: "人机验证凭据格式不正确（过长）。" };
+  }
+
+  var form = new URLSearchParams();
+  form.set("secret", turnstileSecret(env));
+  form.set("response", token);
+  if (ip && ip !== "unknown") form.set("remoteip", ip);   // 可选：让 token 与本机 IP 绑定
+
+  var ctrl = new AbortController();
+  var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, TURNSTILE_TIMEOUT_MS);
+  var json = null;
+  try {
+    var res = await fetch(TURNSTILE_VERIFY_URL, { method: "POST", body: form, signal: ctrl.signal });
+    json = await res.json();
+  } catch (e) {
+    return {
+      ok: false, status: 503, error: "TURNSTILE_UNREACHABLE",
+      detail: "人机验证服务暂时无法连接，请稍后重试。"
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (json && json.success === true) return { ok: true, mode: "pass" };
+
+  var codes = (json && json["error-codes"]) || [];
+  var code = String(codes[0] || "unknown");
+  // 单次有效：重复提交、超过 5 分钟都会拿到 timeout-or-duplicate —— 这是最常见的一种失败，
+  //   必须让扩展侧能区分出来（提示「请重新验证」，而不是「签名错了」）。
+  if (code === "timeout-or-duplicate") {
+    return {
+      ok: false, status: 403, error: "TURNSTILE_EXPIRED",
+      detail: "人机验证凭据已过期或已使用过（每张凭据只能提交一次），请重新验证。"
+    };
+  }
+  if (code === "invalid-input-secret" || code === "missing-input-secret") {
+    return {
+      ok: false, status: 503, error: "TURNSTILE_MISCONFIGURED",
+      detail: "服务端人机验证密钥无效（TURNSTILE_SECRET_KEY 与 site key 不匹配），该接口暂时关闭。"
+    };
+  }
+  return { ok: false, status: 403, error: "TURNSTILE_FAILED", detail: "人机验证未通过，请重试。" };
+}
+
+// 挑战页：一段自包含 HTML。不加载任何本站资源，只有 Cloudflare 的 widget 脚本。
+//   三种状态都通过 postMessage 告诉父窗口（扩展），避免「页面白屏、扩展一直转圈」：
+//     {type:'off'}    服务端没开人机验证 → 扩展照常发送
+//     {type:'error'}  配置/加载失败      → 扩展明确报错，不静默失败
+//     {type:'token'}  验证通过           → 扩展把 token 拼进请求体
+// 不加严格 CSP：Turnstile 的 api.js 自身会注入内联样式与 iframe，配错 CSP 的代价是
+//   「谁也发不出反馈」，而这张页面上没有任何用户数据可被 XSS 偷走（不读 cookie、不带凭据）。
+function turnstileChallengeHtml(env, opts) {
+  var o = opts || {};
+  var theme = (o.theme === "light" || o.theme === "dark") ? o.theme : "auto";
+  var siteKey = turnstileSiteKey(env);
+  var on = turnstileEnabled(env);
+  var mode, reason = "";
+  if (!on) mode = "off";
+  else if (!siteKey) { mode = "error"; reason = "no-sitekey"; }
+  else mode = "on";
+
+  var boot = "{mode:" + JSON.stringify(mode)
+    + ",siteKey:" + JSON.stringify(mode === "on" ? siteKey : "")
+    + ",theme:" + JSON.stringify(theme)
+    + ",reason:" + JSON.stringify(reason)
+    + ",api:" + JSON.stringify(TURNSTILE_API_JS) + "}";
+
+  var lines = [
+    "<!DOCTYPE html>",
+    '<html lang="zh-CN"><head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    "<title>人机验证</title>",
+    "<style>",
+    "html,body{margin:0;padding:0;background:transparent}",
+    'body{min-height:72px;display:flex;align-items:center;justify-content:center;',
+    'font:13px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;',
+    "color:#8b96a8}",
+    "#sfbW{display:flex;justify-content:center}",
+    "#sfbTip{font-size:12px;opacity:.7;padding:8px 6px;text-align:center}",
+    "</style>",
+    "</head><body>",
+    '<div id="sfbW"></div>',
+    '<div id="sfbTip">正在加载人机验证…</div>',
+    "<script>",
+    "(function(){",
+    "  var CFG = " + boot + ";",
+    "  var tip = document.getElementById('sfbTip');",
+    "  function toParent(m){ m.source='sfb-challenge'; try{ parent.postMessage(m,'*'); }catch(e){} }",
+    "  if (CFG.mode === 'off') { toParent({type:'off'}); return; }",
+    "  if (CFG.mode === 'error') { tip.textContent='人机验证未配置'; toParent({type:'error',reason:CFG.reason}); return; }",
+    "  var done = false, rendered = false;",
+    "  function pass(t){ if(done) return; done = true; tip.textContent=''; toParent({type:'token',token:t}); }",
+    "  window.sfbTsOnload = function(){",
+    "    if (document.getElementById('sfbW').childNodes.length) return;",
+    "    if (!window.turnstile) { tip.textContent='验证组件加载失败'; toParent({type:'error',reason:'script'}); return; }",
+    "    rendered = true; tip.textContent='';",
+    "    try {",
+    "      window.turnstile.render('#sfbW', {",
+    "        sitekey: CFG.siteKey, theme: CFG.theme, language: 'zh-cn',",
+    "        callback: pass,",
+    "        'error-callback': function(c){ toParent({type:'error',reason:String(c||'widget')}); return true; },",
+    "        'expired-callback': function(){ done = false; tip.textContent='验证已过期，请重新勾选'; },",
+    "        'timeout-callback': function(){ done = false; tip.textContent='验证超时，请重新勾选'; }",
+    "      });",
+    "    } catch (e) { toParent({type:'error',reason:'render'}); }",
+    "  };",
+    "  setTimeout(function(){ if(!rendered) toParent({type:'error',reason:'timeout'}); }, 12000);",
+    "})();",
+    "</" + "script>",
+    '<script src="' + TURNSTILE_API_JS + '" async defer></' + "script>",
+    "</body></html>"
+  ];
+  return lines.join("\n");
 }
 
 function leftMs(deadline) {
@@ -1011,7 +1273,9 @@ var index_default = {
     // 来源校验前置：不在白名单的 Origin 一律 403（含 OPTIONS 预检）。
     //   2026-11-27 起 403 也带 CORS 头（见 corsFor 注释）：扩展侧能读到 error/detail 原文，
     //   而不是被浏览器折叠成一句 TypeError('Failed to fetch')。响应体里没有任何名单数据。
-    const cors = corsFor(request, env);
+    //   例外：反馈提交（/list、/health 之外的路径）不看 Origin —— 它用 HMAC 签名鉴权，见 verifyFeedbackSignature。
+    const url = new URL(request.url);
+    const cors = corsFor(request, env, isFeedbackPath(url.pathname));
     if (!cors.ok) {
       console.warn("[cors] 拒绝未授权来源：" + (request.headers.get("Origin") || "(none)"));
       return new Response(JSON.stringify({
@@ -1026,7 +1290,24 @@ var index_default = {
       return new Response(null, { status: 204, headers: cors.headers });
     }
 
-    const url = new URL(request.url);
+    // ==========================================
+    // 功能 A-1: 人机验证挑战页 (GET /challenge)
+    //   由扩展在 iframe 里加载（扩展页面 CSP 禁止远程脚本，但不禁止 iframe）。
+    //   页面只做一件事：换一张 Turnstile 凭据，postMessage 回父窗口。
+    // ==========================================
+    if (request.method === "GET" && url.pathname === "/challenge") {
+      return new Response(turnstileChallengeHtml(env, { theme: url.searchParams.get("theme") }), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+          "X-Content-Type-Options": "nosniff",
+          "X-Robots-Tag": "noindex",
+          ...cors.headers
+        }
+      });
+    }
 
     // ==========================================
     // 功能 A: 实时拉取并返回名单 (GET /list)
@@ -1176,6 +1457,9 @@ var index_default = {
         ok: !!summary,
         kvBound: !!kv,
         note: kv ? null : "未绑定 HEALTH KV：巡检结果只在 cron 日志里。新建命名空间后把 id 填进 wrangler.toml 再部署。",
+        // 人机验证开关的「现场证据」：不用翻 Cloudflare 后台，curl 一下就知道有没有生效。
+        //   只回状态，不回 site key / secret（前者公开但没必要，后者绝不能出）。
+        turnstile: turnstileEnabled(env) ? (turnstileSiteKey(env) ? "on" : "misconfigured") : "off",
         mail: mail,   // 只有带 &mail=1 时非 null
         summary: summary
       }, null, 2), {
@@ -1195,6 +1479,22 @@ var index_default = {
     }
 
     try {
+      // ① 先取原文：验签要用**原始字节**，而 request body 只能读一次，
+      //    所以这里读 text、验签、再 JSON.parse（不再调用 request.json()）。
+      let rawBody = "";
+      try { rawBody = await request.text(); } catch (e) { rawBody = ""; }
+
+      // ② 验签放在限流与发信之前：没有密钥的请求连 KV 配额都碰不到、更不会触发发信。
+      //    失败一律 401（缺头/时间窗/签名不符），密钥没配则是 503，语义分开便于排查。
+      const auth = await verifyFeedbackSignature(request, rawBody, env);
+      if (!auth.ok) {
+        console.warn("[feedback] 拒绝： " + auth.error + " ip=" + (request.headers.get("CF-Connecting-IP") || "?"));
+        return new Response(JSON.stringify({ error: auth.error, detail: auth.detail }), {
+          status: auth.status,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...cors.headers }
+        });
+      }
+
       const clientIP = request.headers.get("CF-Connecting-IP") || "unknown";
       const today = (new Date()).toISOString().split("T")[0];
       const kvKey = `rate_limit_${clientIP}_${today}`;
@@ -1209,14 +1509,34 @@ var index_default = {
         });
       }
 
-      const data = await request.json();
-      const feedbackText = data.message;
-      const userContact = data.contact || "未提供";
+      let data;
+      try {
+        data = JSON.parse(rawBody);
+      } catch (e) {
+        return new Response(JSON.stringify({ error: "INVALID_JSON", detail: "请求体不是合法的 JSON。" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...cors.headers }
+        });
+      }
+      const feedbackText = data && data.message;
+      const userContact = (data && data.contact) || "未提供";
 
       if (!feedbackText || typeof feedbackText !== "string" || feedbackText.length > 2000) {
         return new Response(JSON.stringify({ error: "无效的反馈内容或长度超过限制。" }), {
           status: 400,
           headers: { "Content-Type": "application/json", ...cors.headers }
+        });
+      }
+
+      // ④ 人机验证（可选）：只有配了 TURNSTILE_SECRET_KEY 才生效，未配时整段透明跳过。
+      //    位置在「验签之后、发信之前」：签名不合格的请求连 siteverify 的子请求都不会发出去；
+      //    token 单次有效，所以这里验过就再也用不了第二次。
+      const turnstile = await verifyTurnstile((data && data.turnstileToken) || "", clientIP, env);
+      if (!turnstile.ok) {
+        console.warn("[turnstile] 拒绝： " + turnstile.error + " ip=" + clientIP);
+        return new Response(JSON.stringify({ error: turnstile.error, detail: turnstile.detail }), {
+          status: turnstile.status,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...cors.headers }
         });
       }
 

@@ -458,6 +458,7 @@
             </div>
             <div class="hint list-mail-note" data-page-node-id="SF_MAIL_WHITE_NOTE">只发送上方输入框里的域名（每行一个），不会上传浏览记录。作者整理后会择优并入云端白名单。</div>
             <div class="hint list-mail-msg" id="mailWhiteMsg" hidden></div>
+            <div class="fb-challenge" id="mailWhiteChallenge" hidden></div>
           </div>
         </div>
       </section>
@@ -486,6 +487,7 @@
             </div>
             <div class="hint list-mail-note" data-page-node-id="SF_MAIL_BLACK_NOTE">只发送上方输入框里的域名（每行一个），不会上传浏览记录。作者复核后会择优并入云端黑名单。</div>
             <div class="hint list-mail-msg" id="mailBlackMsg" hidden></div>
+            <div class="fb-challenge" id="mailBlackChallenge" hidden></div>
           </div>
           <!-- ★ 2026-11-23：用户自定义「黑名单例外」 -->
           <div class="field">
@@ -744,6 +746,11 @@
               <span class="upd-checking" id="fbSpin" hidden>发送中…</span>
             </div>
             <div class="hint" id="fbMsg" hidden></div>
+            <!-- 人机验证（Turnstile）挂载点：由 options.js 在服务端要求验证时现场插入一张 iframe。
+                 默认 hidden、不占位；验证通过或失败后会被清空并再次隐藏。
+                 为什么是 iframe：MV3 扩展页面的 CSP 是 script-src 'self'，不能引 Cloudflare 的远程脚本，
+                 但可以嵌远程页面。挑战页由我们自己的 Worker 提供（GET /challenge）。 -->
+            <div class="fb-challenge" id="fbChallenge" hidden></div>
           </div>
         </div>
 
@@ -820,9 +827,9 @@
   <script src="../rules/analyzer.js?v=20261124"></script>
   <script src="../rules/liststore.js"></script>
   <script src="../crypto-helper.js"></script>
-  <script src="feedback-config.js?v=20261102"></script>
+  <script src="feedback-config.js?v=20261127"></script>
   <!-- ★ 2026-11-23：明暗模式控制器需先于 options.js 执行（applyAppearance 会读取 isLight） -->
   <script src="theme-mode.js?v=20261123"></script>
-  <script src="options.js?v=20261126b"></script>
+  <script src="options.js?v=20261127b"></script>
 </body>
 </html>

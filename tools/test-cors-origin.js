@@ -43,8 +43,8 @@ t('默认放行任意扩展来源', ctx.ALLOW_ANY_EXTENSION === true, String(ctx
 // ---------- 2. 通配：任意扩展 ID ----------
 {
   t('任意扩展 ID（换台电脑的新 ID）都能过', originMatch('chrome-extension://*', 'chrome-extension://abcdefghijklmnopabcdefghijklmnop') === true);
-  t('老 ID 依然能过', originMatch('chrome-extension://*', 'chrome-extension://hckibmmlfmcgpelphibapghnlbcjkmih') === true);
-  t('前缀必须一致：别的协议不算扩展', originMatch('chrome-extension://*', 'moz-extension://abc') === false);
+  t('旧版本 ID 依然能过', originMatch('chrome-extension://*', 'chrome-extension://hckibmmlfmcgpelphibapghnlbcjkmih') === true);
+  t('前缀必须一致：其他协议不算扩展', originMatch('chrome-extension://*', 'moz-extension://abc') === false);
   t('普通网页不能冒充扩展', originMatch('chrome-extension://*', 'https://evil.com') === false);
   t('通配不跨越 scheme 前缀', originMatch('chrome-extension://*', 'chrome-extensionx//abc') === false);
 }
@@ -93,6 +93,13 @@ t('默认放行任意扩展来源', ctx.ALLOW_ANY_EXTENSION === true, String(ctx
 
   const none = corsFor(req(''), {});
   t('无 Origin（curl/健康检查）：给数据、不给跨源许可', none.ok === true && Object.keys(none.headers).length === 0, JSON.stringify(none.headers));
+
+  // /send（反馈提交）不看 Origin：门禁换成 HMAC 签名，但 CORS 头必须给，否则读不到 401 原因
+  const sendFromWeb = corsFor(req('https://any-site.example'), {}, true);
+  t('反馈路径：网页来源也放行 CORS（靠签名挡，不靠 Origin）', sendFromWeb.ok === true, JSON.stringify(sendFromWeb));
+  t('反馈路径：仍然回显具体 Origin', sendFromWeb.headers['Access-Control-Allow-Origin'] === 'https://any-site.example');
+  t('反馈路径：预检允许自带签名头', /X-SF-Sig/.test(sendFromWeb.headers['Access-Control-Allow-Headers'] || ''), JSON.stringify(sendFromWeb.headers));
+  t('非反馈路径：同一网页来源照旧 403', corsFor(req('https://any-site.example'), {}, false).ok === false);
 
   // 严格模式开关一旦关闭，扩展来源也要逐个列
   const strict = allowedOrigins({ ALLOWED_ORIGINS: '' }).filter((x) => x !== 'chrome-extension://*');
