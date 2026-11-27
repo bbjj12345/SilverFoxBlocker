@@ -158,10 +158,23 @@ function sfbDescribeMailFailure(err, endpoint) {
       + '\n可先更新扩展（必要时重装）后再试；若仍失败，多半是服务端还在跑旧版本。';
   }
   // 人机验证阶段的失败：请求还没发出去（或验证页没加载出来），别让人去查 DNS/防火墙
+  // 旧：一句「请确认能正常打开 challenges.cloudflare.com」套所有情况 —— 对 no-sitekey 这种
+  //   服务端配置缺失是明确的误导（用户怎么查网络都没用）。改为按 reason 分开给「下一步」。
   if (e.sfbStage === 'turnstile') {
+    var tsReason = String(e.sfbReason || '');
+    var tsNext;
+    if (tsReason === 'no-sitekey' || tsReason === 'render') {
+      tsNext = '这条是服务端（作者的）配置问题，与你的网络无关，重试也不会好；'
+        + '请改用「发送反馈到GitHub Issue」，或等作者修好配置后再发。';
+    } else if (tsReason === 'script' || tsReason === 'timeout') {
+      tsNext = '这一步需要访问 challenges.cloudflare.com，它打不开（代理 / 网络 / 防火墙拦截）验证框就出不来；'
+        + '可换网络再试，或改用「发送反馈到GitHub Issue」。';
+    } else {
+      tsNext = '可重试一次；若反复失败，请改用「发送反馈到GitHub Issue」。';
+    }
     return '发送失败：人机验证没有完成\n'
       + '原因：' + String(e.sfbDetail || e.message || '验证组件未能加载')
-      + '\n可重试；若反复失败，请确认能正常打开 challenges.cloudflare.com，或改用「发送反馈到GitHub Issue」。';
+      + '\n' + tsNext;
   }
   if (!sfbIsNetError(e)) return '发送失败：' + String(e.message || e || '未知错误');
   // 已知离线时当场下结论；其余情况留白，交给 sfbReportMailFailure 探测后补「诊断」行

@@ -43,7 +43,8 @@ GITEE_REPO = "silver-fox-blocker-cloud"
 #   注意：这个 site key 必须是「给 api.silverfoxblocker.dpdns.org 用」的那个 widget，
 #   Turnstile 后台可以限制 hostname；限制错了会显示 invalid-hostname。
 # ============================================================================
-# TURNSTILE_SITE_KEY = "0x4AAAAAAGVz3ovQlQiJuifk"
+# 旧：一行被注释掉的占位，容易被误以为已配置 —— 2026-11-27 取消注释，真实生效。
+TURNSTILE_SITE_KEY = "0x4AAAAAAGVz3ovQlQiJuifk"
 
 # 巡检结果邮件的收件人（可选）。
 # 默认发到 feedback@silverfoxblocker.dpdns.org，再由 Cloudflare Email Routing 转发到
