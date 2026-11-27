@@ -433,7 +433,10 @@ function sfbPostFeedback(endpoint, payload) {
  *   验完自动重发。这样没开 Turnstile 的部署完全不受影响，也不存在「扩展配置与服务端不同步」。
  * token 单次有效（Cloudflare 侧 5 分钟过期、用过即废），所以每次重试都重新换一张。
  */
-var SFB_TS_TIMEOUT_MS = 90000;   // 等用户勾选的上限；超时说明挑战页根本没加载出来
+// 2026-11-28（v1.14.9）：挑战页每轮渲染等待从 12 秒放宽到 30 秒，并允许「点击重试」一次。
+//   所以这里从 90 秒放宽到 120 秒 = 30 + 30 + 60（给用户发现按钮并点击的留白）。
+//   两次都超时时挑战页会自己回 error/timeout，这里只是「连 iframe 都没加载出来」的兜底。
+var SFB_TS_TIMEOUT_MS = 120000;
 
 function sfbTsError(reason, detail) {
   var er = new Error(detail || '人机验证未完成');
@@ -452,7 +455,7 @@ function sfbChallengeUrl(endpoint) {
   try { light = !!(document.documentElement && document.documentElement.classList
     && document.documentElement.classList.contains('theme-light')); } catch (e) {}
   u.searchParams.set('theme', light ? 'light' : 'dark');
-  u.searchParams.set('v', '20261127');
+  u.searchParams.set('v', '20261128');
   return u.toString();
 }
 
@@ -501,7 +504,7 @@ function sfbTurnstileWait(endpoint, mount) {
     mount.hidden = false;
     mount.appendChild(iframe);
     timer = setTimeout(function () {
-      finish(sfbTsError('timeout', '人机验证组件 90 秒内没有完成（可能被网络、代理或拦截工具挡住）'));
+      finish(sfbTsError('timeout', '人机验证 120 秒内没有完成（可能被网络、代理或拦截工具挡住）'));
     }, SFB_TS_TIMEOUT_MS);
   });
 }
@@ -510,7 +513,7 @@ function sfbTsReasonText(reason) {
   var r = String(reason || '');
   if (r === 'no-sitekey') return '服务端只配了 TURNSTILE_SECRET_KEY，没配 TURNSTILE_SITE_KEY，人机验证无法显示';
   if (r === 'script') return '验证组件脚本加载失败（浏览器或网络拦截了 challenges.cloudflare.com）';
-  if (r === 'timeout') return '验证组件 12 秒内没有渲染出来（多为网络问题）';
+  if (r === 'timeout') return '验证组件 30 秒内没有加载出来，点击重试后仍未成功（多为网络问题）';
   if (r === 'render') return '验证组件初始化失败（site key 与域名不匹配？）';
   return '验证组件报错：' + (r || '未知原因');
 }
@@ -3979,7 +3982,7 @@ function cloudUrlCandidates(type) {
     SF_CLOUD_MIRROR_BRANCH + '/' + SF_CLOUD_MIRROR_DIR + '/' + file;
   const out = [{
     name: '云端接口',
-    // ★ 2026-11-27（v1.13.15）：服务端给 /list 加了 5 分钟缓存，用来挡住「循环拉接口」的滥用。
+    // ★ 2026-11-28（v1.14.9）：服务端给 /list 加了 5 分钟缓存，用来挡住「循环拉接口」的滥用。
     //   但用户点「从云端更新」是**手动动作**，多半刚改完名单、就想立刻看到效果，
     //   拿到 5 分钟前的旧份会以为「没更新成功」。所以手动拉取带 nocache=1。
     //   服务端对它设了 60 秒最短刷新间隔（防止这个参数自己变成绕过缓存的通道）：

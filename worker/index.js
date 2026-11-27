@@ -268,8 +268,11 @@ var TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/sitev
 var TURNSTILE_API_JS = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=sfbTsOnload";
 var TURNSTILE_MAX_TOKEN = 2048;              // 正常 token 约 1~2 KB，超长直接拒
 var TURNSTILE_TIMEOUT_MS = 6000;             // siteverify 超时：宁可让人重试，也别让请求挂死
+// 挑战页里「组件多久没渲染出来算超时」：30 秒（原来 12 秒，国内直连 Cloudflare 常被掐到 12 秒外）。
+//   第一次超时只显示「点击重试」，第二次仍超时才回 error/timeout，由扩展侧降级（3 次/天）。
+var CHALLENGE_RENDER_TIMEOUT_MS = 30000;
 var TURNSTILE_SECRET_MIN_LEN = 16;
-var FEEDBACK_DAILY_QUOTA = 60;               // 正常通道：每 IP 每天上限（与 v1.13.11 一致）
+var FEEDBACK_DAILY_QUOTA = 60;               // 正常通道：每 IP 每天上限
 var TURNSTILE_SOFT_QUOTA_DEFAULT = 3;        // 降级通道：没过人机验证时每 IP 每天上限
 
 function turnstileSiteKey(env) { return String((env && env.TURNSTILE_SITE_KEY) || "").trim(); }
@@ -278,10 +281,10 @@ function turnstileSecret(env) { return String((env && env.TURNSTILE_SECRET_KEY) 
 // ============================================================================
 // soft / strict（2026-11-27 修订，默认 soft）
 //
-// 起因：v1.13.12 是硬拦截 —— 没有任何 token 一律 403。可「拿不到 token」有两种完全不同的原因，
+// 起因：最初是硬拦截 —— 没有任何 token 一律 403。可「拿不到 token」有两种完全不同的原因，
 //   硬拦截把它们混为一谈：
 //     (a) 真是机器人 / 脚本；
-//     (b) 用户网络打不开 challenges.cloudflare.com（大陆网络下并不罕见），验证框 12 秒出不来，
+//     (b) 用户网络打不开 challenges.cloudflare.com（大陆网络下并不罕见），验证框 30 秒都出不来，
 //         重试多少次都一样 —— 人被永久挡在门外，且他没有任何自救手段。
 //
 // soft 的语义：人机验证是「配额通行证」，不是「门票」。
@@ -314,7 +317,7 @@ function turnstileEnabled(env) {
   return turnstileSecret(env).length >= TURNSTILE_SECRET_MIN_LEN;
 }
 
-/* 旧实现（v1.13.12）：无 token 一律 403 REQUIRED —— 硬拦截。
+/* 旧实现（v1.14.9 之前的硬拦截）：无 token 一律 403 REQUIRED。
 //   问题：把「机器人」和「网络打不开 challenges.cloudflare.com 的真实用户」判成同一类，
 //   后者重试多少次都会被挡，且没有任何自救手段。2026-11-27 起默认改为 soft，见上方说明。
 // // 返回 { ok:true, mode:'off'|'pass' } 或 { ok:false, status, error, detail }
@@ -477,6 +480,7 @@ function turnstileChallengeHtml(env, opts) {
     + ",siteKey:" + JSON.stringify(mode === "on" ? siteKey : "")
     + ",theme:" + JSON.stringify(theme)
     + ",reason:" + JSON.stringify(reason)
+    + ",slowMs:" + CHALLENGE_RENDER_TIMEOUT_MS
     + ",api:" + JSON.stringify(TURNSTILE_API_JS) + "}";
 
   var lines = [
@@ -492,6 +496,9 @@ function turnstileChallengeHtml(env, opts) {
     "color:#8b96a8}",
     "#sfbW{display:flex;justify-content:center}",
     "#sfbTip{font-size:12px;opacity:.7;padding:8px 6px;text-align:center}",
+    "#sfbTip button{margin-left:8px;padding:3px 10px;border-radius:6px;cursor:pointer;",
+    "font:inherit;color:inherit;background:rgba(127,127,127,.16);border:1px solid rgba(127,127,127,.45)}",
+    "#sfbTip button:hover{background:rgba(127,127,127,.28)}",
     "</style>",
     "</head><body>",
     '<div id="sfbW"></div>',
@@ -503,23 +510,51 @@ function turnstileChallengeHtml(env, opts) {
     "  function toParent(m){ m.source='sfb-challenge'; try{ parent.postMessage(m,'*'); }catch(e){} }",
     "  if (CFG.mode === 'off') { toParent({type:'off'}); return; }",
     "  if (CFG.mode === 'error') { tip.textContent='人机验证未配置'; toParent({type:'error',reason:CFG.reason}); return; }",
-    "  var done = false, rendered = false;",
-    "  function pass(t){ if(done) return; done = true; tip.textContent=''; toParent({type:'token',token:t}); }",
+    "  var done = false, rendered = false, used = 0, watchdog = null;",
+    "  var box = document.getElementById('sfbW');",
+    "  function clearWatch(){ if(watchdog){ try{clearTimeout(watchdog);}catch(e){} watchdog=null; } }",
+    "  function pass(t){ if(done) return; done = true; clearWatch(); tip.textContent=''; toParent({type:'token',token:t}); }",
+    "  function fail(r){ if(done) return; done = true; clearWatch(); toParent({type:'error',reason:String(r||'widget')}); }",
+    // 每次尝试各给 CFG.slowMs（30 秒）；第一次超时只出「点击重试」，第二次仍超时才报 timeout，
+    // 由扩展侧走降级通道（3 次/天）。used 在发起尝试时自增，最多 2 次。
+    "  function arm(){",
+    "    clearWatch();",
+    "    watchdog = setTimeout(function(){",
+    "      if (done || rendered) return;",
+    "      if (used >= 2) { tip.textContent='人机验证加载失败'; fail('timeout'); return; }",
+    "      showRetry();",
+    "    }, CFG.slowMs);",
+    "  }",
+    "  function showRetry(){",
+    "    if (done) return;",
+    "    tip.innerHTML = '<span>人机验证加载超时</span><button id=\"sfbRetry\" type=\"button\">点击重试</button>';",
+    "    var b = document.getElementById('sfbRetry');",
+    "    if (!b) return;",
+    "    b.onclick = function(){",
+    "      if (done) return;",
+    "      tip.textContent = '正在重试…';",
+    "      try { box.innerHTML = ''; } catch(e){}",
+    "      rendered = false; used = 2; arm();",
+    "      var s = document.createElement('script');",
+    "      s.src = CFG.api + '&r=' + used; s.async = true; s.defer = true;",
+    "      document.body.appendChild(s);",
+    "    };",
+    "  }",
     "  window.sfbTsOnload = function(){",
-    "    if (document.getElementById('sfbW').childNodes.length) return;",
-    "    if (!window.turnstile) { tip.textContent='验证组件加载失败'; toParent({type:'error',reason:'script'}); return; }",
-    "    rendered = true; tip.textContent='';",
+    "    if (done || box.childNodes.length) return;",
+    "    if (!window.turnstile) { tip.textContent='验证组件加载失败'; fail('script'); return; }",
+    "    rendered = true; clearWatch(); tip.textContent='';",
     "    try {",
     "      window.turnstile.render('#sfbW', {",
     "        sitekey: CFG.siteKey, theme: CFG.theme, language: 'zh-cn',",
     "        callback: pass,",
-    "        'error-callback': function(c){ toParent({type:'error',reason:String(c||'widget')}); return true; },",
+    "        'error-callback': function(c){ fail(String(c||'widget')); return true; },",
     "        'expired-callback': function(){ done = false; tip.textContent='验证已过期，请重新勾选'; },",
     "        'timeout-callback': function(){ done = false; tip.textContent='验证超时，请重新勾选'; }",
     "      });",
-    "    } catch (e) { toParent({type:'error',reason:'render'}); }",
+    "    } catch (e) { fail('render'); }",
     "  };",
-    "  setTimeout(function(){ if(!rendered) toParent({type:'error',reason:'timeout'}); }, 12000);",
+    "  used = 1; arm();",
     "})();",
     "</" + "script>",
     '<script src="' + TURNSTILE_API_JS + '" async defer></' + "script>",
@@ -633,7 +668,7 @@ async function readFromGitee(env, file, deadline) {
   return { ok: false, tries: tries };
 }
 // ============================================================================
-// /list 的「5 分钟缓存」（v1.13.15）
+// /list 的「5 分钟缓存」（v1.14.9）
 //
 // 为什么必须加：/list 原先没有任何缓存，**每个请求都真的去打一次 GitHub → Gitee**。
 //   配合「任意扩展来源放行」之后，任何人写个脚本循环 curl 就能：
@@ -1583,7 +1618,7 @@ var index_default = {
     //   加 ?diag=1 只回诊断信息（逐通道的尝试记录），不返回名单正文
     //   加 ?nocache=1 跳过缓存强制回源（改完名单想立刻看到效果时用）
     //   带 ?force=gitee|github 时同样穿透缓存 —— 它本来就是「强行验证某个源」的诊断开关
-    //   v1.13.15：正常请求走 5 分钟缓存，命中时**一个上游子请求都不发**
+    //   v1.14.9：正常请求走 5 分钟缓存，命中时**一个上游子请求都不发**
     // ==========================================
     if (request.method === "GET" && url.pathname === "/list") {
       const apiKey = request.headers.get("X-API-Key");
@@ -1773,7 +1808,7 @@ var index_default = {
       const today = (new Date()).toISOString().split("T")[0];
       const kvKey = `rate_limit_${clientIP}_${today}`;
 
-      // 旧顺序（v1.13.12）：限流(写死 60) → parse → 内容校验 → 验人机 → 发信。
+      // 旧顺序：限流(写死 60) → parse → 内容校验 → 验人机 → 发信。
       //   问题：soft 模式下「降级」的配额只有 3，必须在验完人机之后才知道，所以限流必须后移。
       //   新顺序：parse → 内容校验 → 验人机（拿 quota） → 限流（按 quota） → 发信。
       //   安全性没有变松：rawBody 已通过 HMAC 验签，parse 的是「持密钥的人发来的内容」；
