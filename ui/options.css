@@ -338,6 +338,11 @@ html.reduce-motion .sub-row, html.reduce-motion .sub-row.collapsed {
 .field { margin: 16px 0; }
 .field label { display: block; font-size: calc(13px * var(--sf-scale)); font-weight: 700; margin-bottom: 8px; }
 .field .hint { font-size: calc(11px * var(--sf-scale)); opacity: .55; margin: 6px 0 0; line-height: 1.5; }
+/* 邮件反馈 / 名单上报的失败诊断（2026-11-27）：原因是多行的（错误码 → 解释 → 接口主机名），
+   需要保留 \n 换行，并让过长的接口域名自动折行，避免撑破右侧卡片。
+   只作用于这两个提示位，不动通用 .hint（其它 hint 里可能有源码缩进空白，pre-line 会放出来）。 */
+#fbMsg,
+.list-mail-msg { white-space: pre-line; word-break: break-word; overflow-wrap: anywhere; }
 textarea {
   width: 100%; min-height: 84px; resize: vertical; border-radius: 12px; padding: 12px 14px;
   background: rgba(8,12,24,.5); border: 1px solid rgba(255,255,255,.14); color: #eaf0fa;

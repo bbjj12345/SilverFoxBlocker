@@ -32,12 +32,34 @@ var UA = "Cloudflare-Worker-SilverFox";
 //     到环境变量 ALLOWED_ORIGINS（逗号分隔）即可，不必改代码、不必重新部署。
 //   · Access-Control-Allow-Origin 只允许单个值（不支持逗号列表），因此必须按请求
 //     回显具体 Origin，并配合 Vary: Origin，避免 CDN / 浏览器缓存串源。
-// ============================================================================
+//
+// ----------------------------------------------------------------------------
+// 2026-11-27 修订：白名单支持通配符，且默认放行「任意浏览器扩展」
+//
+// 诱因：本地「加载已解压」的扩展 ID 由解压路径决定，换台电脑就换一个 ID。
+//   逐个 ID 往白名单里加根本追不上（用户看到的就是「发送失败：Failed to fetch」，
+//   而服务端日志里只有一句 403）。
+//
+// 判定顺序：精确字符串相等 → 通配匹配（`*` 匹配任意长度，含空）。
+//   ALLOWED_ORIGINS 里也可以写通配，例如：
+//     chrome-extension://*        任意 Chrome / Edge 扩展
+//     https://*.example.com       任意子域（注意：不含 example.com 本身，想含就写两条）
+//   匹配时**只有 `*` 是通配**，`.` `+` `(` 等一律按字面转义 —— 否则 `https://a.b.com`
+//   会被正则里的 `.` 宽松匹配到 `https://axbxcom`，白名单就成了筛子。
+// ----------------------------------------------------------------------------
 var EXTENSION_IDS = [
   "hckibmmlfmcgpelphibapghnlbcjkmih",   // Edge 商店版（已上架）
   "mfnbgkpnnfjpglcclfmakolmopcdkoed"    // 本地「加载已解压」实例（本机调试用；ID 由解压路径决定，换路径会变）
 ];
 
+// 是否默认放行「任意扩展来源」（chrome-extension://*）。
+//   为什么敢放：/list 的数据本身就托管在 GitHub 公开仓库，X-API-Key 随扩展包分发、
+//   从来不是秘密；Origin 白名单的真实作用只是「挡住普通网页在浏览器里读响应」。
+//   放行扩展来源之后，普通网页（https://…）依然被拦，这个边界没有变。
+//   想回到「只认固定 ID」的严格模式：把这一行改成 false，其余代码不用动。
+var ALLOW_ANY_EXTENSION = true;
+
+/* 旧实现（2026-11-11）：精确比对，不支持通配
 function allowedOrigins(env) {
   var extra = String((env && env.ALLOWED_ORIGINS) || "").split(",");
   var out = EXTENSION_IDS.map(function (id) { return "chrome-extension://" + id; });
@@ -47,24 +69,76 @@ function allowedOrigins(env) {
   }
   return out;
 }
+function corsFor(request, env) {
+  var origin = request.headers.get("Origin") || "";
+  if (!origin) return { ok: true, headers: {} };   // 非浏览器请求：给数据、不给跨源许可
+  if (allowedOrigins(env).indexOf(origin) === -1) return { ok: false, headers: {} };
+  ...
+}
+*/
+
+function allowedOrigins(env) {
+  var extra = String((env && env.ALLOWED_ORIGINS) || "").split(",");
+  var out = EXTENSION_IDS.map(function (id) { return "chrome-extension://" + id; });
+  if (ALLOW_ANY_EXTENSION) {
+    // 注意：Edge 的扩展来源同样是 chrome-extension://（不是 edge-extension://）
+    out.push("chrome-extension://*");
+  }
+  for (var i = 0; i < extra.length; i++) {
+    var v = extra[i].trim();
+    if (v) out.push(v);
+  }
+  return out;
+}
+
+// 单条模式匹配：精确相等，或 `*` 通配（`*` 可以出现在任意位置、可以有多条）
+function originMatch(pattern, origin) {
+  if (!pattern || !origin) return false;
+  if (pattern === origin) return true;
+  if (pattern.indexOf("*") === -1) return false;
+  // 先把正则元字符（含 `*` 自身）全部转义，再把转义后的 `\*` 换回「任意字符」
+  var body = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, "[\\s\\S]*");
+  var re;
+  try { re = new RegExp("^" + body + "$", "i"); } catch (e) { return false; }
+  return re.test(origin);
+}
+
+function allowedOriginHit(env, origin) {
+  var list = allowedOrigins(env);
+  for (var i = 0; i < list.length; i++) {
+    if (originMatch(list[i], origin)) return true;
+  }
+  return false;
+}
+
+// 跨源许可头：必须回显具体 Origin（ACAO 不支持逗号列表）
+function corsHeadersFor(origin) {
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
+    // 扩展侧要能读到「这份数据来自哪个源」，自定义响应头必须显式暴露
+    "Access-Control-Expose-Headers": "X-Data-Source, X-Data-Path",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin"
+  };
+}
+
+// 被拒时的最小跨源头：只回显 Origin + Vary，让客户端能读到 403 的 JSON 原因；
+//   不声明 Allow-Methods / Expose-Headers —— 那些是「允许你做什么」，被拒时一个都不给。
+function corsRejectHeadersFor(origin) {
+  return { "Access-Control-Allow-Origin": origin, "Vary": "Origin" };
+}
 
 // 返回 { ok, headers }：ok=false 表示来源不在白名单 → 调用方直接 403
 function corsFor(request, env) {
   var origin = request.headers.get("Origin") || "";
   if (!origin) return { ok: true, headers: {} };   // 非浏览器请求：给数据、不给跨源许可
-  if (allowedOrigins(env).indexOf(origin) === -1) return { ok: false, headers: {} };
-  return {
-    ok: true,
-    headers: {
-      "Access-Control-Allow-Origin": origin,
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
-      // 扩展侧要能读到「这份数据来自哪个源」，自定义响应头必须显式暴露
-      "Access-Control-Expose-Headers": "X-Data-Source, X-Data-Path",
-      "Access-Control-Max-Age": "86400",
-      "Vary": "Origin"
-    }
-  };
+  // 被拒时**也**回显 CORS 头（数据一个字节都不给，只给 403 的 JSON 说明）。
+  //   旧行为是被拒就不带 CORS 头，于是浏览器把 403 折成 TypeError('Failed to fetch')，
+  //   扩展侧只能笼统说「连不上」，用户和作者都分不清「网络不通」与「来源被拒」。
+  if (!allowedOriginHit(env, origin)) return { ok: false, headers: corsRejectHeadersFor(origin) };
+  return { ok: true, headers: corsHeadersFor(origin) };
 }
 
 function leftMs(deadline) {
@@ -934,17 +1008,18 @@ async function sendHealthMail(env, summary) {
 
 var index_default = {
   async fetch(request, env, ctx) {
-    // 来源校验前置：不在白名单的 Origin 一律 403（含 OPTIONS 预检），
-    // 且响应里不带 ACAO，浏览器侧读不到任何内容。
+    // 来源校验前置：不在白名单的 Origin 一律 403（含 OPTIONS 预检）。
+    //   2026-11-27 起 403 也带 CORS 头（见 corsFor 注释）：扩展侧能读到 error/detail 原文，
+    //   而不是被浏览器折叠成一句 TypeError('Failed to fetch')。响应体里没有任何名单数据。
     const cors = corsFor(request, env);
     if (!cors.ok) {
       console.warn("[cors] 拒绝未授权来源：" + (request.headers.get("Origin") || "(none)"));
       return new Response(JSON.stringify({
         error: "Origin not allowed",
-        detail: "该来源未被授权访问本接口。仅限已上架的 SilverFoxBlocker 扩展调用。"
+        detail: "该来源未被授权访问本接口。仅限 SilverFoxBlocker 扩展（chrome-extension://）调用。"
       }), {
         status: 403,
-        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...cors.headers }
       });
     }
     if (request.method === "OPTIONS") {

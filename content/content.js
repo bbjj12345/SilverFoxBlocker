@@ -513,12 +513,20 @@
       const put = NATIVE.appendChild;
       // ★ 2026-11-23：下载器接管提示（静态说明，非检测结果）。只在用户装了 IDM/迅雷 时才有意义，
       //   但扩展无法枚举其它扩展，只能给「若你安装了…」的条件式文案，避免误导。
+      // ★★ 2026-11-27：这条提示**始终显示**，不再受「下载器接管提示」开关控制。
+      //   原因：它描述的是「点『继续下载』会发生什么」（浏览器会再下一份），属于操作后果告知，
+      //   不是「我们检测到了下载器」这种条件式情报，关掉开关也不该让用户看不见。
+      //   旧实现（仅开关打开时显示一句「可能已接管」，且不提双份）保留在下面：
+      // if (dlMgrNoticeOn) {
+      //   note = document.createElement('div');
+      //   note.className = 'sf-xb-note';
+      //   note.textContent = '提示：若你安装了 IDM / 迅雷 等下载器，它可能在点击瞬间就已接管该链接；本扩展无法拦截原生下载器，请到下载器里检查并取消。';
+      // }
       let note = null;
-      if (dlMgrNoticeOn) {
-        note = document.createElement('div');
-        note.className = 'sf-xb-note';
-        note.textContent = '提示：若你安装了 IDM / 迅雷 等下载器，它可能在点击瞬间就已接管该链接；本扩展无法拦截原生下载器，请到下载器里检查并取消。';
-      }
+      note = document.createElement('div');
+      note.className = 'sf-xb-note';
+      note.textContent = '若已安装第三方下载器，请优先在下载器中取消该任务；若点击「继续下载」，则浏览器接管下载任务，会导致本次下载两个相同文件。'
+        + (dlMgrNoticeOn ? '（IDM / 迅雷 / NDM / FDM 等会自行抓取链接，本扩展拦不住原生下载器。）' : '');
       if (put) { put.call(row, no); put.call(row, ok); }
       else { row.appendChild(no); row.appendChild(ok); }
       if (put) { put.call(bar, t); put.call(bar, d); if (note) put.call(bar, note); put.call(bar, row); }
@@ -2857,8 +2865,12 @@
       '<button class="sf-btn sf-btn-continue" id="sf-dl-allow" data-sf-act="dl-allow" type="button">仍要下载</button>' +
       '</div>' +
       '<p class="sf-foot">仅当您明确信任该文件来源时才选择「仍要下载」。</p>' +
-      // ★ 2026-11-23：下载器接管提示（有条件显示，设置页可关）。见 showExeConfirmBar 上方说明。
-      (dlMgrNoticeOn ? '<p class="sf-foot">若已安装 IDM、迅雷等下载器，它可能在点击瞬间就绕过扩展拦截，直接抓取链接并开始下载；本扩展无法拦截原生下载器。如果这不是您的本意，请到对应的下载器页面检查并取消相关下载任务。</p>' : '') +
+      // ★★ 2026-11-27（一·B）：这条**始终显示**，不受「下载器接管提示」开关控制。
+      //   它描述的是点按钮的后果（浏览器会再下一份），属于操作告知，不是「检测到下载器」的情报。
+      //   旧实现（仅开关打开时显示一句「可能已接管」，且不提双份）保留在下面：
+      // (dlMgrNoticeOn ? '<p class="sf-foot">若已安装 IDM、迅雷等下载器，它可能在点击瞬间就绕过扩展拦截…</p>' : '') +
+      '<p class="sf-foot sf-foot-warn">若已安装第三方下载器，请优先在下载器中取消该任务；若点击「仍要下载（继续下载）」，则浏览器接管下载任务，会导致本次下载两个相同文件。</p>' +
+      (dlMgrNoticeOn ? '<p class="sf-foot">IDM / 迅雷 / NDM / FDM 等会在点击瞬间就抓取链接并由原生进程下载，本扩展拦不住它们；「保持拦截」只阻止浏览器这一路。</p>' : '') +
       '</div>';
     let overlayRef = null;
     const mounted = sfMountOverlay({
@@ -4349,7 +4361,13 @@
     if (msg && msg.type === 'sf-dl-taken-over') {
       try {
         const f = msg.filename ? ('「' + String(msg.filename).slice(0, 80) + '」') : '该文件';
-        showToast('该下载（' + f + '）已被 IDM / 迅雷 等下载器接管，扩展未再重复发起。若不是你要的文件，请到下载器里取消。');
+        // ★ 2026-11-27：区分「被下载器接走」和「已经下完了」——
+        //   前者用户还有救（去下载器里取消），后者只能提示检查/删除。
+        if (msg.stage === 'complete') {
+          showToast('⚠️ ' + f + ' 已完成下载，扩展未能拦截。请自行检查，必要时删除。');
+        } else {
+          showToast('⚠️ ' + f + ' 未被拦截：请优先在下载器中取消；点击「继续下载」会重复下载相同的文件。');
+        }
       } catch (e) {}
     }
     // ★ 2026-11-24：高危文件「暂停 + 询问」——后台已取消本次下载，这里挂非阻塞确认条。

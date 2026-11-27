@@ -1680,6 +1680,20 @@
     }
     return _brandCombinedRe;
   }
+  // ⚠️ 2026-11-27 误报治理：下载链接 blob 里「品牌词」与「文件扩展名 / 平台名」会撞车。
+  //   实测两例官网官下载页被判危（116 分），其中一条主因就在于此：
+  //     · www.libreoffice.org：文件名 LibreOffice_26.8.3_Win_x86-64.msi 的 **.msi 扩展名**
+  //       被当成品牌词「msi」（微星），叠加「可执行文件」判据 → 「品牌仿冒安装包」+40 强特征；
+  //     · www.onlyoffice.com：.../install/mobile/android/onlyoffice-documents.apk 命中平台名「android」。
+  //   两者都不是「第三方站点分发他人品牌安装包」，是纯结构误报。匹配前先抹掉这两类 token：
+  //     · **只抹「点 + 扩展名」形式**（.msi）——绝不碰路径段（/msi/）与词内（MSI_Afterburner 仍命中）；
+  //     · 平台/系统名不参与「品牌安装包」判定（android 不是可被仿冒的软件品牌）。
+  //   告警文案仍用原始 text，不影响可读性。
+  const _BRAND_BLOB_EXT_RE = /\.(?:msi|msix|msixbundle|exe|apk|apks|xapk|dmg|pkg|deb|rpm|zip|rar|7z|tar|gz|tgz|bz2|xz|iso|jar|crx|xpi|vsix|cab|appimage)(?![a-z0-9])/gi;
+  const _BRAND_BLOB_PLATFORM_RE = /(?:^|[^a-z0-9])(?:android|ios|ipados|windows|linux|macos|osx|darwin|ubuntu|debian|centos|fedora|arm64|x86|x64|amd64|win32|win64)(?=[^a-z0-9]|$)/gi;
+  function _cleanBrandBlob(s) {
+    return String(s || '').replace(_BRAND_BLOB_EXT_RE, ' ').replace(_BRAND_BLOB_PLATFORM_RE, ' ');
+  }
   // 一次判定 blob（已小写）是否含任意品牌词。返回 Boolean，供维度快速早退。
   function blobHasBrand(blob) {
     const re = _getBrandCombinedRe();
@@ -2411,6 +2425,15 @@
   //   ⑤ 命中只给 45 分并标记 soft —— **不进 STRONG 组合升级**，否则「近似拼写」单条就会判死，
   //      webchat.com / deepseeker.com 这类英文词撞车立刻变成误拦。
   const BRAND_VARIANT_MIN_KW = 6;
+  // ⚠️ 2026-11-27 误报治理：「通用名词型品牌词」不参与拼接 / 插入判定。
+  //   实测 www.libreoffice.org 与 www.onlyoffice.com 被判「域名仿冒官方品牌（拼写变体）」30 分：
+  //   `libre`/`only` + `office` 被当作「品牌词 + 填充片段」的拼接式仿冒。但 office 是**通用英文名词**
+  //   （办公室/办公软件），它作为后缀出现在自有品牌里是常态：libreoffice / onlyoffice / openoffice。
+  //   同理 android 是平台名而非可被仿冒的软件品牌。
+  //   注意这只影响**嵌入与插入**两条弱分支；basic 的段匹配（office-login.xxx.top → token `office` 60 分）、
+  //   typo（offlce）与数字形近照常生效——真仿冒不靠这条 30 分的软信号定案。
+  //   扩充原则与 _TYPO_EN_STOPWORDS 一致：**只收实测撞上的词**，加词前先跑一遍英文词表与真实站点。
+  const _VARIANT_SKIP_KW = new Set(['office', 'android']);
   // 额外字母若恰好是常见英文派生词缀（deepseek+ers / +ing / +ly），更像正常构词而非仿冒 → 不计。
   // ⚠️ 存的是**排序后**的词缀（'ing'→'gin'），与 _sortedChars(extra) 比对，避免插入顺序影响判定。
   const _VARIANT_EXTRA_AFFIX = new Set(['s', 'es', 'er', 'ers', 'ing', 'ings', 'ed', 'ly', 'ies', 'al', 'ic', 'ical',
@@ -2616,7 +2639,11 @@
         // ---- B②：品牌词 + 2~3 个额外字母（额外部分不是常见英文词缀）----
         if (diff >= 2 && cand.length > kw.length && cand.charCodeAt(0) === kw.charCodeAt(0) && lcp >= 3) {
           const extra = _extraLetters(cand, kw);
-          if (extra && !_VARIANT_EXTRA_AFFIX.has(_sortedChars(extra))) {
+          // 旧：if (extra && !_VARIANT_EXTRA_AFFIX.has(_sortedChars(extra))) {
+          //   ⚠️ 2026-11-27：通用名词型品牌词（office / android）不走「插入式仿冒」，
+          //   否则 xxxoffice.com 这类自有品牌会被当成「品牌词 + 填充字母」。只挡 B②，
+          //   同循环后面的 A（编辑距离）仍照常判 offlce 这类真错拼。
+          if (extra && !_VARIANT_EXTRA_AFFIX.has(_sortedChars(extra)) && !_VARIANT_SKIP_KW.has(kw)) {
             // 与「分片拼接」同口径：额外部分若是站点性质词（deepseekfan / deepseektools），
             // 和 my-deep-seek-app 一样属于「品牌词 + 填充词」，降为 30 分弱信号。
             if (_VARIANT_WEAK_CTX.has(extra)) {
@@ -2651,6 +2678,8 @@
     for (const item of prep.contain) {
       for (const kw of SPOOF_KEYWORDS_LONG) {
         if (kw.length < BRAND_VARIANT_MIN_KW) continue;
+        // ⚠️ 2026-11-27：通用名词型品牌词不参与嵌入判定（libreoffice / onlyoffice 曾被判 30 分）
+        if (_VARIANT_SKIP_KW.has(kw)) continue;
         if (item.text === kw) continue;
         const c = _variantContain(item.text, kw);
         if (!c) continue;
@@ -3508,7 +3537,11 @@
       if (isTrustedDownloadHost(lh)) continue;
       // 链接指向品牌自己的官网 → 是官方下载入口，不是仿冒投递
       if (isOfficialDomain(lh)) continue;
-      const blob = ((l.href || '') + ' ' + (l.text || '')).toLowerCase();
+      // 旧：直接用原始 blob 匹配，导致 `.msi` 扩展名 / `android` 平台名被当品牌词（见 _cleanBrandBlob）
+      // const blob = ((l.href || '') + ' ' + (l.text || '')).toLowerCase();
+      // if (blobHasBrand(blob)) {
+      //   const b = _matchedBrand(blob);
+      const blob = _cleanBrandBlob(((l.href || '') + ' ' + (l.text || '')).toLowerCase());
       if (blobHasBrand(blob)) {
         const b = _matchedBrand(blob);
         return mk(true, 40, '品牌仿冒安装包',
@@ -3541,8 +3574,10 @@
     const lowerHtml = data._lowerHtml;
     const hasDistWording = /(安装包|客户端|pc版|电脑版|官方版|完整版|绿色版|本地下载|最新版|修复补丁|离线安装包|升级包|离线包|便携版|免安装版|纯净版|高速下载)/.test(lowerHtml);
     if (!hasDistWording) return mk(false, 0, '品牌软件下载站', '');
-    if (blobHasBrand(scope)) {
-      const b = _matchedBrand(scope);
+    // 与 detBrandedExe 同口径：先抹掉扩展名 / 平台名，避免 `.msi`、`android` 被当品牌词
+    const brandScope = _cleanBrandBlob(scope);
+    if (blobHasBrand(brandScope)) {
+      const b = _matchedBrand(brandScope);
       // ⚠️ 2026-10-27 自品牌豁免：命中品牌词恰好是页面自身主品牌（如 kaspersky 官网下载页标题含
       //   kaspersky）→ 这是品牌方自己的下载页，不是「以品牌名义投递」的软件目录站，不计分。
       if (b && b === pageBrand) return mk(false, 0, '品牌软件下载站', '');

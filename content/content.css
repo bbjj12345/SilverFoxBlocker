@@ -92,6 +92,14 @@
   box-shadow: 0 8px 24px rgba(255,120,160,.2), inset 0 1px 0 rgba(255,157,187,.28) !important; }
 .sf-tip,
 .sf-foot { margin: 14px 0 0 !important; font-size: calc(11.5px * var(--sf-scale)) !important; text-align: center !important; opacity: .58 !important; line-height: 1.5 !important; }
+/* ★ 2026-11-27：拦截弹窗里的「双份文件」警告。
+   不能沿用 .sf-foot 的 .58 透明度 —— 这条说的是「点按钮会发生什么」，必须读得清。 */
+.sf-overlay .sf-foot-warn {
+  opacity: 1 !important;
+  color: #ffd08a !important;
+  -webkit-text-fill-color: #ffd08a !important;
+  margin-top: 10px !important;
+}
 
 .sf-toast { position: fixed !important; left: 50% !important; bottom: 28px !important; transform: translateX(-50%) !important; z-index: 2147483647 !important;
   background: rgba(20,16,22,.86) !important; border: 1px solid rgba(255,140,140,.4) !important; color: #ffd9d9 !important;

@@ -121,15 +121,52 @@ function notifyCloudListsUpdated() {
 }
 
 // 用户在当前会话里「仍要下载」明确放行的下载 URL（避免重复拦截；SW 重启后清空，会重新询问，安全）
-const allowedDownloads = new Set();
-function addAllowedDownload(url) { if (url) allowedDownloads.add(url); }
+// ★★ 2026-11-27（四·A）：键与生命周期都收紧了。旧实现（保留备查）：
+//   const allowedDownloads = new Set();
+//   function addAllowedDownload(url) { if (url) allowedDownloads.add(url); }
+//   三个问题（实测 2026-11-27 两个只差 Signature 的直链正好暴露了前两条）：
+//     ① 键是**完整 URL** —— 对象存储直链每次都带新的 Signature / Expires，下次放行又变成新键（记不住）；
+//        而同一个 URL 一旦放行，整会话内连硬黑名单都绕过（忘不掉）；
+//     ② 没有时效 —— 放过一次就永久免检；
+//     ③ 不区分标签页 —— A 页（正规站）放行的 URL，在 B 页（危险站）再触发也照样放过。
+//   新实现：键归一为 `host + path`（丢查询串）、10 分钟 TTL、记账时绑定当时的标签页。
+const ALLOWED_DL_TTL_MS = 10 * 60 * 1000;
+const allowedDownloads = new Map();   // key -> { exp: 过期时间戳, tab: 绑定标签页（可为 null） }
+function _allowedDlKey(url) {
+  try {
+    const u = new URL(String(url));
+    return (u.hostname || '').toLowerCase() + (u.pathname || '/');
+  } catch (e) { return ''; }
+}
+function _allowedDlPrune() {
+  const now = Date.now();
+  allowedDownloads.forEach(function (v, k) { if (!v || v.exp <= now) allowedDownloads.delete(k); });
+}
+function addAllowedDownload(url, tabId) {
+  const k = _allowedDlKey(url);
+  if (!k) return;
+  _allowedDlPrune();
+  if (allowedDownloads.size > 200) allowedDownloads.clear();   // 长会话上限兜底
+  allowedDownloads.set(k, { exp: Date.now() + ALLOWED_DL_TTL_MS, tab: (tabId != null && tabId >= 0) ? tabId : null });
+}
 // 安全地向内容脚本发消息：显式消费 chrome.runtime.lastError，避免「Receiving end does not exist」/
 // 「上下文不全」等未捕获异步错误在 Edge/Chrome 控制台刷屏（try/catch 无法捕获异步 lastError）。
 function safeTabMsg(tabId, msg) {
   if (tabId == null) return;
   try { chrome.tabs.sendMessage(tabId, msg, function () { void chrome.runtime.lastError; }); } catch (e) {}
 }
-function isAllowedDownload(url) { return !!(url && allowedDownloads.has(url)); }
+// tabId：本次下载归属的标签页。绑定过标签页的条目只对同一标签页生效；
+// 归不到标签页时（item.tabId = -1，如服务端 Content-Disposition 强制的下载）不做标签页比对，
+// 否则会把用户刚放行的那条合法下载也挡回去（宁可少拦，不要误拦）。
+function isAllowedDownload(url, tabId) {
+  const k = _allowedDlKey(url);
+  if (!k) return false;
+  const e = allowedDownloads.get(k);
+  if (!e) return false;
+  if (e.exp <= Date.now()) { allowedDownloads.delete(k); return false; }
+  if (e.tab != null && tabId != null && tabId >= 0 && e.tab !== tabId) return false;
+  return true;
+}
 
 // ===== 用户手势（User Gesture）追踪 + 自动下载拦截（2026-11-23，2026-11-24 重写）=====
 // 旧实现（2026-11-23，保留在下面注释里备查）只记一个**全局时间戳**，任何 pointerdown /
@@ -349,8 +386,15 @@ function _siteKeyOfItem(item) {
       if (t != null && t >= 0 && lastTopUrl[t]) h = parseHost(lastTopUrl[t]);
     } catch (e) {}
   }
-  // ③ 最后才退回载荷主机（如 cdn.xxx.com）：这样至少还能按注册域归一
-  return _siteKeyOfHost(h || parseHost(item.url));
+  // ★★ 2026-11-27（二）：**不再**退回载荷主机。
+  //   旧的第三级回退 `_siteKeyOfHost(h || parseHost(item.url))` 会把 CDN 桶当成「站点」记账：
+  //   银狐的落地页天天换，载荷却集中在同一批对象存储（实测两次都是 qfzi81.psolt.cc）。
+  //   一旦用户在那个 CDN 上确认过一次，**所有落地页共享的同一个 CDN** 就永久「已确认」，
+  //   等于给整条分发链开绿灯。
+  //   现在：来源拿不到就返回空 → 不记账 → 由调用方走「未知来源，每次问一次」的保守分支。
+  // 旧实现（保留备查）：return _siteKeyOfHost(h || parseHost(item.url));
+  if (!h) return '';
+  return _siteKeyOfHost(h);
 }
 function _siteSeen(key) {
   if (!key) return true;   // 拿不到站点就当作「已确认」，避免把无主下载变成永远拦不下来
@@ -444,15 +488,23 @@ function _authDecide(item, tabId) {
       const hitHost = !!(g.host && dHost2 && g.host === dHost2);
       const hitFile = !!(g.file && dFile2 && g.file === dFile2);
       const hitUrl = !!(g.url && dUrl2 && g.url === dUrl2);
-      if (hitHost || hitFile || hitUrl) {
+      // ★★ 2026-11-27（二·E）：不再用「文件名相同」单独构成放行。
+      //   文件名是攻击者可控的（`DeepSeek.zip` 谁都能写），一次点击就能把 10 秒内同名的任意下载
+      //   都判成「用户意图」。现在只认 host 或完整 URL 命中；hitFile 仅用于日志/诊断，不参与放行。
+      // 旧实现（保留备查）：if (hitHost || hitFile || hitUrl) {
+      if (hitHost || hitUrl) {
         g.consumed = true;
         _sfAuth.graceOrigin = iOrigin || g.origin || '';
         _sfAuth.graceUntil = now + GRACE_MS;
         _sfAuth.graceLeft = GRACE_MAX;
         _authPersist();
-        console.log('[auto-dl] 跳转携带意图放行（' + (hitHost ? 'host' : hitFile ? 'file' : 'url') + '）：' + item.url);
+        console.log('[auto-dl] 跳转携带意图放行（' + (hitHost ? 'host' : 'url') + '）：' + item.url);
         _sfAuth.lastReason = 'navlink';
         return 'allow';
+      }
+      if (hitFile) {
+        // 只有文件名对得上 → 只留痕，不放行
+        console.log('[auto-dl] 仅文件名命中，不足以放行：' + (dFile2 || '') + ' / ' + item.url);
       }
     }
   }
@@ -824,7 +876,8 @@ function checkAutoDownload(item, settings, tabId) {
     // 其它扩展（迅雷 / IDM 等）发起的下载交给 onCreated 里专门的分支（会弹「下载器扩展」确认窗），
     // 这里不抢它的判定，避免两条 UI 打架。
     if (item.byExtensionId && item.byExtensionId !== chrome.runtime.id) return false;
-    const highRisk = isHighRiskFile(item.url);
+    // ★ 2026-11-27（四·F）：把 item 传进去 —— blob:/data: 下载只能靠 mime / 文件名判类型。
+    const highRisk = isHighRiskFile(item.url, item);
 
     // ① 非高危文件：分析期仍「默认拒绝」（静默挂起 + 「正在检查」提示），其余沿用旧规则。
     // if (settings.enabledGlobal && analyzing && !_hasStrongGesture(GESTURE_ANALYSIS_MS)) {
@@ -928,6 +981,11 @@ const lastTopUrl = {};
 const prevTopUrl = {};
 // 记录每次顶级导航「提交完成」的时间戳，用于识别「点进即下载 / 服务端强制下载」的自动下载竞速
 const navCommitTime = {};
+// ★ 2026-11-27（三·C）：每个标签页最后一次判定等级（safe / warn / danger）。
+//   为什么要单独记：`dangerTabs` 只记 danger，`analysisState` 把 warn 和 safe 都归成 'safe'，
+//   于是「判 warn 的页 + 共享对象存储上的高危载荷」这种组合在后台完全看不见 —— 正是它的盲区。
+//   只做内存映射，不落盘（判定本来就随页面生命周期作废）。
+const lastVerdictLevel = {};
 // 自动下载判定窗口：页面提交后该时间窗内发起的高危文件下载，视为「自动下载」而非用户手动点击
 const AUTO_WINDOW_MS = 1500;
 
@@ -2912,9 +2970,83 @@ function sourceHostOf(item, state) {
 }
 
 // 高危文件类型（银狐木马载体）：直链可执行 + 压缩包 + 网盘分发
-function isHighRiskFile(url) {
+// ★★ 2026-11-27（四·F）：增加 `mime` / 文件名兜底，只管 **blob: / data:** 这类不透明 URL。
+//   背景（实测 2026-11-27 的第二个钓鱼页）：页面用 fetch → blob → a.click() 发下载，
+//   `SF.classifyLink()` 对 `blob:` 只能返回 'other'，于是这条下载**丢掉「高危」属性**，
+//   后面只剩「用户手势」规则 —— 用户点过一次页面按钮就按「用户意图」放行了。
+//   为什么只在 blob/data 上启用：普通 http 链路的 mime 由服务器随便写（`application/zip` 很常见），
+//   拿它扩大高危判定会误伤大量正常下载；而 blob/data 链接**没有任何后缀线索**，mime 是唯一信号。
+//   octet-stream 不单独算高危（canvas 导出、本地生成文件都是它），必须带高危后缀的文件名才算。
+const HIGH_RISK_MIMES = {
+  'application/zip': 1, 'application/x-zip-compressed': 1,
+  'application/x-rar-compressed': 1, 'application/vnd.rar': 1,
+  'application/x-7z-compressed': 1, 'application/x-compressed': 1,
+  'application/x-msdownload': 1, 'application/vnd.microsoft.portable-executable': 1,
+  'application/x-msi': 1, 'application/x-msdos-program': 1,
+  'application/x-apple-diskimage': 1, 'application/vnd.android.package-archive': 1,
+  'application/x-ms-installer': 1, 'application/x-iso9660-image': 1
+};
+function _riskyFileExt(name) {
+  return /\.(exe|msi|zip|rar|7z|dmg|pkg|apk|scr|bat|cmd|ps1|vbs|iso|img)$/i.test(String(name || '').trim());
+}
+function isHighRiskFile(url, item) {
   const t = (SF && SF.classifyLink) ? SF.classifyLink(url) : 'other';
-  return t === 'exec' || t === 'archive' || t === 'cloud';
+  if (t === 'exec' || t === 'archive' || t === 'cloud') return true;
+  // 下面只处理「URL 本身看不出类型」的 blob:/data: 下载
+  const u = String(url || '').trim().toLowerCase();
+  if (!u.startsWith('blob:') && !u.startsWith('data:')) return false;
+  const mime = String((item && item.mime) || '').toLowerCase().split(';')[0].trim();
+  if (mime && HIGH_RISK_MIMES[mime]) return true;
+  const fname = (item && item.filename) || '';
+  return _riskyFileExt(fname);
+}
+
+// ★★ 2026-11-27（三·C）：来源页只判到 **warn**、载荷却落在共享对象存储上 → 补一次确认。
+//   背景（实测 2026-11-27）：`www.deepseek-aps.com.cn` 这类仿冒站若没到判危线（warn），
+//   主闸门拿不到 danger 来源，而载荷是从对象存储（火山 TOS / 阿里 OSS / 腾讯 COS…）直发的：
+//   页面自己在后台拉包、没有 `<a href>`，IDM 也抓不到。这种组合既没有 danger 兜底，
+//   又常因来源为空而记不住「每站首次确认」，结果就是文件静默落地。
+//   为什么不扩大到 safe 页：正规站把安装包放 OSS 非常常见，问了就是纯打扰。
+function _warnSourceSharedPayload(item, settings) {
+  try {
+    // 尊重用户的「拦截下载」开关：关掉它就不该再补问。
+    if (!settings || !settings.enabledGlobal || !settings.autoBlockDownloads) return null;
+    if (!item || !item.url) return null;
+    if (!isHighRiskFile(item.url, item)) return null;
+    const host = parseHost(item.url);
+    if (!host || !_isSharedStorageHost(host)) return null;
+    if (_dlBlProtected(host, settings)) return null;   // 可信下载源 / 官方 / 用户白名单
+    const srcHost = downloadSourceHost(item);
+    if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist, 'customWhite'))) return null;
+    const tid = (item.tabId != null && item.tabId >= 0) ? item.tabId : _dlUiTab(item);
+    const lv = (tid != null && tid >= 0) ? (lastVerdictLevel[tid] || '') : '';
+    if (lv !== 'warn') return null;   // danger 交给主闸门；safe / 未判定 都不打扰
+    return { tabId: tid, level: lv };
+  } catch (e) { return null; }
+}
+
+// ★ 2026-11-27（三·C·诊断）：一条高危下载走完了所有判定却没有任何分支接住 → 留一条本地记录。
+//   用途：下次再出现「为什么那次没拦」，直接看 `sfDlUnattributed` 就能回答（URL / 载荷主机 /
+//   来源 / 判定等级 / 是否由其它扩展发起），不用再靠猜。最多 20 条，只在 storage.local，不弹窗、不上报。
+function _noteUnattributed(item) {
+  try {
+    if (!isHighRiskFile(item.url, item)) return;
+    const rec = {
+      at: Date.now(),
+      url: String(item.url || '').slice(0, 300),
+      host: parseHost(item.url) || '',
+      filename: (item.filename || _fileOfUrl(item.url) || '').slice(0, 120),
+      tabId: (item.tabId != null) ? item.tabId : -1,
+      src: downloadSourceHost(item) || '',
+      level: (item.tabId != null && item.tabId >= 0) ? (lastVerdictLevel[item.tabId] || '') : '',
+      byExt: item.byExtensionId || ''
+    };
+    chrome.storage.local.get({ sfDlUnattributed: [] }, function (r) {
+      const arr = Array.isArray(r.sfDlUnattributed) ? r.sfDlUnattributed : [];
+      arr.unshift(rec);
+      try { chrome.storage.local.set({ sfDlUnattributed: arr.slice(0, 20) }); } catch (e) {}
+    });
+  } catch (e) {}
 }
 
 // Chrome 自带 Safe Browsing 的「恶意」判定值（免费加成，用之拦截已知恶意下载）
@@ -4189,6 +4321,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   } else if (msg.type === 'sf-verdict') {
     // 内容脚本回传「分析闸门」判定：danger=保持取消挂起下载；safe/warn=静默重下挂起下载
     const tabId = sender.tab ? sender.tab.id : null;
+    // ★ 2026-11-27（C）：把原始等级留下来（warn 也要），供「warn 页 + 对象存储载荷」补一次确认。
+    if (tabId != null) {
+      try { lastVerdictLevel[tabId] = String((msg && msg.level) || 'safe'); } catch (e) {}
+    }
     if (tabId != null) resolveAnalysis(tabId, msg.level);
   } else if (msg.type === 'sf-check-chain') {
     // 内容脚本询问：本标签页是否由已判定危险站跳转而来
@@ -4293,7 +4429,9 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       //   取 pending 里登记好的 siteKey（那是「来源站」的注册域）；拿不到才退回页面 host。
       try {
         const p = _sfAuth.pending[sender.tab.id];
-        const sk = (p && p.siteKey) || _siteKeyOfHost(parseHost(sender.tab.url));
+        // ★ 2026-11-27：pending 存在但 siteKey 为空 = 来源归因不到 →
+        //   不记账（否则又把 CDN 桶当成"站点"记下来，等于绕开 _siteKeyOfItem 的修改）。
+        const sk = p ? (p.siteKey || '') : _siteKeyOfHost(parseHost(sender.tab.url));
         if (sk) _siteMark(sk);
       } catch (e) {}
       try { delete _sfAuth.pending[sender.tab.id]; } catch (e) {}
@@ -4302,7 +4440,8 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     // 放行名单 / 临时窗口 / 兜底重下：统一在 resume 结果出来后执行（resume 是异步的）
     const _finishAllow = function (resumed) {
       if (url) {
-        addAllowedDownload(url);
+        // ★ 2026-11-27（四·A）：记账时带上来源标签页 —— 本条放行只对「这个标签页」有效（10 分钟内）。
+        addAllowedDownload(url, sender.tab ? sender.tab.id : null);
         // ★ 2026-11-26：resumed=true 表示同一条下载已经在跑 → 绝不能再 download() 一次，
         //   否则就是双下载（旧实现每次点「继续下载」都重新发一次请求，正是 IDM 抓不到的主因之一）。
         //   fromPage=true 时正常由页面侧重放；只有页面侧明确回报「重放失败」(forceBgDownload)
@@ -4827,7 +4966,7 @@ if (chrome.downloads && chrome.downloads.onCreated) {
     // 判安后静默重下的下载（原被闸门挂起者）→ 直接放行，不再二次闸控
     if (reissuedUrls.has(item.url)) { reissuedUrls.delete(item.url); return; }
     // 本次下载用户已明确「仍要下载」→ 直接放行（避免重复拦截）
-    if (isAllowedDownload(item.url)) return;
+    if (isAllowedDownload(item.url, item.tabId)) return;
   // ★ 由扩展发起（byExtensionId）的下载：仅「本扩展自身」（静默重下/保存）直接放行；
   //   其它扩展（迅雷/下载器接管类）发起的下载落入后续风险判定——凡是走 downloads API
   //   才能转交外部下载器的，在这里掐断即可阻止其绕过浏览器的下载。
@@ -4857,6 +4996,15 @@ if (chrome.downloads && chrome.downloads.onCreated) {
       //   放到挂起逻辑之前，是因为它专门覆盖 tabId / referrer / initiator 全空的导航型下载
       //   （meta refresh、直接跳文件、服务端强推），那种下载根本无从挂起。
       if (checkAutoDownload(item, settings, item.tabId)) return;
+      // ★★ 2026-11-27（三·C）：warn 页 + 共享对象存储 + 高危后缀 → 补一次确认。
+      //   放在 checkAutoDownload 之后：用户明确点过的（授权模型已放行）不在这里重复打扰；
+      //   放在分析闸门之前：此刻已经有判定等级，才能区分「warn」与「safe」。
+      const _warnShared = _warnSourceSharedPayload(item, settings);
+      if (_warnShared) {
+        console.log('[dl] warn 页的对象存储高危载荷，补一次确认：' + item.url);
+        confirmHighRiskDownload(item, _warnShared.tabId, 'warn-shared', _siteKeyOfItem(item));
+        return;
+      }
       // ★ 分析闸门（2026-11-11：与「自动拦截下载」开关解耦）
       //   判定未出结论前一律先挂起该标签的全部下载 —— 这是「默认拒绝」，不是「命中危险后的拦截」。
       //   原实现把这段放在 settings.autoBlockDownloads 之后，用户一关那个开关，
@@ -4964,7 +5112,7 @@ if (chrome.downloads && chrome.downloads.onCreated) {
         if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;  // 路径白名单
         if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist, 'customWhite'))) return;
         if (_dlBlProtected(host, settings)) return;   // TRUSTED_DOWNLOAD_HOSTS / 官方 / 用户白名单
-        if (isHighRiskFile(item.url)) {
+        if (isHighRiskFile(item.url, item)) {
           cancelDownload(item.id, host || srcHost || '', item.tabId >= 0 ? [item.tabId] : [], item.url, item.filename, true);
           return;
         }
@@ -4990,7 +5138,7 @@ if (chrome.downloads && chrome.downloads.onCreated) {
         if (hostMatch(host, settings.allowlist, 'customWhite')) return;
         if (isCloudWhiteUrl(item.url) || (srcHost && isCloudWhiteUrl(srcUrl))) return;  // 路径白名单
         if (srcHost && (SF.isOfficialDomain(srcHost) || hostMatch(srcHost, settings.allowlist, 'customWhite'))) return;
-        if (isHighRiskFile(item.url)) {
+        if (isHighRiskFile(item.url, item)) {
           // 1) 来源域名自身像品牌仿冒（非官方）→ 直接拦，不依赖内容脚本判定
           //    注意：必须先排除官方域名，否则 qq.com / www.moonshot.cn 等含品牌词的官网会被误判仿冒而误拦下载
           if (srcHost && !SF.isOfficialDomain(srcHost) && SF.detectSpoof(srcHost)) {
@@ -5006,6 +5154,10 @@ if (chrome.downloads && chrome.downloads.onCreated) {
             return;
           }
         }
+        // ★ 2026-11-27（三·C·诊断）：走到这里说明这条下载没被任何分支接住
+        //   （来源判危 / 跳转链 / 仿冒来源 / 抢跑自动下载 都没命中）→ 留一条本地记录。
+        //   只对高危后缀生效，最多 20 条，见 _noteUnattributed 的说明。
+        _noteUnattributed(item);
       });
     });
   });
@@ -5024,7 +5176,7 @@ if (chrome.downloads && chrome.downloads.onChanged) {
       chrome.downloads.search({ id: id }, function (items) {
         if (!items || !items.length) return;
         const it = items[0];
-        if (isAllowedDownload(it.url) || it.byExtensionId) return; // 用户已明确放行 / 扩展自身发起
+        if (isAllowedDownload(it.url, it.tabId) || it.byExtensionId) return; // 用户已明确放行 / 扩展自身发起
         // 「仍要下载」临时放行窗口 / 「完全放行」来源页：同样放过，避免 Safe Browsing 延迟判定又取消它
         if (isTabTempAllowed(it.tabId)) return;
         if (it.tabId && it.tabId >= 0 && lastTopUrl[it.tabId]) {
@@ -5145,20 +5297,64 @@ function cancelDownload(id, host, tabIds, url, filename, extBlock) {
   //   host 参数是「落地页/来源域名」，真正要记的是文件所在域名（parseHost(url)），
   //   落地页只作来源元数据留档 —— 银狐换落地页比换载荷 CDN 勤快得多。
   try { dlBlacklistAdd(parseHost(url), { filename: filename, from: host }); } catch (e) {}
-  chrome.downloads.cancel(id, function () {
-    chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, function (r) {
-      const stats = r.stats || { warnings: 0, blocks: 0, recent: [] };
-      stats.blocks += 1;
-      chrome.storage.local.set({ stats });
-    });
+  // ★★ 2026-11-27（一）：先确认「到底拦没拦住」，再决定说什么。
+  //   旧实现无条件按「已拦截」记账 + 弹「下载已被拦截」。一旦条目已被 IDM / NDM / FDM / 迅雷
+  //   之流 `cancel + erase` 接走，`cancel` 会报 Invalid download ID（或条目直接查不到），
+  //   此时文件其实正在下载器里跑，那条「已拦截」就是**假消息**：用户以为拦住了，不会去下载器里取消。
+  //   旧实现（保留备查）：
+  // chrome.downloads.cancel(id, function () {
+  //   chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, function (r) {
+  //     const stats = r.stats || { warnings: 0, blocks: 0, recent: [] };
+  //     stats.blocks += 1;
+  //     chrome.storage.local.set({ stats });
+  //   });
+  //   (tabIds || []).forEach(function (tid) {
+  //     if (tid != null && tid >= 0) {
+  //       try { safeTabMsg(tid, { type: extBlock ? 'sf-dl-ext-blocked' : 'sf-download-blocked', host: host, url: url, filename: filename }); } catch (e) {}
+  //     }
+  //   });
+  // });
+  const _notifyBlocked = function (blocked, why) {
+    const tabs = (tabIds || []).filter(function (t) { return t != null && t >= 0; });
+    if (!blocked) {
+      // 没拦住：不发「已拦截」、不计「拦截下载」次数，改发「已被下载器接管」的告知。
+      // 为什么不计数：统计里的「拦截下载」应当是「真的没让文件落地」，否则后续排查全被污染。
+      tabs.forEach(function (tid) {
+        try { safeTabMsg(tid, { type: 'sf-dl-taken-over', host: host, url: url, filename: filename, stage: (why || 'cancel-failed') }); } catch (e) {}
+      });
+      console.log('[dl] 取消未生效（条目已被下载器接管或已完成），未计拦截：' + (why || '') + ' ' + url);
+      return;
+    }
+    try {
+      chrome.storage.local.get({ stats: { warnings: 0, blocks: 0, recent: [] } }, function (r) {
+        const stats = r.stats || { warnings: 0, blocks: 0, recent: [] };
+        stats.blocks += 1;
+        chrome.storage.local.set({ stats });
+      });
+    } catch (e) {}
     // 不再使用系统通知（关掉浏览器后仍会在系统通知中心弹出）；改为在网页内「大弹窗」提示
     // 把提示发到「发起下载的危险页面」对应的所有标签页（解决 item.tabId 为 -1 收不到提示的问题）
-    (tabIds || []).forEach(function (tid) {
-      if (tid != null && tid >= 0) {
-        try { safeTabMsg(tid, { type: extBlock ? 'sf-dl-ext-blocked' : 'sf-download-blocked', host: host, url: url, filename: filename }); } catch (e) {}
-      }
+    tabs.forEach(function (tid) {
+      try { safeTabMsg(tid, { type: extBlock ? 'sf-dl-ext-blocked' : 'sf-download-blocked', host: host, url: url, filename: filename }); } catch (e) {}
     });
-  });
+  };
+  try {
+    chrome.downloads.cancel(id, function () {
+      const err = chrome.runtime.lastError;
+      // 注意：cancel 成功时 state 不一定会立刻变成 interrupted，所以**只在报错时**才去复查，
+      // 否则会把「刚取消、状态还没落定」误判成「没拦住」。
+      if (!err) { _notifyBlocked(true); return; }
+      try {
+        chrome.downloads.search({ id: id }, function (items) {
+          const it = items && items[0];
+          if (!it) { _notifyBlocked(false, 'gone'); return; }                 // 已被下载器 erase
+          if (it.state === 'complete') { _notifyBlocked(false, 'complete'); return; } // 已经下完了
+          if (it.state === 'interrupted') { _notifyBlocked(true); return; }    // 已经是中断态（可能是别的原因取消的）
+          _notifyBlocked(false, 'cancel-failed');
+        });
+      } catch (e) { _notifyBlocked(false, 'search-failed'); }
+    });
+  } catch (e) { _notifyBlocked(false, 'throw'); }
 }
 
 // 标签页关掉后清理其危险状态
@@ -5170,6 +5366,7 @@ if (chrome.tabs && chrome.tabs.onRemoved) {
     if (analysisState[tabId]) delete analysisState[tabId];
     if (analysisTimers[tabId]) { clearTimeout(analysisTimers[tabId]); delete analysisTimers[tabId]; }
     if (heldDownloads[tabId]) delete heldDownloads[tabId];
+    try { if (lastVerdictLevel[tabId]) delete lastVerdictLevel[tabId]; } catch (e) {}
     loadState().then(function (state) {
       if (state.dangerTabs[tabId]) { delete state.dangerTabs[tabId]; saveState(state); }
     });

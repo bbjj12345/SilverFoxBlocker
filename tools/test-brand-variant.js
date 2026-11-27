@@ -295,5 +295,35 @@ const _icpPage = {
   t('Harness 品牌词不单收 harness（harness.io 不受影响）', cs('harness.io').domain === undefined, JSON.stringify(cs('harness.io')));
 }
 
+// ---------- 17. 下载页误报治理：扩展名 / 平台名 / 通用名词品牌词 ----------
+// 现场：www.libreoffice.org 与 www.onlyoffice.com 被判 116 分拦截，属扩展自身误报，三条根因：
+//   ① `libreoffice` / `onlyoffice` = 修饰词 + 通用名词品牌词 office，被当「拼接式仿冒」30 分；
+//   ② 文件名 `..._x86-64.msi` 的 **.msi 扩展名**被当品牌词「msi」（微星），配合可执行判定 → 40 分；
+//   ③ `.../mobile/android/onlyoffice-documents.apk` 的路径段 android 被当品牌词 → 40 分。
+{
+  const dl = (d) => run(Object.assign({ hostname: 'dl.test' }, d));
+  // ① 通用名词品牌词不参与拼接/插入
+  for (const h of ['libreoffice.org', 'www.libreoffice.org', 'onlyoffice.com', 'www.onlyoffice.com', 'openoffice.org']) {
+    const r2 = run({ hostname: h });
+    t('官方软件域名不判仿冒：' + h, !variant(r2) && !spoof60(r2), r2.score + ' ' + r2.reasons.map(x => x.label).join(','));
+  }
+  // 只挡弱分支：真仿冒仍走段匹配 / 编辑距离
+  t('office 段匹配仍生效（office-login.xxx.top）', (spoof60(run({ hostname: 'office-login.xxx.top' })) || {}).weight === 60);
+  t('office 编辑距离仍生效（offlce.com）', (variant(run({ hostname: 'offlce.com' })) || {}).weight === 45);
+  // ② .msi 扩展名不是微星
+  const pkg = (href, text) => [{ href: href, text: text }];
+  let r3 = dl({ hostname: 'www.libreoffice.org', links: pkg('https://download.documentfoundation.org/libreoffice/stable/26.8.3/win/x86_64/LibreOffice_26.8.3_Win_x86-64.msi', 'LibreOffice 26.8.3 Windows (x86-64)') });
+  t('.msi 扩展名不再命中品牌词 msi', !r3.reasons.some(x => x.label === '品牌仿冒安装包'), r3.reasons.map(x => x.label + ':' + x.weight).join(','));
+  t('LibreOffice 下载页降到可疑线以下', r3.score < 42, r3.score + '');
+  // ③ android 平台名不是品牌
+  r3 = dl({ hostname: 'www.onlyoffice.com', links: pkg('https://download.onlyoffice.com/install/mobile/android/onlyoffice-documents.apk', '获取 APK') });
+  t('路径段 android 不再命中品牌词', !r3.reasons.some(x => x.label === '品牌仿冒安装包'), r3.reasons.map(x => x.label + ':' + x.weight).join(','));
+  // 反向：真木马化投递必须照旧抓
+  r3 = dl({ hostname: 'wechat-download.evil.top', links: pkg('https://evil-cdn.top/WeChat_Setup.exe', '微信官方版') });
+  t('真仿冒仍命中品牌仿冒安装包（WeChat_Setup.exe）', r3.reasons.some(x => x.label === '品牌仿冒安装包' && x.weight === 40), r3.score + '');
+  r3 = dl({ hostname: 'msi-tool.evil.top', links: pkg('https://evil.top/MSI_Afterburner_Setup.exe', '微星超频工具') });
+  t('路径中的真品牌词不被误剥离（MSI_Afterburner）', r3.reasons.some(x => x.label === '品牌仿冒安装包' && x.weight === 40), r3.score + '');
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

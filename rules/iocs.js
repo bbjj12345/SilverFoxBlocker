@@ -115,6 +115,9 @@
     ['办公与文档类', [
       ['金山系', 'wps.cn wps.com wps-linux.com kdocs.cn', 'WPS Office / WPS 云文档 / 金山文档'],
       ['腾讯系', 'docs.qq.com', '腾讯文档'],
+      ['LibreOffice', 'libreoffice.org', ''],
+      ['OnlyOffice', 'onlyoffice.com', ''],
+      ['OpenOffice', 'openoffice.org', ''],
       ['石墨文档', 'shimo.im', ''],
       ['有赞文档', 'yozosoft.com', '实为永中 Office（yozosoft.com），与「有赞 youzan.com」无关；条目名待作者决定是否改'],
       ['微软系', 'microsoft.com microsoft.cn office.com microsoft365.com live.com outlook.com onenote.com office365.com hotmail.com msn.com', 'Windows / Office / Outlook（含 Edge 下载页）'],
@@ -710,6 +713,9 @@
         { url: 'meeting.tencent.com', label: '中国官网' },
         { url: 'voovmeeting.com', label: '国际版 VooV' }
       ], 'meeting.qq.com 实测 301 到 meeting.tencent.com（同一站，不单列）'],
+      ['OnlyOffice', 'onlyoffice', 'onlyoffice.com', ''],
+      ['LibreOffice', 'libreoffice', 'libreoffice.org', ''],
+      ['OpenOffice', 'openoffice', 'openoffice.org', ''],
       ['石墨文档', 'shimo', 'shimo.im', ''],
       ['永中 Office', 'yozosoft', 'yozosoft.com', '⚠️ 白名单原备注写「有赞文档」，实测 yozosoft.com 属永中软件（Yozo Office），与「有赞 youzan.com」无关'],
       // 旧（2026-11-22 前）：只有 microsoft，Microsoft Teams 的仿冒站落到说明页

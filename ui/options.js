@@ -1,6 +1,310 @@
 /* options.js — SilverFoxBlocker 设置控制面板逻辑（侧边栏分类版） */
 'use strict';
 
+/* ===== 邮件反馈失败诊断（2026-11-27） =====
+ * 背景：反馈页原先对任何失败都只显示「发送失败，请稍后重试。」——
+ *   fetch 的 .catch 把异常整块吞掉，用户在新电脑上既不知道是断网、DNS、代理，
+ *   还是服务端 429/500，只能盲猜。这里把「阶段 + 错误码 + 人话解释 + 接口主机名」拆开显示。
+ *
+ * 两层失败要分开讲，因为排查方向完全不同：
+ *   ① 网络层（请求根本没到服务端）：fetch 抛 TypeError('Failed to fetch') / AbortError。
+ *      浏览器出于安全**不告诉 JS 具体原因**，所以只能列出最常见的四种（断网 / DNS / 代理防火墙 / 跨域）。
+ *   ② HTTP 层（请求到了，服务端回了非 2xx）：状态码本身可读，且 Worker 会在 body 里带 { error: "中文原因" }，
+ *      优先显示服务端自己的话，比客户端猜更准。
+ * 严格只读前端返回值，不新增任何请求、不采集任何额外信息。
+ *
+ * 2026-11-27 修订：文案改为固定版式（网络层四行 / HTTP 层两行，见 sfbMailNetText），
+ *   并把「诊断」做成有证据的结论：可达性探测（no-cors HEAD）区分「网络不通」与「跨域被拒」，
+ *   探测不通时再用公共 DoH 查一次反馈接口自身域名，把「DNS 解析失败」与「解析得出但连接被拦（防火墙）」
+ *   分开。DoH 只查这一个域名（接口自己），不涉及用户任何浏览数据。
+ */
+var SFB_MAIL_HTTP_HINT = {
+  400: '请求被服务端拒绝：反馈内容为空、格式不对或超过 2000 字',
+  401: '服务端鉴权失败：Worker 的发信密钥可能已失效',
+  403: '被服务端拒绝：来源不在允许列表，或该接口已关闭',
+  404: '接口地址不存在：Worker 可能已改名、未部署或被回滚',
+  405: '请求方法不被允许：接口契约已变更',
+  408: '服务端等待请求超时',
+  413: '内容过大，超出服务端限额',
+  415: '服务端不接受该内容类型',
+  429: '提交过于频繁：已触发服务端限流，或达到当日发送上限',
+  500: '服务端内部错误：通常是发信服务（Brevo）返回异常',
+  502: '网关错误：Worker 上游服务不可用',
+  503: '服务暂不可用：Worker 过载或正在维护',
+  504: '网关超时：Worker 未及时响应'
+};
+
+function sfbEndpointHost(endpoint) {
+  try { return new URL(endpoint).host; } catch (e) { return ''; }
+}
+
+// 本机扩展 ID：新电脑上「加载已解压」的 ID 由解压路径决定，与 Worker 端 ALLOWED_ORIGINS 里
+// 写死的那几个通常对不上 —— 这是「换台电脑就发不出去」最常见的原因，失败时应当场告诉用户。
+function sfbExtId() {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) return String(chrome.runtime.id);
+  } catch (e) {}
+  return '';
+}
+
+// 返回可直接 setMsg / show 的纯文本（含 \n，由 #fbMsg 的 white-space: pre-line 换行）
+//
+// ---- 文案版本（2026-11-27，按作者给定稿统一）----
+// 网络层固定四行：① 抬头 ② 常见原因（一次列全，让用户自己对照） ③ 本机扩展 ID ④ 诊断（只写命中的那一项）
+// HTTP 层固定两行：① 发送失败：HTTP <码> ② 该码的解释（必要时补一行服务端原话）
+var SFB_MAIL_NET_REASONS = '常见原因：网络故障 / DNS 解析失败 / 使用代理或VPN / 被防火墙拦截 / 跨域被拒（扩展 ID 不在服务端白名单）';
+var SFB_DIAG = {
+  offline: '网络故障，您似乎没有连接到互联网',
+  dns: 'DNS 解析失败，请检查您的 DNS 设置',
+  proxy: '使用代理或VPN，可关闭代理、VPN后重试',
+  firewall: '被防火墙拦截，请在防火墙中为本扩展设置例外',
+  cors: '跨域被拒，本机扩展 ID 可能不在服务端白名单'
+};
+
+function sfbMailNetText(head, diag) {
+  var eid = sfbExtId();
+  var out = head + '\n' + SFB_MAIL_NET_REASONS;
+  if (eid) out += '\n本机扩展 ID：' + eid;
+  if (diag) out += '\n诊断：' + diag;
+  return out;
+}
+
+// 浏览器自带的在线状态：false 是硬证据（比任何探测都可靠），true 只代表「网卡有连接」，
+// 不代表能出网，所以只在 false 时下结论。
+function sfbIsOffline() {
+  try {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) return true;
+  } catch (e) {}
+  return false;
+}
+
+// 网络层异常：浏览器出于安全不给具体原因，CORS / DNS / 断网全都长成同一个 TypeError
+function sfbIsNetError(err) {
+  var e = err || {};
+  var m = String(e.message || e || '');
+  return e.name === 'AbortError'
+    || /abort|timeout|Failed to fetch|NetworkError|Load failed|Network request failed/i.test(m);
+}
+
+function sfbNetHead(err) {
+  var e = err || {};
+  var m = String(e.message || e || '未知错误');
+  if (e.name === 'AbortError' || /abort|timeout/i.test(m)) {
+    return '发送失败：连接超时（15 秒内没有响应）';
+  }
+  return '发送失败：无法连接反馈服务器（' + m + '）';
+}
+
+/* 旧实现（2026-11-27 之前）：单行平铺，且把接口主机名塞在末尾
+function sfbDescribeMailFailure(err, endpoint) {
+  var e = err || {};
+  var host = sfbEndpointHost(endpoint);
+  var tail = host ? '\n接口：' + host : '';
+  if (e.sfbStage === 'http') {
+    var st = e.sfbStatus;
+    var hint = SFB_MAIL_HTTP_HINT[st] || ('服务端返回了未预期的 HTTP ' + st);
+    var out = '发送失败：HTTP ' + st + ' · ' + hint;
+    if (e.sfbDetail) out += '\n服务端说明：' + e.sfbDetail;
+    return out + tail;
+  }
+  var eid = sfbExtId();
+  var idLine = eid ? '\n本机扩展 ID：' + eid : '';
+  var m = String(e.message || e || '未知错误');
+  if (e.name === 'AbortError' || /abort|timeout/i.test(m)) {
+    return '发送失败：连接超时（15 秒内没有响应）· 多为网络不通，或被代理/防火墙拦截' + idLine + tail;
+  }
+  if (/Failed to fetch|NetworkError|Load failed|Network request failed/i.test(m)) {
+    return '发送失败：无法连接反馈服务器（' + m + '）\n'
+      + '常见原因：断网 / DNS 解析失败 / 代理·VPN 或防火墙拦截 / 跨域被拒（扩展 ID 不在服务端白名单）'
+      + idLine + tail;
+  }
+  return '发送失败：' + m + idLine + tail;
+}
+*/
+
+function sfbDescribeMailFailure(err, endpoint) {
+  var e = err || {};
+  if (e.sfbStage === 'http') {
+    var st = e.sfbStatus;
+    var hint = SFB_MAIL_HTTP_HINT[st] || ('服务端返回了未预期的 HTTP ' + st);
+    // 文档版式：第一行「发送失败：HTTP xxx」，第二行解释（不再用「·」串成一行）
+    var out = '发送失败：HTTP ' + st + '\n' + hint;
+    // 服务端自己给的原话比客户端猜得准，但只在它与上面的通用解释不同时才补，
+    //   否则 429 会出现「提交过于频繁」重复两遍。
+    var detail = String(e.sfbDetail || '').trim();
+    if (detail && detail !== hint && detail.indexOf(hint) === -1) out += '\n服务端说明：' + detail;
+    return out;
+  }
+  if (!sfbIsNetError(e)) return '发送失败：' + String(e.message || e || '未知错误');
+  // 已知离线时当场下结论；其余情况留白，交给 sfbReportMailFailure 探测后补「诊断」行
+  return sfbMailNetText(sfbNetHead(e), sfbIsOffline() ? SFB_DIAG.offline : '');
+}
+
+// 主请求失败后再做一次「最小可达性探测」，把「真的连不上」和「连上了但被 CORS 拒」分开。
+// 原理：同样的地址用 mode:'no-cors' 再发一次 —— 该模式**不做 CORS 校验**，只要网络层通就返回
+//   opaque 响应（哪怕服务端回 403）。于是：
+//     · 探测 reject  → 网络层真不通（断网 / DNS / 代理 / 防火墙）
+//     · 探测 resolve → 请求到达了服务端，是浏览器拒绝把响应交给页面（跨域 / 扩展 ID 未授权）
+// 用 HEAD：Worker 对非 POST 直接 405，不会写限流计数、不会发信；HEAD 无响应体，
+//   探测本身不产生任何数据传输（也不会像 GET 那样把名单整包拉回来）。
+function sfbProbeReachability(endpoint) {
+  if (typeof fetch !== 'function' || !endpoint) return Promise.resolve('unknown');
+  var ctrl = null, timer = null;
+  try {
+    ctrl = new AbortController();
+    timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 3000);
+  } catch (e) { ctrl = null; }
+  var opts = { method: 'HEAD', mode: 'no-cors', cache: 'no-store' };
+  if (ctrl) opts.signal = ctrl.signal;
+  return fetch(endpoint, opts).then(function () {
+    if (timer) clearTimeout(timer);
+    return 'reachable';
+  }, function () {
+    if (timer) clearTimeout(timer);
+    return 'unreachable';
+  });
+}
+
+// 「诊断」行要写哪一条，取决于证据链。逐个排除，只输出真正命中的那一条：
+//   ① navigator.onLine === false        → 网络故障（硬证据，不再探测）
+//   ② HEAD 探测可达                      → 跨域被拒（请求到了服务端，是浏览器不放行响应）
+//   ③ 探测不通 + DoH 说域名不存在        → DNS 解析失败
+//   ④ 探测不通 + DoH 说域名解析得出      → 出网正常、解析正常，唯独这个连接过不去 → 防火墙拦截
+//   ⑤ 以上都拿不到证据                   → 不写「诊断」行（宁可不说，也不猜）
+// 代理/VPN 无法从网页侧探测：它既可能让 DNS 失败、也可能让连接被拦，落点会混进 ③④，
+//   所以固定留在「常见原因」里，由用户自己对照。
+function sfbDohOnce(base, host) {
+  if (typeof fetch !== 'function') return Promise.resolve('skip');
+  var ctrl = null, timer = null;
+  try {
+    ctrl = new AbortController();
+    timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 2500);
+  } catch (e) { ctrl = null; }
+  var opts = { method: 'GET', headers: { 'Accept': 'application/dns-json' }, cache: 'no-store' };
+  if (ctrl) opts.signal = ctrl.signal;
+  return fetch(base + encodeURIComponent(host), opts).then(function (res) {
+    if (!res || !res.ok || typeof res.json !== 'function') {
+      if (timer) clearTimeout(timer);
+      return 'skip';
+    }
+    // 计时器要留到 body 也读完再清：响应头到了但响应体卡住的情况同样算「没答案」，
+    //   否则 aborted 之后没人再关它，Promise 链会一直悬着（提示条就停在初始文案上）。
+    return res.json().then(function (j) {
+      if (timer) clearTimeout(timer);
+      var ans = (j && j.Answer) || [];
+      if (ans.length) return 'resolved';
+      var st = j && j.Status;
+      // Status 3 = NXDOMAIN；Status 0 + 无 Answer = 该记录类型没有解析结果
+      if (st === 3 || st === 0) return 'nxdomain';
+      return 'skip';
+    }, function () {
+      if (timer) clearTimeout(timer);
+      return 'skip';
+    });
+  }, function () {
+    if (timer) clearTimeout(timer);
+    return 'skip';
+  });
+}
+
+// 只查「反馈接口自己的域名」，不查用户访问的任何站点，不带任何标识；
+// 两个公共 DoH 依次试，都失败就返回 unknown（不据此下结论）。
+var SFB_DOH_ENDPOINTS = [
+  'https://dns.alidns.com/resolve?type=A&name=',
+  'https://cloudflare-dns.com/dns-query?type=A&name='
+];
+function sfbDnsVerdict(host) {
+  if (!host) return Promise.resolve('unknown');
+  var i = 0;
+  function step() {
+    if (i >= SFB_DOH_ENDPOINTS.length) return Promise.resolve('unknown');
+    var base = SFB_DOH_ENDPOINTS[i++];
+    return sfbDohOnce(base, host).then(function (v) {
+      return v === 'skip' ? step() : v;
+    });
+  }
+  return step();
+}
+
+/* 旧实现（2026-11-27 之前）：只做可达性探测，一次性把结论拼在末尾，且结论写死了「跨域」
+function sfbReportMailFailure(err, endpoint, render) {
+  var base = sfbDescribeMailFailure(err, endpoint);
+  if (typeof render === 'function') render(base);
+  if (!err || err.sfbStage) return;   // HTTP 层已定案，无需探测
+  sfbProbeReachability(endpoint).then(function (state) {
+    if (state !== 'reachable' || typeof render !== 'function') return;
+    render(base + '\n诊断：接口网络可达，浏览器却读不到响应 —— 问题在跨域，'
+      + '本机扩展 ID 很可能不在服务端 ALLOWED_ORIGINS 白名单');
+  });
+}
+*/
+
+function sfbReportMailFailure(err, endpoint, render) {
+  var base = sfbDescribeMailFailure(err, endpoint);
+  if (typeof render === 'function') render(base);   // 先给能确定的，不让用户干等
+  if (!err || err.sfbStage) return;                 // HTTP 层已定案，无需探测
+  if (!sfbIsNetError(err)) return;                  // 非网络层异常，探测无意义
+  if (sfbIsOffline()) return;                       // 已写明「网络故障」，不用再探
+  var host = sfbEndpointHost(endpoint);
+  sfbProbeReachability(endpoint).then(function (state) {
+    if (state === 'reachable') return SFB_DIAG.cors;
+    if (state !== 'unreachable') return '';         // unknown：没有证据
+    return sfbDnsVerdict(host).then(function (v) {
+      if (v === 'nxdomain') return SFB_DIAG.dns;
+      if (v === 'resolved') return SFB_DIAG.firewall;
+      return '';
+    });
+  }).then(function (diag) {
+    if (!diag || typeof render !== 'function') return;
+    render(sfbMailNetText(sfbNetHead(err), diag));
+  }, function () {});
+}
+
+// 统一发出反馈请求：15 秒超时 + 非 2xx 时读取 body 的 { error } 再抛出带阶段信息的错误。
+// 回报 Promise<Response>，调用方自行处理成功分支。
+function sfbPostFeedback(endpoint, payload) {
+  var ctrl = null, timer = null;
+  try {
+    ctrl = new AbortController();
+    timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 15000);
+  } catch (e) { ctrl = null; }
+  var opts = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  };
+  if (ctrl) opts.signal = ctrl.signal;
+  return fetch(endpoint, opts).then(function (res) {
+    if (res.ok) { if (timer) clearTimeout(timer); return res; }
+    // 旧实现：if (!res.ok) throw new Error('HTTP ' + res.status);  —— 状态码有，但后端的中文原因被丢掉
+    return res.text().then(function (t) {
+      if (timer) clearTimeout(timer);
+      var detail = '';
+      try {
+        var j = JSON.parse(t);
+        detail = (j && (j.error || j.message)) || '';
+      } catch (e2) {
+        detail = String(t || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+      }
+      var er = new Error('HTTP ' + res.status);
+      er.sfbStage = 'http';
+      er.sfbStatus = res.status;
+      er.sfbDetail = String(detail || '').trim();
+      throw er;
+    }, function () {
+      if (timer) clearTimeout(timer);
+      var er = new Error('HTTP ' + res.status + '（响应体读取失败）');
+      er.sfbStage = 'http';
+      er.sfbStatus = res.status;
+      er.sfbDetail = '';
+      throw er;
+    });
+  }, function (err) {
+    if (timer) clearTimeout(timer);
+    throw err;
+  });
+}
+
 // 360 系统急救箱官方下载直链。现为「备用直链」：点击按钮时会自动抓取
 // 官网/软件宝库的最新 64 位独立版直链；仅当自动抓取失败时才回退到此处。
 const RESCUE_DOWNLOAD_URL = 'https://dl.360safe.com/360c0mpkill_5.1.64.1289-0701.zip';
@@ -2309,13 +2613,14 @@ async function init() {
           var payload = ('问题类型：' + p.type + '\n\n' + p.message).slice(0, 2000);
           var contactEl = $('fbContact');
           var contact = (contactEl && contactEl.value || '').trim();
-          fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: payload, contact: contact })
-          })
+          // 旧：直接把 fetch 的返回值交给 then，失败时 catch 不接参数，异常被整块丢弃
+          //   fetch(endpoint, { method: 'POST', headers: {...}, body: JSON.stringify({...}) })
+          //     .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); ... })
+          //     .catch(function () { show('发送失败，请稍后重试。', 'warn'); ... });
+          // 新：走 sfbPostFeedback —— 15 秒超时；非 2xx 时先读 body 里的 { error }，
+          //   再抛出带 sfbStage / sfbStatus / sfbDetail 的错误，供 sfbDescribeMailFailure 拼成可读原因。
+          sfbPostFeedback(endpoint, { message: payload, contact: contact })
             .then(function (res) {
-              if (!res.ok) throw new Error('HTTP ' + res.status);
               show('感谢您的反馈！', 'ok');
               if ($('fbText')) { $('fbText').value = ''; updateFbCount(); }
               if ($('fbContact')) $('fbContact').value = '';
@@ -2328,8 +2633,11 @@ async function init() {
                 mailBusy = false;
               }, 5000);
             })
-            .catch(function () {
-              show('发送失败，请稍后重试。', 'warn');
+            .catch(function (err) {
+              // 旧：show('发送失败，请稍后重试。', 'warn');  —— 用户看不到任何可排查的信息
+              // 新：阶段 + 错误码 + 解释 + 接口主机名；同时打到控制台，方便用户复制给作者
+              console.warn('[SilverFoxBlocker][反馈] 邮件发送失败：', err);
+              sfbReportMailFailure(err, endpoint, function (tip) { show(tip, 'warn'); });
               if (mailRestoreTimer) clearTimeout(mailRestoreTimer);
               if (mailBtn) mailBtn.disabled = false; // 失败可重试
               mailBusy = false;
@@ -2424,7 +2732,8 @@ async function init() {
   $('resetBtn').addEventListener('click', () => {
     if (!confirm('确定要清空拦截统计吗？白名单与规则设置不会改动。')) return;
     if (hasStorage()) {
-      chrome.storage.local.set({ stats: { warnings: 0, blocks: 0, recent: [], suspicious: [] } }, () => { loadStats(); showToast(); });
+      // ★ 2026-11-27（v1.13.9）：一并清掉「未被规则接住」的诊断记录，避免它成为独立于统计之外的残留数据。
+      chrome.storage.local.set({ stats: { warnings: 0, blocks: 0, recent: [], suspicious: [] }, sfDlUnattributed: [] }, () => { loadStats(); showToast(); });
     } else {
       showToast();
     }
@@ -3782,17 +4091,15 @@ async function updateCloudLists(btn) {
     btn.disabled = true;
     if (spin) spin.hidden = false;
     setMsg(msgEl, '', '');
-    fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: body, contact: '' })
-    })
+    // 旧：fetch(...).then(res => { if (!res.ok) throw ... }).catch(function () { setMsg(..., '发送失败，请稍后重试。', 'warn'); })
+    // 新：与反馈页共用 sfbPostFeedback / sfbDescribeMailFailure，失败时显示错误码与解释
+    sfbPostFeedback(endpoint, { message: body, contact: '' })
       .then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
         setMsg(msgEl, '已发送 ' + list.length + ' 个域名，感谢你的贡献！', 'ok');
       })
-      .catch(function () {
-        setMsg(msgEl, '发送失败，请稍后重试。', 'warn');
+      .catch(function (err) {
+        console.warn('[SilverFoxBlocker][名单上报] 发送失败：', err);
+        sfbReportMailFailure(err, endpoint, function (tip) { setMsg(msgEl, tip, 'warn'); });
       })
       .then(function () {
         btn.disabled = false;
