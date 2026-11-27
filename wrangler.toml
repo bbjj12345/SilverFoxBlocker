@@ -21,6 +21,18 @@ id = "98ac1246bc7746368baf6a071f9fed9f"
 binding = "HEALTH"
 id = "112de06669d341c5acad07e950411df3"
 
+# ============================================================================
+# /list 的 5 分钟缓存（v1.13.15）放在哪个 KV？
+#   默认复用上面的 HEALTH —— **不用新建、不用改配置**，deploy 后就生效。
+#   想让它与巡检结果分开（清理巡检数据时不连带影响名单缓存），再建一个：
+#       npx wrangler kv namespace create LIST_CACHE
+#   然后取消下面三行注释并填 id（代码会自动优先用 LIST_CACHE，其次 HEALTH）：
+# [[kv_namespaces]]
+# binding = "LIST_CACHE"
+# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+#   两个都没绑时：缓存自动关闭，/list 行为与 v1.13.14 完全一致（不会报错）。
+# ============================================================================
+
 [vars]
 GITEE_OWNER = "bbjj12345"
 GITEE_REPO = "silver-fox-blocker-cloud"
@@ -43,6 +55,13 @@ GITEE_REPO = "silver-fox-blocker-cloud"
 #   注意：这个 site key 必须是「给 api.silverfoxblocker.dpdns.org 用」的那个 widget，
 #   Turnstile 后台可以限制 hostname；限制错了会显示 invalid-hostname。
 # ============================================================================
+#   TURNSTILE_ENFORCE    soft（默认）| strict —— 决定「验证没过」是否还能发：
+#       soft  ：过了 = 60 次/天；没过（框出不来 / 凭据过期 / 服务端故障）= 仍放行，但只有 3 次/天
+#       strict：没过就不让发（v1.13.12 的老行为，会把网络打不开验证组件的用户彻底挡在门外）
+#   TURNSTILE_SOFT_QUOTA 降级通道的每日上限，默认 3，上限 60（写大了会被夹到 60）
+#   两个都不写就是 soft + 3，通常不需要写。
+# TURNSTILE_ENFORCE = "soft"
+# TURNSTILE_SOFT_QUOTA = "3"
 # 旧：一行被注释掉的占位，容易被误以为已配置 —— 2026-11-27 取消注释，真实生效。
 TURNSTILE_SITE_KEY = "0x4AAAAAAGVz3ovQlQiJuifk"
 

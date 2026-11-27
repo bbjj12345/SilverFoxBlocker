@@ -7,6 +7,7 @@
 // 关键约束（任何一条被改坏，线上都是「反馈发不出去」）：
 //   · 服务端只在配了 TURNSTILE_SECRET_KEY 时才要求验证，未配则完全透明；
 //   · 缺 token → 403 TURNSTILE_REQUIRED（扩展据此弹验证框），不是 401、不是 500；
+//   · 默认 soft：验不过只降配额（3 次/天）不挡人；strict 才硬拒。两条路径都要测；
 //   · token 单次有效：重复/超时 → TURNSTILE_EXPIRED，扩展提示「重新验证」；
 //   · 挑战页绝不吐 secret；site key 缺失时明确报错，不静默放行；
 //   · 扩展端只采信「同源 + 同一张 iframe + 带 sfb-challenge 标记」的消息。
@@ -49,6 +50,8 @@ vm.runInContext(wSrc.slice(wStart, wEnd), wCtx);
 const SECRET = 'turnstile-test-secret-0123456789';
 const SITEKEY = '0x4AAAAAAA_test_site_key';
 const ENV_ON = { TURNSTILE_SECRET_KEY: SECRET, TURNSTILE_SITE_KEY: SITEKEY };
+// v1.13.14 起默认 soft；要测「硬拦截」的老语义必须显式写 strict
+const ENV_STRICT = Object.assign({}, ENV_ON, { TURNSTILE_ENFORCE: 'strict' });
 
 t('服务端实现已被加载', typeof wCtx.verifyTurnstile === 'function' && typeof wCtx.turnstileChallengeHtml === 'function');
 t('开关判定：只承认 secret', wCtx.turnstileEnabled(ENV_ON) === true && wCtx.turnstileEnabled({ TURNSTILE_SITE_KEY: SITEKEY }) === false);
@@ -90,26 +93,26 @@ t('开关判定：secret 长度太短，视为没有配置', wCtx.turnstileEnabl
     })()) === true);
   }
 
-  // ---------- 各类失败码 ----------
+  // ---------- 各类失败码（strict：硬拒，v1.13.12 的老语义）----------
   {
     responder = async () => ({ json: async () => ({ success: false, 'error-codes': ['timeout-or-duplicate'] }) });
-    const r = await wCtx.verifyTurnstile('TOKEN-USED', '1.2.3.4', ENV_ON);
+    const r = await wCtx.verifyTurnstile('TOKEN-USED', '1.2.3.4', ENV_STRICT);
     t('重复/过期 → 403 TURNSTILE_EXPIRED', r.ok === false && r.status === 403 && r.error === 'TURNSTILE_EXPIRED', JSON.stringify(r));
 
     responder = async () => ({ json: async () => ({ success: false, 'error-codes': ['invalid-input-response'] }) });
-    const r2 = await wCtx.verifyTurnstile('TOKEN-BAD', '1.2.3.4', ENV_ON);
+    const r2 = await wCtx.verifyTurnstile('TOKEN-BAD', '1.2.3.4', ENV_STRICT);
     t('token 无效 → 403 TURNSTILE_FAILED', r2.ok === false && r2.status === 403 && r2.error === 'TURNSTILE_FAILED', JSON.stringify(r2));
 
     responder = async () => ({ json: async () => ({ success: false, 'error-codes': ['invalid-input-secret'] }) });
-    const r3 = await wCtx.verifyTurnstile('TOKEN-OK', '1.2.3.4', ENV_ON);
+    const r3 = await wCtx.verifyTurnstile('TOKEN-OK', '1.2.3.4', ENV_STRICT);
     t('密钥配置错误 → 503 TURNSTILE_MISCONFIGURED（这不是 401，不需要检查签名）', r3.ok === false && r3.status === 503 && r3.error === 'TURNSTILE_MISCONFIGURED', JSON.stringify(r3));
 
     responder = async () => { throw new Error('network down'); };
-    const r4 = await wCtx.verifyTurnstile('TOKEN-OK', '1.2.3.4', ENV_ON);
+    const r4 = await wCtx.verifyTurnstile('TOKEN-OK', '1.2.3.4', ENV_STRICT);
     t('siteverify 无法访问 → 503 TURNSTILE_UNREACHABLE', r4.ok === false && r4.status === 503 && r4.error === 'TURNSTILE_UNREACHABLE', JSON.stringify(r4));
 
     responder = async () => ({ json: async () => ({ success: false }) });
-    const r5 = await wCtx.verifyTurnstile('TOKEN-OK', '1.2.3.4', ENV_ON);
+    const r5 = await wCtx.verifyTurnstile('TOKEN-OK', '1.2.3.4', ENV_STRICT);
     t('无 error-codes 时也失败（默认拒绝）', r5.ok === false && r5.error === 'TURNSTILE_FAILED', JSON.stringify(r5));
   }
 
@@ -119,6 +122,64 @@ t('开关判定：secret 长度太短，视为没有配置', wCtx.turnstileEnabl
     const r = await wCtx.verifyTurnstile('x'.repeat(wCtx.TURNSTILE_MAX_TOKEN + 1), '1.2.3.4', ENV_ON);
     t('超长 token → 400 TURNSTILE_BAD_TOKEN', r.ok === false && r.status === 400 && r.error === 'TURNSTILE_BAD_TOKEN', JSON.stringify(r));
     t('超长 token 不消耗 siteverify 配额', calls.length === 0);
+  }
+
+  // ---------- 策略开关：soft 是默认，且配置写错不能变成「全放」或「全拒」----------
+  {
+    t('策略：默认 soft', wCtx.turnstileEnforce({}) === 'soft' && wCtx.turnstileEnforce(ENV_ON) === 'soft');
+    t('策略：显式 strict 生效（大小写/空格不敏感）', wCtx.turnstileEnforce({ TURNSTILE_ENFORCE: ' STRICT ' }) === 'strict');
+    t('策略：非法值回落 soft', wCtx.turnstileEnforce({ TURNSTILE_ENFORCE: 'yolo' }) === 'soft');
+    t('降级配额：默认 3', wCtx.turnstileSoftQuota({}) === 3);
+    t('降级配额：可配', wCtx.turnstileSoftQuota({ TURNSTILE_SOFT_QUOTA: '5' }) === 5);
+    t('降级配额：不超过正常配额 60', wCtx.turnstileSoftQuota({ TURNSTILE_SOFT_QUOTA: '999' }) === 60);
+    t('降级配额：非法值回落 3', wCtx.turnstileSoftQuota({ TURNSTILE_SOFT_QUOTA: 'abc' }) === 3);
+  }
+
+  // ---------- soft：无 token 仍要弹框（否则等于没开）----------
+  {
+    const r = await wCtx.verifyTurnstile('', '1.2.3.4', ENV_ON, false);
+    t('soft：无 token 且无 fallback → 仍然 REQUIRED（要弹框）', r.ok === false && r.error === 'TURNSTILE_REQUIRED', JSON.stringify(r));
+    const r2 = await wCtx.verifyTurnstile('', '1.2.3.4', ENV_ON, true);
+    t('soft：无 token + fallback → 放行且配额降到 3', r2.ok === true && r2.mode === 'soft-degraded' && r2.quota === 3, JSON.stringify(r2));
+    const r3 = await wCtx.verifyTurnstile('', '1.2.3.4', ENV_STRICT, true);
+    t('strict：fallback 标记无效，照样 REQUIRED', r3.ok === false && r3.error === 'TURNSTILE_REQUIRED', JSON.stringify(r3));
+  }
+
+  // ---------- soft：各种「验不过」都放行，但只给降级配额 ----------
+  {
+    responder = async () => ({ json: async () => ({ success: false, 'error-codes': ['timeout-or-duplicate'] }) });
+    const a = await wCtx.verifyTurnstile('T', '1.2.3.4', ENV_ON);
+    t('soft：凭据过期 → 放行，标记 expired', a.ok === true && a.quota === 3 && /expired/.test(String(a.degraded)), JSON.stringify(a));
+
+    responder = async () => { throw new Error('down'); };
+    const b = await wCtx.verifyTurnstile('T', '1.2.3.4', ENV_ON);
+    t('soft：siteverify 连不上 → 放行，标记 unreachable', b.ok === true && /unreachable/.test(String(b.degraded)), JSON.stringify(b));
+
+    responder = async () => ({ json: async () => ({ success: false, 'error-codes': ['invalid-input-secret'] }) });
+    const c = await wCtx.verifyTurnstile('T', '1.2.3.4', ENV_ON);
+    t('soft：服务端密钥错 → 放行（不替作者的配置背锅）', c.ok === true && /misconfigured/.test(String(c.degraded)), JSON.stringify(c));
+
+    responder = async () => ({ json: async () => ({ success: false, 'error-codes': ['invalid-input-response'] }) });
+    const f = await wCtx.verifyTurnstile('T', '1.2.3.4', ENV_ON);
+    t('soft：token 无效 → 放行，但标记 failed（便于统计）', f.ok === true && /failed:/.test(String(f.degraded)), JSON.stringify(f));
+
+    const d = await wCtx.verifyTurnstile('x'.repeat(wCtx.TURNSTILE_MAX_TOKEN + 1), '1.2.3.4', ENV_ON);
+    t('soft：超长 token 仍然 400（明显伪造不奖励）', d.ok === false && d.status === 400, JSON.stringify(d));
+
+    responder = async () => ({ json: async () => ({ success: true }) });
+    const e = await wCtx.verifyTurnstile('T', '1.2.3.4', ENV_ON);
+    t('soft：通过验证 → 满配额 60', e.ok === true && e.quota === 60 && e.mode === 'pass', JSON.stringify(e));
+  }
+
+  // ---------- 限流接线（handler 依赖 env 不好单跑，改用源码顺序断言）----------
+  {
+    const iT = wSrc.indexOf('const turnstile = await verifyTurnstile');
+    const iQ = wSrc.indexOf('const quota = turnstile.quota');
+    const iL = wSrc.indexOf('currentCount >= FEEDBACK_DAILY_QUOTA');
+    t('顺序：验人机 → 取配额 → 限流（否则 soft 配额无从得知）', iT > 0 && iQ > iT && iL > iQ, JSON.stringify({ iT, iQ, iL }));
+    t('降级通道独立计数（rate_limit_soft_）', wSrc.indexOf('rate_limit_soft_') > 0);
+    t('降级额度用尽有专门错误码', wSrc.indexOf('DEGRADED_QUOTA_EXCEEDED') > 0);
+    t('降级也累加主计数（防 60+3 后门）', /RATE_LIMIT_KV\.put\(kvKey/.test(wSrc));
   }
 
   // ---------- 挑战页 ----------
@@ -292,31 +353,71 @@ async function testExtension() {
     t('off 分支也能 resolve', settled && settled.ok === true);
   }
 
-  // ---- 验证页报错：必须 reject 成「人机验证阶段」，且不能误导去查网络 ----
+  // ---- 验证页报错：soft 下改为「带 fallback 标记降级重发」，而不是直接失败 ----
   {
     seen = []; settled = null; frames.length = 0;
+    let n = 0;
     ctx.fetch = async (url, opts) => {
-      seen.push({ url, opts });
-      return { ok: false, status: 403, text: async () => JSON.stringify({ error: 'TURNSTILE_REQUIRED' }) };
+      seen.push({ url, opts }); n++;
+      if (n === 1) return { ok: false, status: 403, text: async () => JSON.stringify({ error: 'TURNSTILE_REQUIRED' }) };
+      // 第二次：服务端看到 fallback 标记，按 soft 放行
+      return { ok: true, status: 200, text: async () => '{"success":true,"degraded":true}' };
     };
+    let fellBack = null;
     const m3 = makeEl('div');
-    const p3 = ctx.sfbSendFeedback(EP, { message: 'x', contact: '' }, { mount: m3 });
+    const p3 = ctx.sfbSendFeedback(EP, { message: 'x', contact: '' }, {
+      mount: m3,
+      onFallback: function (e) { fellBack = e; },
+    });
     p3.then(() => { settled = { ok: true }; }, (e) => { settled = { ok: false, e: e }; });
     await tick(30);
     msgHandlers.slice().forEach((h) => h({ origin: 'https://api.example.org', source: frames[0].contentWindow, data: { source: 'sfb-challenge', type: 'error', reason: 'no-sitekey' } }));
     await tick(30);
-    t('验证页报错 → 抛出 sfbStage=turnstile', settled && settled.ok === false && settled.e.sfbStage === 'turnstile', settled && JSON.stringify({ s: settled.e.sfbStage }));
-    t('错误里带可读原因（no-sitekey）', /SITE_KEY/.test(String(settled.e.sfbDetail || '')), settled.e.sfbDetail);
-    t('报错后不再重发（避免打空接口）', seen.length === 1, String(seen.length));
+    t('验证页报错 → 触发降级重发（不再直接失败）', seen.length === 2, String(seen.length));
+    const body3 = JSON.parse(seen[1].opts.body);
+    t('降级请求带 turnstileFallback:true', body3.turnstileFallback === true, seen[1].opts.body);
+    t('降级请求不带 token（没有就是没有）', body3.turnstileToken === undefined, seen[1].opts.body);
+    t('降级请求照样签名（fallback 也在签名覆盖范围内，改不了）', (function () {
+      const want = nodeCrypto.createHmac('sha256', SECRET2)
+        .update('/' + '\n' + seen[1].opts.headers['X-SF-Ts'] + '\n' + seen[1].opts.body).digest('hex');
+      return seen[1].opts.headers['X-SF-Sig'] === want;
+    })());
+    t('onFallback 回调拿到 turnstile 阶段错误（供 UI 提示限额）', !!fellBack && fellBack.sfbStage === 'turnstile', fellBack && fellBack.sfbStage);
+    t('服务端放行后 resolve', settled && settled.ok === true);
   }
 
-  // ---- 没有挂载点：直接报错，不静默失败 ----
+  // ---- strict 模式：降级重发仍被拒 → 上抛 REQUIRED，且只试两次 ----
   {
-    settled = null;
+    seen = []; settled = null; frames.length = 0;
+    ctx.fetch = async (url, opts) => {
+      seen.push({ url, opts });
+      return { ok: false, status: 403, text: async () => JSON.stringify({ error: 'TURNSTILE_REQUIRED', detail: '需要人机验证' }) };
+    };
+    const m3b = makeEl('div');
+    const p3b = ctx.sfbSendFeedback(EP, { message: 'x', contact: '' }, { mount: m3b });
+    p3b.then(() => { settled = { ok: true }; }, (e) => { settled = { ok: false, e: e }; });
+    await tick(30);
+    msgHandlers.slice().forEach((h) => h({ origin: 'https://api.example.org', source: frames[0].contentWindow, data: { source: 'sfb-challenge', type: 'error', reason: 'timeout' } }));
+    await tick(30);
+    t('strict：降级重发被 403 拒绝后上抛', settled && settled.ok === false && settled.e.sfbCode === 'TURNSTILE_REQUIRED', settled && JSON.stringify({ c: settled.e && settled.e.sfbCode }));
+    t('strict：只发两次，不无限重试', seen.length === 2, String(seen.length));
+  }
+
+  // ---- 没有挂载点：没地方放验证框 → 直接走降级通道（别静默失败） ----
+  {
+    seen = []; settled = null; frames.length = 0;
+    let n = 0;
+    ctx.fetch = async (url, opts) => {
+      seen.push({ url, opts }); n++;
+      if (n === 1) return { ok: false, status: 403, text: async () => JSON.stringify({ error: 'TURNSTILE_REQUIRED' }) };
+      return { ok: true, status: 200, text: async () => '{"success":true,"degraded":true}' };
+    };
     const p4 = ctx.sfbSendFeedback(EP, { message: 'x', contact: '' }, {});
     p4.then(() => { settled = { ok: true }; }, (e) => { settled = { ok: false, e: e }; });
-    await tick(20);
-    t('没有挂载点 → reject turnstile 阶段', settled && settled.ok === false && settled.e.sfbStage === 'turnstile', settled && String(settled.e && settled.e.message));
+    await tick(30);
+    t('没有挂载点 → 不插 iframe', frames.length === 0, String(frames.length));
+    t('没有挂载点 → 走降级重发', seen.length === 2 && JSON.parse(seen[1].opts.body).turnstileFallback === true, String(seen.length));
+    t('没有挂载点 → soft 放行后 resolve', settled && settled.ok === true);
   }
 
   // ---- 非人机验证的失败必须原样抛给上层（不能被这里吞掉） ----
@@ -354,14 +455,30 @@ function testCopy() {
 
   const mk = (st, code) => ({ sfbStage: 'http', sfbStatus: st, sfbCode: code, sfbDetail: '' });
   const r1 = ctx.sfbDescribeMailFailure(mk(403, 'TURNSTILE_EXPIRED'), 'https://x/');
-  t('403 TURNSTILE_EXPIRED → 明确说「每个凭据只能使用一次」', /每个凭据只能使用一次/.test(r1), r1);
+  // 断言只卡语义（「只能用一次」），不卡整句 —— 否则文案每微调一个字就误红
+  t('403 TURNSTILE_EXPIRED → 明确说「凭据只能用一次」', /只能用一次/.test(r1), r1);
   t('403 TURNSTILE_EXPIRED → 不泄露内部错误码', r1.indexOf('TURNSTILE_') === -1, r1);
   const r2 = ctx.sfbDescribeMailFailure(mk(403, 'TURNSTILE_FAILED'), 'https://x/');
   t('403 TURNSTILE_FAILED → 让用户重新勾选', /重新勾选/.test(r2), r2);
   const r3 = ctx.sfbDescribeMailFailure(mk(503, 'TURNSTILE_MISCONFIGURED'), 'https://x/');
-  t('503 配置错误 → 说清「不是你网络的问题」', /非网络故障/.test(r3), r3);
+  t('503 配置错误 → 说清「不是你网络的问题」', /不是你的网络|非网络故障/.test(r3), r3);
   const r4 = ctx.sfbDescribeMailFailure({ sfbStage: 'turnstile', sfbReason: 'timeout', sfbDetail: '验证组件未能渲染' }, 'https://x/');
   t('验证页加载失败 → 说「人机验证没有完成」并给替代通道', /人机验证没有完成/.test(r4) && /GitHub/.test(r4), r4);
+  // no-sitekey = 服务端漏配 site key（2026-11-27 真实踩到）。绝不能叫用户去查自己的网络。
+  const r6 = ctx.sfbDescribeMailFailure({ sfbStage: 'turnstile', sfbReason: 'no-sitekey',
+    sfbDetail: '服务端只配了 TURNSTILE_SECRET_KEY，没配 TURNSTILE_SITE_KEY，人机验证无法显示' }, 'https://x/');
+  t('no-sitekey → 明说「与你的网络无关」', /与你的网络无关/.test(r6), r6);
+  t('no-sitekey → 不再叫人去查 challenges.cloudflare.com', r6.indexOf('challenges.cloudflare.com') === -1, r6);
+  t('no-sitekey → 给出可用的替代通道', /GitHub Issue/.test(r6), r6);
+  // script / timeout 才是「你这边网络或代理拦了」，这两类要保留换网络的建议
+  const r7 = ctx.sfbDescribeMailFailure({ sfbStage: 'turnstile', sfbReason: 'timeout', sfbDetail: '验证组件 12 秒内没有渲染出来' }, 'https://x/');
+  t('timeout → 保留「换网络再试」的建议', /换网络/.test(r7), r7);
   const r5 = ctx.sfbDescribeMailFailure(mk(403, ''), 'https://x/');
   t('普通 403（无错误码）仍走通用解释', /被服务端拒绝/.test(r5), r5);
+  // soft 模式带来的两个新文案：降级额度用尽、strict 下必验
+  const r8 = ctx.sfbDescribeMailFailure(mk(429, 'DEGRADED_QUOTA_EXCEEDED'), 'https://x/');
+  t('429 降级额度用尽 → 点明「免验证通道」有小限额', /免验证|免人机验证/.test(r8), r8);
+  t('429 降级额度用尽 → 给替代通道', /GitHub Issue/.test(r8), r8);
+  const r9 = ctx.sfbDescribeMailFailure(mk(403, 'TURNSTILE_REQUIRED'), 'https://x/');
+  t('403 REQUIRED → 提示可能是「严格模式」', /严格模式/.test(r9), r9);
 }

@@ -1,6 +1,6 @@
 # SilverFoxBlocker
 
-Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.13.12**），用于检测并拦截「银狐木马（Silver Fox / 游蛇）」相关的钓鱼站、仿冒官网和恶意下载入口。
+Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.14.9**，以 `manifest.json` 的 `version` 为准），用于检测并拦截「银狐木马（Silver Fox / 游蛇）」相关的钓鱼站、仿冒官网和恶意下载入口。
 
 **检测、评分、名单比对与拦截全部在本地完成**，不依赖在线服务即可工作。默认开启的 RDAP / ICP 辅助核验会发送**域名**；云端黑 / 白名单、威胁情报 API、社区黑名单都是**需要你主动开启或点击**的增强项。当前版本包含 37 维加权检测引擎、六类名单（云端 / 内置 / 自定义 × 黑白）与三层“例外”放行层、下载与自动下载拦截、云端名单手动同步（Worker 侧 GitHub 优先、Gitee 回落）、可选四家威胁情报与五份社区黑名单、六款急救工具下载引导（含自制 SilverFoxCleaner），界面明暗四档（黑暗 / 明亮 / 跟随系统 / 反转系统），以及 GitHub / Gitee / 蓝奏云三个更新入口。
 
@@ -55,6 +55,10 @@ Chrome / Edge 浏览器扩展（Manifest V3，当前版本 **v1.13.12**），用
 - **下载页误报治理：扩展名 / 平台名 / 通用名词品牌词（v1.13.9）**：`www.libreoffice.org/download/` 与 `www.onlyoffice.com/zh/download-desktop` 曾被判 **116 分拦截**，逐条核对后**三条都是扩展自身的逻辑错误**，与站点行为无关：① **`.msi` 扩展名被当品牌词「msi」（微星）** —— `LibreOffice_26.8.3_Win_x86-64.msi` 里的后缀命中品牌词表，叠加「可执行/压缩包」判据直接触发「品牌仿冒安装包」+40 强特征；② **路径段 `android` 被当品牌词** —— `.../install/mobile/android/onlyoffice-documents.apk`；③ **`office` 作为通用名词参与拼接判定** —— `libre`/`only` + `office` 被当作「品牌词 + 填充片段」的拼接式仿冒 +30。修法分别是：新增 `_cleanBrandBlob()`，匹配前**只抹「点 + 扩展名」形式**（`.msi` / `.apk` / `.zip` …，绝不碰路径段 `/msi/` 与词内 `MSI_Afterburner`）并剔除平台/系统名（`android` / `windows` / `x64` …），`detBrandedExe` 与 `detBrandedSoftSite` 两个维度同口径；新增 `_VARIANT_SKIP_KW`（当前 `office` / `android`），只让它们**不参与「嵌入」与「插入」两条弱分支**，basic 的段匹配（`office-login.xxx.top` 仍 60 分）、编辑距离（`offlce.com` 仍 45 分）与数字形近全部照常。修复后两个页面降到 **38 / 28 分（safe）**，剩下的「链接分析异常 16 / 直链可执行文件 12 / 下载链接跨域 10」是官网下载页的**事实特征**，不再叠加仿冒分后已低于可疑线，无需加白名单即可正常访问；反向验证：`WeChat_Setup.exe`、`MSI_Afterburner_Setup.exe` 这类真木马化投递仍判 40 分「品牌仿冒安装包」。等价性：45,267 例对比中差异只有「含 `.msi`/`.apk` 的下载页 24,038 例（去掉误报）」与目标站 4 例，其余 `score/level/reasons` 逐字相同。回归用例见 `tools/test-brand-variant.js` 第 17 节（12 条）。
 - **邮件反馈失败可诊断（v1.13.9）**：此前「发送反馈到作者邮箱」遇到任何失败都只显示「发送失败，请稍后重试。」—— `fetch` 的 `.catch` 不接参数，异常被整块吞掉，换台电脑发不出去时用户无从判断是断网、DNS、代理，还是服务端 429/500。现在按失败阶段分层显示：**① 网络层**（请求没到服务端）给出浏览器原始异常 + 四种常见原因，并附**本机扩展 ID**；**② HTTP 层**（服务端回了非 2xx）按状态码给解释（400/401/403/404/405/413/415/429/500/502/503/504），并**优先显示 Worker 在 body 里返回的 `{ error }` 中文说明**；**③ 主请求失败后再做一次可达性探测**：用 `mode:'no-cors'` + `HEAD` 复打同一地址，该模式不做 CORS 校验，只要网络层通就拿到 opaque 响应 —— 探测成功即说明「请求到达了服务端、是浏览器拒绝交付响应」，可直接指向「扩展 ID 不在服务端 `ALLOWED_ORIGINS` 白名单」；探测也失败才是真断网。顺带把请求超时从「无上限」改成 15 秒，网络黑洞时不再一直转圈。实测该接口：白名单内 Origin 返回 `400 + Access-Control-Allow-Origin`，未知 Origin 返回 `403 + 无 CORS 头`（浏览器侧因此只表现为 `TypeError: Failed to fetch`）——这正是「商店版能用、新电脑加载已解压版发不出去」的机制（v1.13.10 起 403 也带 CORS 头，见下一条）。探测只在失败时发一次、同接口、无响应体、无新目标；回归用例见 `tools/test-mail-failure.js`。
 - **反馈失败文案定版 + 「诊断」行有证据 + 服务端白名单支持通配（v1.13.10）**：把上一版临时拼的提示换成固定版式，并让「诊断」这一行只在**真有证据**时才出现。**版式**：网络层四行 —— `发送失败：无法连接反馈服务器（Failed to fetch）` / `常见原因：网络故障 / DNS 解析失败 / 使用代理或VPN / 被防火墙拦截 / 跨域被拒（扩展 ID 不在服务端白名单）` / `本机扩展 ID：<id>` / `诊断：<只写命中的那一条>`；HTTP 层两行 —— `发送失败：HTTP 429` / `提交过于频繁：已触发服务端限流，或达到当日发送上限`（服务端在 body 里给了**不同**的中文原因时，再补一行 `服务端说明：…`；与通用解释重复则不叠加，避免同一句话出现两遍）。**「诊断」的判定链**（按序短路，拿不到证据就**不写**这一行，绝不猜）：① `navigator.onLine === false` → `网络故障，您似乎没有连接到互联网`（硬证据，直接定案、不再探测）；② `no-cors` + `HEAD` 探测同址可达 → `跨域被拒，本机扩展 ID 可能不在服务端白名单`（请求到了服务端，是浏览器不肯交付响应）；③ 探测不通时再问一次公共 DoH（`dns.alidns.com` 优先，失败退 `cloudflare-dns.com`，各 2.5s）：域名**查无** → `DNS 解析失败，请检查您的 DNS 设置`；域名**解析得出**却连不上 → `出网与解析都正常、唯独这条连接被拦`，落 `被防火墙拦截，请在防火墙中为本扩展设置例外`；④ 两个 DoH 都不通 / 返回 SERVFAIL → 不下结论，只保留前两行固定文案。**代理/VPN 不单列**：它既可能表现为 DNS 失败、也可能表现为连接被拦，从网页侧无法与上述两类区分，因此固定在「常见原因」里由用户自行对照（代码里保留了该条文案常量，供将来能探测时启用）。**服务端（Worker）**：`ALLOWED_ORIGINS` 与环境变量都开始支持通配符 `*`（`chrome-extension://*` = 任意扩展，`https://*.example.com` = 任意子域，**不含** `example.com` 本身），默认即放行任意扩展来源（`ALLOW_ANY_EXTENSION = true`）—— 本地「加载已解压」的 ID 由解压路径决定、换台电脑就变一个，逐个往白名单里加 ID 根本追不上；放行扩展来源后普通网页仍被拦（`/list` 的数据本就托管在公开仓库，`X-API-Key` 随包分发、从不是秘密，白名单的真实作用只是不让网页在浏览器里读到响应）。匹配时**只有 `*` 是通配**，`.` `+` `(` 等一律按字面转义，否则 `https://a.b.com` 会宽松命中 `https://axbxcom`，白名单就成了筛子。另修一处**根因**：被拒的 403 现在也回显 `Access-Control-Allow-Origin`（只回显 Origin + `Vary`，不给数据相关的任何头），于是扩展侧能读到 `{"error":"Origin not allowed"}` 原文，而不是被浏览器折叠成一句 `Failed to fetch`——「来源被拒」和「网络不通」从此在日志里就分得开。回归用例：`tools/test-mail-failure.js`（48 条）、`tools/test-cors-origin.js`（32 条）。
+- **版本号对齐到 v1.14.9，并定下「版本号只从 `manifest.json` 读」的规矩（v1.14.9）**：此前 `manifest.json` 停在 `1.13.15`，而对内对外的说法已经走到 1.14.x，文档、打包命令、发给别人的 zip 文件名各说各话 —— 拿到包一看「关于」页，跟 changelog 对不上号。这一版**只对齐版本号**：`manifest.json` 的 `version` 改为 `1.14.9`，README 的「当前版本」与打包命令示例、PRIVACY 的「适用版本」同步跟随。**功能、权限、第三方、请求、存储全部零变化**，不需要重新部署 Worker。代码里本来就没有写死版本号（`background.js` 与 `ui/options.js` 一律用 `chrome.runtime.getManifest().version` 运行时读取），所以扩展内的版本显示会自动跟着 `manifest.json` 走。同时立一条维护规矩：**以后任何 bump 都先读 `manifest.json` 的 `version`，在它的基础上递增**，不凭记忆、不按 README 里最后一条 changelog 推算、不在多处手写版本号 —— 文档里的 `vX.Y.Z` 只是对某个已发生改动的标注，不是版本事实的来源。回归用例：`tools/test-version-sync.js`（校验 `manifest.json` 版本可解析、且 README/PRIVACY 的「当前版本 / 适用版本」与之一致，不一致即失败）。
+- **云端名单接入「5 分钟缓存」，顺手堵掉一条可无限刷上游的通道（v1.13.15）**：`GET /list` 此前**没有任何缓存、也没有任何限流** ——每个请求都真的去打一次 `api.github.com`（失败再依次打 Gitee 的 6 种「目录 × 分支」组合）。配合「任意扩展来源放行」，任何人写个循环就能把 GitHub token 的 5000 次/小时配额打光，**结果是真用户也拉不到名单**（我们的双源全 429/403 时只能回 502）。名单一天最多变几次，却按「每个请求一次上游」的代价去取，纯属浪费。现在的规则：① **命中 5 分钟内的副本就直接返回，一个上游子请求都不发**；② 过期才回源，拿到就写回 KV（留存 24 小时，只为让上游故障时还有旧副本可发）；③ **上游双源都失败时发旧副本**并标 `X-Data-Stale: 1`，比让用户看 502 有用；④ 同一 isolate 内并发未命中会**合并成一次上游**（防击穿）；⑤ `?diag=1` / `?force=gitee|github` 一律穿透缓存（诊断必须看到此刻的上游），`?nocache=1` **不读但写**（手动刷新顺手更新缓存）。**特意堵的一个洞**：`nocache` 参数写在公开代码里，谁都能带 —— 它本来会变成「绕过缓存的免费通道」，所以给它加了 **60 秒最短刷新间隔**（距上次拉取不足 60 秒就直接发那份副本），最多旧 60 秒，上游压力仍锁在 1 次/分钟。扩展端「从云端更新名单」按钮改带 `nocache=1`：手动点击多半是刚改完名单，拿到 5 分钟前的旧份会以为「没更新成功」。响应头新增 `X-Cache`（`HIT` / `MISS` / `REFRESH` / `STALE` / `BYPASS`）与 `X-Cache-Age`（秒），排障时一眼看出是不是缓存。**不需要新建 KV 命名空间**：复用已绑定的 `HEALTH`（没有的话自动降级成不缓存，行为与旧版一致）；想独立管理再绑 `LIST_CACHE`。回归用例 `tools/test-list-cache.js`（46 条，直接 import 真实 Worker 打真实 Request，不是把逻辑抄一遍）。
+- **人机验证从「硬拦截」改成「软降级」：过不了验证也能发，只是配额更低（v1.13.14）**：v1.13.12 的语义是「没有 token 一律拒绝」，可「拿不到 token」有两种完全不同的原因 —— 真是机器人，或者**用户的网络打不开 `challenges.cloudflare.com`**（大陆网络下并不罕见，验证框 12 秒都渲染不出来）。硬拦截把这两类判成同一类，后者重试多少次都会被挡，且没有任何自救手段。现在默认 `TURNSTILE_ENFORCE = "soft"`：**验证通过 = 正常配额（60 次/天）；验证没过（框没出来 / 凭据过期 / siteverify 连不上 / 服务端密钥配错）= 仍然放行，但只给 3 次/天**（`TURNSTILE_SOFT_QUOTA` 可调，上限 60）。三个刻意的设计点：① soft **不等于「不弹验证框」** —— 第一次请求照旧回 `403 TURNSTILE_REQUIRED` 触发弹框，只有扩展明确带 `turnstileFallback: true`（意思是「框我试过，确实出不来」）才降级，否则 soft 就退化成完全不验证；② 降级额度**单独计数**（`rate_limit_soft_*`）且**主计数照样累加**，堵住「先发满 60 次正常额度再靠降级继续发」的后门；③ 明显伪造（token 超长）仍然 400，不吃这套。**顺序也修正为「验签 → 解析 → 验人机（拿配额）→ 限流 → 发信」** ——原来限流写死 60 且在验人机之前，soft 模式下根本不知道这次该按哪个额度算。日志里新增 `[turnstile] 降级放行：原因=… 配额=…`，以后能直接统计「验证框坏了多少人受影响」。`/health` 增 `turnstileEnforce` / `turnstileSoftQuota` 两个字段，curl 一下就知道当前是软还是硬。回滚成硬拦截：`TURNSTILE_ENFORCE = "strict"` 再部署，无需改扩展。回归用例 96 条。
+- **修「人机验证窗口无法加载」的两处坑（v1.13.13）**：① `wrangler.toml` 里的 `TURNSTILE_SITE_KEY` 默认是注释行，填了 key 却忘删行首 `#` 时 TOML 会把它当注释忽略，部署后挑战页返回 `reason:"no-sitekey"`，验证框永远弹不出来；已在配置里取消注释，并在 README 部署章节补了「一行 curl 自查」。② 失败文案原来对所有 `turnstile` 阶段失败都说「请确认能正常打开 challenges.cloudflare.com」——对 `no-sitekey` / `render` 这类**服务端配置问题**是误导，用户怎么查网络都没用。现在按 reason 分流：配置类明说「与你的网络无关，重试无用，请改走 GitHub Issue」；`script` / `timeout` 才保留「换网络再试」的建议。回归用例 66 条。
 - **反馈接口加第二道闸：Cloudflare Turnstile 人机验证（v1.13.12）**：HMAC 密钥随扩展包分发（本仓库公开，等于人人可读），它挡得住随手打接口的脚本，挡不住把密钥抄出来的人。现在每次发送还必须附一张 Cloudflare 现场签发、**单次有效、5 分钟过期**的人机验证凭据，由 Worker 调 `siteverify` 核对。`POST` 的进门顺序变成 **验签 → 验人机 → 限流 → 发信**：签名不合格的请求连 `siteverify` 的子请求都不发，token 不合格的请求连 KV 配额都碰不到。**扩展侧真正的难点是 MV3 的 CSP 禁止远程脚本**（`script-src 'self'`），不能像网页那样直接引 `challenges.cloudflare.com` 的 `api.js`；改为由 Worker 自己吐一张挑战页 `GET /challenge`，扩展用 iframe 嵌它，验证通过后页面用 `postMessage` 把 token 交回来，扩展再把它拼进请求体、与正文**一起签名**（所以 token 也换不掉）。iframe 这一侧做了三重校验才采信消息：来源必须是本 Worker、窗口必须就是这张 iframe、载荷必须带 `sfb-challenge` 标记。**触发时机是「服务端说要才要」**：先照常发一次，回 `403 TURNSTILE_REQUIRED` 才弹验证框、验完自动重发——没开 Turnstile 的部署完全不受影响，也不存在「扩展配置与服务端不同步」。服务端**只认 secret**：只配 `TURNSTILE_SITE_KEY` 不配 secret 视为未开启（否则页面画得出来、服务端却验不了，是最坏的「看起来能用」）；只配 secret 不配 site key 时挑战页明确回 `no-sitekey` 并让人看到原因，绝不静默放行；挑战页本身**永不吐 secret**。回归用例 `tools/test-feedback-turnstile.js`（62 条：siteverify 各类返回、挑战页三种状态、扩展端三重校验、off/错误分支、401 不误触发）。
 - **反馈接口改为「共享密钥 + HMAC 签名」鉴权，彻底不依赖 `ALLOWED_ORIGINS`（v1.13.11）**：上一版把反馈接口从「精确 ID 白名单」放宽到 `chrome-extension://*`，代价是**任何装了的扩展**都能往作者邮箱灌垃圾，而退回精确白名单又追不上「换台电脑 ID 就变」。根因是**用来源当身份**——来源本来就不是身份。现在改成用密钥证明「自己人」：扩展端内置一把与 Worker 共享的密钥，把 `路径 + "\n" + 毫秒时间戳 + "\n" + 请求体原文` 交给 `crypto.subtle`（HMAC-SHA256），签名与时间戳分别放 `X-SF-Sig` / `X-SF-Ts` 两个请求头；Worker 端用 `SECRET_DATA`（Cloudflare Secret，**不进仓库、不进扩展包**）重算并**定长逐字节比对**（不做提前返回，避免用响应时间猜前缀），同时要求时间戳落在 **±5 分钟**内——截获的旧请求过一会儿自动作废。**验签位置在限流与发信之前**：没有密钥的请求连 KV 配额都碰不到、更不会触发 Brevo 发信，所以刷接口的成本从「一个 fetch」变成了「先逆出 32 字节密钥」。`/send` 从此**不做来源判定**（`corsFor(..., openSigned)` 直接放行并回 `Access-Control-Allow-Origin`），`ALLOWED_ORIGINS` 只剩 `/list` 与 `/health` 还在用，与反馈链路解耦。**如实说明边界**：密钥随扩展包分发、解包可见（本仓库公开，等于任何人都能直接读到），它挡的是「随手打接口」的爬虫与脚本，挡不住有决心的逆向；真被刷时 `npx wrangler secret put SECRET_DATA` 换一把密钥 + 发一版扩展即可止血。客户端失败文案也补齐了签名阶段：无密钥 / 环境不支持 → `发送失败：无法为反馈签名` 并明确「别去查网络」；服务端 401 会把 `TIMESTAMP_EXPIRED` / `BAD_SIGNATURE` 这类错误码原样带出；503 直接点明「服务端未配置密钥」。**部署要点**：密钥必须在 Cloudflare 后台以 Secret 形式配置（`wrangler secret put SECRET_DATA`），写进 `wrangler.toml` 的 `[vars]` 会被提交进仓库；两端密钥必须逐字一致（含首尾空格），改一端即全量 401。回归用例：`tools/test-feedback-auth.js`（25 条，含「真实扩展端签名 → 真实服务端验证」的端到端与反证）、`tools/test-mail-failure.js`（65 条）。
 - **阈值与权重标定（v1.12.6）**：纯分数判危线为 **72 分**（可疑线 42；灵敏度「低」为 88 / 55，「高」为 58 / 30），遵循「单维不越线、叠加才判危」。**37 个维度中没有任何一条单独够到 72 分**（最重的「域名仿冒」「盗用备案」为 55~60；本轮新增的 8 项里最重的是「黑产基础设施指纹」45 分与「脚本集中下载地址」34 分），所以单条弱信号不会把正常页面判死；危险结论要么来自硬强特征（仿冒 / 沙箱探测 / NOAH 投递 / 运行时取链，命中即判），要么来自「多项中/弱风险叠加」的组合升级规则。数值与其它工具**不可直接横向比较**——各家权重分配与维度数量不同，100 分制与 72 分制只是同一根尺子的不同刻度。本轮标定修正了三类偏差：① **过高**——「脚本集中下载地址」原 40 分（占判危线 56%，而国产 CMS 的官方下载页普遍存在 `GLOBAL_DOWNLOAD_URL = '/download/file.php?id=x'` 这类写法）下调到 34 分；「备案号格式可疑」由 16 分下调到 12 分（只看页脚字符串，与站点善恶无因果）；「黑产基础设施指纹」的 noah 规则改为先取主机名再判定，同站自身的 `/api.php` 与纯字母品牌词（`noahsoft` / `noah.com.cn`）不再计入。② **过低**——「反开发者/反审查」的下载入口门控原先只认 `<a href>` 里的真实文件，而最典型的一类页面上下载地址**本来就不写在 href 里**（`javascript:void(0)` / `#`），导致「既藏下载地址又反调试」的页面只拿 62 分停在可疑；现补认「脚本集中下载地址」与「链接运行时改写」两条门控。③ **分值与证据强度不匹配**（第二轮按实测改分值）——「黑产基础设施指纹」原 35 分低估：实测「只有 adseo 引用的页面」仅 35 分，连可疑线 42 都不到，而「adseo/noah + 脚本集中下载地址」两条硬机制证据叠加也只有 69 分、拦不住；它与「指向已拦截投递域名」（45）、「已知木马化投递物」（45）同属硬 IOC 量级，故提到 **45 分**（实测该两类页升到 79 分判危，单条 adseo 升到可疑）。「反开发者/反审查」原 18 分略低：门控补认脚本集中地址后，典型诱导页（占位按钮 18 + 集中地址 34 + 反调试）合计 70 分，仍差 2 分不判危（去掉「官方」话术即停在可疑），提到 **20 分**后同页 72 分达线；良性侧（防复制脚本 + 直链安装包）只从 30 分升到 32 分，远离阈值。**已知取舍**：若一个正规站同时具备「页脚备案号少写省份缩写 + 脚本集中下载地址 + 防复制脚本 + 直链 exe」四条，会被判危（78 分）——这类站可直接用「例外」放行，属本项目「宁可杀错」的一侧。
@@ -284,6 +288,7 @@ SilverFoxBlocker/
 ├── tools/test-exception.js    # 三层「例外」优先级矩阵自测（云端 > 云端黑 > 内置例外 > 内置黑 > 用户例外 > 用户黑）
 ├── tools/test-health.js       # Worker 存活巡检的离线测试（fetch / RDAP / DoH 全部打桩）
 ├── tools/test-mail-failure.js # 邮件反馈失败诊断自测（网络层 / HTTP 层分流、错误码文案、可达性探测、扩展 ID）
+├── tools/test-version-sync.js # 版本号一致性自测：以 manifest.json 为准，核对 README / PRIVACY 的版本声明与 zip 名
 ├── tools/pack-snapshot.html   # 同上，但零安装：双击用浏览器打包（加密逻辑内联，不依赖外部 js）
 ├── Cloud/*.json.enc           # 云端名单的加密快照（备用通道取它；内容不可直接阅读）
 ├── icons/                     # 扩展图标 16 / 48 / 128
@@ -324,13 +329,13 @@ SilverFoxBlocker/
 1. **打包**：只压缩**运行时**文件（`manifest.json` 必须在压缩包根目录，不能再套一层文件夹）。下列目录是开发/后端产物，**不要**打进包：`tools/`（Node 打包脚本、网页加密工具）、`Cloud/`（密文快照与打包记录）、`worker/` + `wrangler.toml`（Cloudflare Worker 后端，跑在服务端、与扩展无关）、`.bak_*` 与 `.bak/` 备份目录、`.bg_*.js`（`background.js` 的旧副本）、`.workbuddy/`（编辑器的工作区数据）。
    ```bash
    # macOS / Linux / Git Bash
-   zip -r SilverFoxBlocker-1.13.12.zip \
+   zip -r SilverFoxBlocker-1.14.9.zip \
      manifest.json background.js crypto-helper.js sponsors.json \
      content rules ui icons fonts _locales \
      LICENSE README.md PRIVACY.md
    ```
    打包后核对：压缩包根目录第一层应只有上面这些条目；这些文件合计约 **2.3 MB**（字体占一半以上），压成 zip 约 1.5 MB。
-   > Windows 若没有 `zip` 命令，可用资源管理器全选上述条目 → 右键「压缩为 ZIP 文件」，或在 PowerShell 里用 `Compress-Archive -Path <这些条目> -DestinationPath SilverFoxBlocker-1.13.12.zip`。
+   > Windows 若没有 `zip` 命令，可用资源管理器全选上述条目 → 右键「压缩为 ZIP 文件」，或在 PowerShell 里用 `Compress-Archive -Path <这些条目> -DestinationPath SilverFoxBlocker-1.14.9.zip`。
 2. **商店表单**：
    - 隐私政策 URL：`https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md`（Gitee 镜像：`https://gitee.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md`）。
    - 「权限理由」逐项粘贴 [PRIVACY.md § 8.5](./PRIVACY.md) 的表格内容。
@@ -381,7 +386,7 @@ SilverFoxBlocker/
 
 | # | 目标 | 触发条件 | 发送内容 |
 |---|---|---|---|
-| 9 | `api.silverfoxblocker.dpdns.org/list` | 点「从云端更新名单」（无自动定时） | GET，仅 `type=white\|black`、时间戳与只读 `X-API-Key`；**不上传本地数据** |
+| 9 | `api.silverfoxblocker.dpdns.org/list` | 点「从云端更新名单」（无自动定时） | GET，仅 `type=white\|black`、`nocache=1`、时间戳与只读 `X-API-Key`；**不上传本地数据**（服务端对该接口有 5 分钟缓存，手动请求带 `nocache=1` 并要求最多旧 60 秒） |
 | 9b | `raw.githubusercontent.com` 及公共反代 `gh-proxy.com` / `ghfast.top` / `ghproxy.net` / `ghfile.geekertao.top` / `gh.geekertao.top` / `ghproxy.cc` | **仅当第 9 项直连失败（超时 / DNS 不通）时**自动重试，成功一次即停 | 只 GET 公开仓库 `Cloud/whitelist.json.enc` / `blacklist.json.enc`（**密文**）；这些是第三方代理，因此**不带 `X-API-Key`、不带任何本地数据**。反代只能转发、无法解密 |
 | 9c | `gitee.com`（`…/raw/main/Cloud/*.json.enc`） | **仅当第 9 项与第 9b 项全部失败时**的最后一次重试（GitHub 域名、raw 与六个公共反代都不通） | 只 GET Gitee 公开仓库里同一份**加密快照**（密文）；**不带 `X-API-Key`、不带任何本地数据**，也不解密服务端任何东西——解密只在本机完成。Gitee 侧可能记录请求 IP |
 | 10 | `api.silverfoxblocker.dpdns.org` | 点「发送反馈到作者邮箱」或「发送白/黑名单到作者邮箱」 | POST：反馈正文（≤2000 字）+ 选填联系方式，或仅域名清单；见 [PRIVACY.md](./PRIVACY.md) |
@@ -443,6 +448,26 @@ curl -s -X POST "$BASE" -H 'Content-Type: application/json' \
 > 密钥泄露/被刷时的止血流程：`npx wrangler secret put SECRET_DATA` 换一把新密钥 → 部署 → 同步改 `feedback-config.js` → 发版。
 > 换密钥期间旧版扩展的反馈会全部 401（提示「签名校验失败」），这是预期代价；如需平滑过渡，可让 Worker 同时接受新旧两把密钥（`SECRET_DATA` 与 `SECRET_DATA_OLD`，各验一次）。
 
+### `/list` 的 5 分钟缓存（v1.13.15 起，无需配置）
+
+缓存复用已绑定的 `HEALTH` KV，**不需要新建命名空间、不需要加环境变量**，`npx wrangler deploy` 后即生效。
+想让缓存数据独立放一个命名空间（不跟巡检结果混在一起）时：
+
+```bash
+npx wrangler kv namespace create LIST_CACHE
+# 把输出的 id 填进 wrangler.toml 的 [[kv_namespaces]]，binding 写 LIST_CACHE，再 deploy
+```
+
+上线后自查（`X-Cache` 头会直接告诉你有没有生效）：
+
+```bash
+B=https://api.silverfoxblocker.dpdns.org
+curl -s -o /dev/null -D - -H "X-API-Key: $LIST_API_KEY" "$B/list" | grep -i x-cache   # MISS
+curl -s -o /dev/null -D - -H "X-API-Key: $LIST_API_KEY" "$B/list" | grep -i x-cache   # HIT（5 分钟内）
+```
+
+若两次都是 `BYPASS`，说明这个 Worker 没绑 `HEALTH`（或 `LIST_CACHE`）KV —— 功能会自动降级成不缓存，不会报错。
+
 ### 开启人机验证（Turnstile，可选但推荐）
 
 人机验证是**纯服务端开关**：密钥配齐即生效、删掉即退回「只验 HMAC 签名」，**扩展侧不需要任何配置、也不用发版**。
@@ -466,11 +491,46 @@ curl -s -X POST "$BASE" -H 'Content-Type: application/json' \
 npx wrangler secret put TURNSTILE_SECRET_KEY --name silverfoxblocker
 
 # ② Site Key → wrangler.toml 的 [vars]（它是公开值，会出现在挑战页 HTML 里）
-#    把文件里这行的注释去掉并填上真值：
+#    把文件里这行的注释去掉并填上真值 —— 注意行首那个 # 必须删掉：
 #    TURNSTILE_SITE_KEY = "0x4AAAAAAA..."
 
 # ③ 部署
 npx wrangler deploy
+```
+
+**策略选择：soft（默认）还是 strict**
+
+`TURNSTILE_ENFORCE` 决定「验证没过」能不能发出去，改动只需在 `wrangler.toml` 的 `[vars]` 里加一行再部署，**扩展不用动**：
+
+| 值 | 验证通过 | 验证没过（框出不来 / 过期 / 服务端故障） |
+|---|---|---|
+| `soft`（默认） | 60 次/天 | **仍然放行**，3 次/天，日志记 `降级放行` |
+| `strict` | 60 次/天 | 直接拒绝（`TURNSTILE_REQUIRED` / 对应错误码） |
+
+推荐保持 `soft`。理由很直白：**你自己的网络能打开 `challenges.cloudflare.com`，不代表用户都能。**
+硬拦截下，那部分人不是「被误判为机器人」，而是「一个字都发不出来」—— 而他们往往正是最需要反馈的人
+（比如遇到页面被拦、需要报误报）。soft 把「验证」从门票变成了配额通行证：真用户最多就是额度小一点。
+
+```toml
+[vars]
+TURNSTILE_ENFORCE = "soft"     # 想回到硬拦截就写 strict
+TURNSTILE_SOFT_QUOTA = "3"     # 降级通道每天几次，默认 3，上限 60
+```
+
+**代价也要说清**：soft 之后，拿到扩展包的人可以不完成验证、直接带 `turnstileFallback: true` 走降级通道，
+每天 3 次/IP。这个额度是按「个人项目收到多少条反馈」定的 —— 3 条足够真人说明问题，对批量灌垃圾等于封顶。
+真要更严就切 `strict`，或者在 Cloudflare 侧把 Worker 路由加一条 Rate limiting 规则（按 IP 独立于 KV 计数）。
+
+**最容易漏的一步**：`wrangler.toml` 里那行 `TURNSTILE_SITE_KEY` 默认是**注释状态**（行首有 `#`）。
+只把 key 填进去、忘了去掉 `#`，TOML 解析时它就是一个注释，**等于一个字都没配**。
+部署后的表现是：验证框永远弹不出来，扩展提示「服务端只配了 TURNSTILE_SECRET_KEY，没配 TURNSTILE_SITE_KEY」。
+
+改完不用装扩展，用这一行自查：
+
+```bash
+curl -s https://api.silverfoxblocker.dpdns.org/challenge | grep -o 'mode:"[a-z]*"\|reason:"[^"]*"'
+#   期望：mode:"on"
+#   若出现 mode:"error" + reason:"no-sitekey" → 就是这行没生效（还在注释里，或没有重新 deploy）
 ```
 
 **（可选）第 2.5 步：先用 Cloudflare 的测试密钥把链路跑通**
@@ -512,7 +572,7 @@ curl -s -H "X-API-Key: $LIST_API_KEY" https://api.silverfoxblocker.dpdns.org/hea
 
 ### 后端链路（由 Worker 发起，不是扩展）
 
-`GET /list` 由 Worker 先向 `api.github.com` 读取私有仓库里的 `whitelist.json` / `blacklist.json`（依次尝试仓库根目录与 `List/` 两种布局）；GitHub 不通或令牌失效时，自动改用 `gitee.com/api/v5/.../raw/...` 读取同一份文件的 Gitee 私有镜像仓库（依次尝试 `master` / `main` / 仓库默认分支）。时间分配上主源最多占 4.5s、总预算 9s（比扩展侧云端接口 10s 超时短），保证「GitHub 卡死」时备源一定还有时间跑。两个源都读不到、或拿回来的内容不是名单（没有 `domains` 数组）时返回 502 并附逐通道的失败原因，扩展侧据此提示「名单同步失败」，不会把本地名单清空。`POST` 由 Worker 经 `api.brevo.com` 发信到 `feedback@silverfoxblocker.dpdns.org`，再经邮件路由转给作者。**POST 的进门顺序是「验签 → 验人机 → 限流 → 发信」**（v1.13.12）：先用 `SECRET_DATA` 复算 `X-SF-Sig`、并检查 `X-SF-Ts` 是否在 ±5 分钟内，不过就 401 直接返回——**不写 KV、不发信、不调 siteverify**；配了 Turnstile 时再用请求体里的 `turnstileToken` 调 `challenges.cloudflare.com/turnstile/v0/siteverify`（6s 超时，附 `remoteip` 把 token 绑到本机 IP），失败按原因返回 `TURNSTILE_REQUIRED` / `TURNSTILE_EXPIRED` / `TURNSTILE_FAILED` / `TURNSTILE_MISCONFIGURED`；两关都过才按「IP + 日期」计数（60 次/天/IP、24 小时过期）。因此没有密钥的人连限流配额都碰不到，有密钥但没有真浏览器的人连 KV 都碰不到。Worker 同时开启了调用日志，两类请求在服务端都可能留下来源 IP 记录。
+`GET /list` 由 Worker 先向 `api.github.com` 读取私有仓库里的 `whitelist.json` / `blacklist.json`（依次尝试仓库根目录与 `List/` 两种布局）；GitHub 不通或令牌失效时，自动改用 `gitee.com/api/v5/.../raw/...` 读取同一份文件的 Gitee 私有镜像仓库（依次尝试 `master` / `main` / 仓库默认分支）。时间分配上主源最多占 4.5s、总预算 9s（比扩展侧云端接口 10s 超时短），保证「GitHub 卡死」时备源一定还有时间跑。**v1.13.15 起这条链路前面加了一层 5 分钟缓存**：命中就直接发缓存副本、**不发任何上游子请求**，过期才回源并写回 KV（留存 24 小时）；上游双源全挂时发旧副本并标 `X-Data-Stale: 1`；`?nocache=1` 不读缓存但会刷新它，且受 **60 秒最短刷新间隔**约束（防止这个参数变成绕过缓存的刷接口通道）；`?diag=1` 与 `?force=...` 完全穿透缓存。响应头 `X-Cache` 取值 `HIT` / `MISS` / `REFRESH` / `STALE` / `BYPASS`，`X-Cache-Age` 是这份数据的年龄（秒）。缓存复用已绑定的 `HEALTH` KV，**不新增命名空间**；没绑 KV 时自动不缓存。两个源都读不到、或拿回来的内容不是名单（没有 `domains` 数组）时返回 502 并附逐通道的失败原因，扩展侧据此提示「名单同步失败」，不会把本地名单清空。`POST` 由 Worker 经 `api.brevo.com` 发信到 `feedback@silverfoxblocker.dpdns.org`，再经邮件路由转给作者。**POST 的进门顺序是「验签 → 解析 → 验人机（拿到本次配额）→ 限流 → 发信」**（v1.13.14）：先用 `SECRET_DATA` 复算 `X-SF-Sig`、并检查 `X-SF-Ts` 是否在 ±5 分钟内，不过就 401 直接返回——**不写 KV、不发信、不调 siteverify**；配了 Turnstile 时再用请求体里的 `turnstileToken` 调 `challenges.cloudflare.com/turnstile/v0/siteverify`（6s 超时，附 `remoteip` 把 token 绑到本机 IP），失败按原因返回 `TURNSTILE_REQUIRED` / `TURNSTILE_EXPIRED` / `TURNSTILE_FAILED` / `TURNSTILE_MISCONFIGURED`；两关都过才按「IP + 日期」计数（60 次/天/IP、24 小时过期）；soft 模式下没通过人机验证的请求走**降级通道**，额外受 `TURNSTILE_SOFT_QUOTA`（默认 3 次/天）约束，且主计数照样累加 —— 总量永远不超过 60。因此没有密钥的人连限流配额都碰不到；有密钥但没有真浏览器的人最多只能走 3 次/天 的降级通道。Worker 同时开启了调用日志，两类请求在服务端都可能留下来源 IP 记录。
 
 > 排查用（两者都要 `X-API-Key`）：
 > - `GET /list?type=black&diag=1` 只返回逐通道的尝试结果（哪个源、哪条路径、哪个分支、HTTP 状态、耗时），不返回名单正文。

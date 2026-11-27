@@ -169,6 +169,9 @@ var SIGN_SECRET_MIN_LEN = 16;                // 太短的密钥直接当没配
 // 哪些请求属于「反馈提交」，从而不看 Origin、改看签名：
 //   现有路由只有 GET /list、GET /health 与「其它一律当反馈 POST」，
 //   所以这里用排除法，避免把签名的路径写死成某个具体字符串（以后加路径不会漏配）。
+//   /challenge 也落在这一类里（它是无数据页面，被 iframe 加载时 CORS 本来也不生效），
+//   所以任何来源都能读它 —— 差别只在于「读到的是一张没有用户数据的验证页」。特意不加白名单：
+//   一旦扩展 ID 不在白名单，挑战页会变成 403 白屏，反而看不出原因。
 function isFeedbackPath(pathname) {
   return pathname !== "/list" && pathname !== "/health";
 }
@@ -266,27 +269,142 @@ var TURNSTILE_API_JS = "https://challenges.cloudflare.com/turnstile/v0/api.js?re
 var TURNSTILE_MAX_TOKEN = 2048;              // 正常 token 约 1~2 KB，超长直接拒
 var TURNSTILE_TIMEOUT_MS = 6000;             // siteverify 超时：宁可让人重试，也别让请求挂死
 var TURNSTILE_SECRET_MIN_LEN = 16;
+var FEEDBACK_DAILY_QUOTA = 60;               // 正常通道：每 IP 每天上限（与 v1.13.11 一致）
+var TURNSTILE_SOFT_QUOTA_DEFAULT = 3;        // 降级通道：没过人机验证时每 IP 每天上限
 
 function turnstileSiteKey(env) { return String((env && env.TURNSTILE_SITE_KEY) || "").trim(); }
 function turnstileSecret(env) { return String((env && env.TURNSTILE_SECRET_KEY) || "").trim(); }
+
+// ============================================================================
+// soft / strict（2026-11-27 修订，默认 soft）
+//
+// 起因：v1.13.12 是硬拦截 —— 没有任何 token 一律 403。可「拿不到 token」有两种完全不同的原因，
+//   硬拦截把它们混为一谈：
+//     (a) 真是机器人 / 脚本；
+//     (b) 用户网络打不开 challenges.cloudflare.com（大陆网络下并不罕见），验证框 12 秒出不来，
+//         重试多少次都一样 —— 人被永久挡在门外，且他没有任何自救手段。
+//
+// soft 的语义：人机验证是「配额通行证」，不是「门票」。
+//   · 通过验证            → 正常配额（60 次/天）
+//   · 过不了（框没出来 / 凭据过期 / siteverify 连不上 / 服务端密钥错）→ **仍然放行**，但只给 soft 配额（3 次/天）
+//   · 明显伪造（token 超长）→ 仍然 400，不奖励
+//
+// 三个刻意的设计点：
+//   ① soft **不等于**「不弹验证框」。第一次请求照旧回 403 TURNSTILE_REQUIRED 去触发弹框；
+//      只有客户端明确带 `turnstileFallback: true`（意思是「框我试过了，确实出不来」）才降级。
+//      否则 soft 就退化成「完全不验证」，那等于白配。
+//   ② 降级额度单独计数（rate_limit_soft_*），且**主计数照样累加**：防「先发满 60 次正常额度，
+//      再靠降级通道继续发」，总量仍在 60/天 之下。
+//   ③ 降级是「有成本」的：3 次/天 对真实用户够用（谁会一天反馈 4 次？），对刷子等于封顶。
+// ============================================================================
+function turnstileEnforce(env) {
+  var v = String((env && env.TURNSTILE_ENFORCE) || "").trim().toLowerCase();
+  if (v === "strict" || v === "soft") return v;
+  return "soft";                              // 默认值：宁可少挡几个机器人，也别挡掉真实用户
+}
+
+function turnstileSoftQuota(env) {
+  var n = parseInt((env && env.TURNSTILE_SOFT_QUOTA) || "", 10);
+  if (!isFinite(n) || n <= 0) return TURNSTILE_SOFT_QUOTA_DEFAULT;
+  return Math.min(n, FEEDBACK_DAILY_QUOTA);   // 降级额度不能超过正常额度，否则 soft 比 strict 还松
+}
 
 // 只认 secret：只有 site key 时页面能画出 widget，服务端却验不了，那是最坏的「看起来能用」。
 function turnstileEnabled(env) {
   return turnstileSecret(env).length >= TURNSTILE_SECRET_MIN_LEN;
 }
 
-// 返回 { ok:true, mode:'off'|'pass' } 或 { ok:false, status, error, detail }
-//   error 是英文常量（扩展据此决定「弹验证框重试」还是「直接报错」），detail 是给人看的中文。
-async function verifyTurnstile(token, ip, env) {
-  if (!turnstileEnabled(env)) return { ok: true, mode: "off" };
+/* 旧实现（v1.13.12）：无 token 一律 403 REQUIRED —— 硬拦截。
+//   问题：把「机器人」和「网络打不开 challenges.cloudflare.com 的真实用户」判成同一类，
+//   后者重试多少次都会被挡，且没有任何自救手段。2026-11-27 起默认改为 soft，见上方说明。
+// // 返回 { ok:true, mode:'off'|'pass' } 或 { ok:false, status, error, detail }
+// //   error 是英文常量（扩展据此决定「弹验证框重试」还是「直接报错」），detail 是给人看的中文。
+// async function verifyTurnstile(token, ip, env) {
+//   if (!turnstileEnabled(env)) return { ok: true, mode: "off" };
+//   token = String(token || "").trim();
+//   if (!token) {
+//     return {
+//       ok: false, status: 403, error: "TURNSTILE_REQUIRED",
+//       detail: "该接口需要人机验证：请重新点击发送，并在验证框里完成验证。"
+//     };
+//   }
+//   if (token.length > TURNSTILE_MAX_TOKEN) {
+//     return { ok: false, status: 400, error: "TURNSTILE_BAD_TOKEN", detail: "人机验证凭据格式不正确（过长）。" };
+//   }
+//
+//   var form = new URLSearchParams();
+//   form.set("secret", turnstileSecret(env));
+//   form.set("response", token);
+//   if (ip && ip !== "unknown") form.set("remoteip", ip);   // 可选：让 token 与本机 IP 绑定
+//
+//   var ctrl = new AbortController();
+//   var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, TURNSTILE_TIMEOUT_MS);
+//   var json = null;
+//   try {
+//     var res = await fetch(TURNSTILE_VERIFY_URL, { method: "POST", body: form, signal: ctrl.signal });
+//     json = await res.json();
+//   } catch (e) {
+//     return {
+//       ok: false, status: 503, error: "TURNSTILE_UNREACHABLE",
+//       detail: "人机验证服务暂时无法连接，请稍后重试。"
+//     };
+//   } finally {
+//     clearTimeout(timer);
+//   }
+//
+//   if (json && json.success === true) return { ok: true, mode: "pass" };
+//
+//   var codes = (json && json["error-codes"]) || [];
+//   var code = String(codes[0] || "unknown");
+//   // 单次有效：重复提交、超过 5 分钟都会拿到 timeout-or-duplicate —— 这是最常见的一种失败，
+//   //   必须让扩展侧能区分出来（提示「请重新验证」，而不是「签名错了」）。
+//   if (code === "timeout-or-duplicate") {
+//     return {
+//       ok: false, status: 403, error: "TURNSTILE_EXPIRED",
+//       detail: "人机验证凭据已过期或已使用过（每张凭据只能提交一次），请重新验证。"
+//     };
+//   }
+//   if (code === "invalid-input-secret" || code === "missing-input-secret") {
+//     return {
+//       ok: false, status: 503, error: "TURNSTILE_MISCONFIGURED",
+//       detail: "服务端人机验证密钥无效（TURNSTILE_SECRET_KEY 与 site key 不匹配），该接口暂时关闭。"
+//     };
+//   }
+//   return { ok: false, status: 403, error: "TURNSTILE_FAILED", detail: "人机验证未通过，请重试。" };
+// }
+*/
+
+// 返回 { ok:true, mode:'off'|'pass'|'soft-degraded', quota, degraded? }
+//   或   { ok:false, status, error, detail }
+//   quota ：本次请求适用的每日上限（通过验证 60 / 降级 3），由调用方拿去和 KV 计数比
+//   degraded：降级原因，只进日志与响应体，不进用户界面文案
+//   fallback：客户端声明「验证框我试过了，确实出不来」——soft 模式下据此放行
+async function verifyTurnstile(token, ip, env, fallback) {
+  // 未配置 secret → 整段透明跳过，老部署升级后行为不变
+  if (!turnstileEnabled(env)) return { ok: true, mode: "off", quota: FEEDBACK_DAILY_QUOTA };
+
+  var soft = turnstileEnforce(env) === "soft";
+  var softQuota = turnstileSoftQuota(env);
+
+  // 降级出口：soft 模式下「没通过验证」一律走这里 —— 放行，但配额收紧。
+  //   注意这里**不是**放行给所有人：调用方还会拿 quota 去查 KV，3 次/天 是硬顶。
+  function degrade(reason) {
+    return { ok: true, mode: "soft-degraded", quota: softQuota, degraded: reason };
+  }
+
   token = String(token || "").trim();
   if (!token) {
+    // 带 fallback 标记 = 客户端已经弹过框、确实没拿到 token（超时 / 脚本被拦 / 服务端没配 site key）
+    if (soft && fallback) return degrade("no-token-fallback");
     return {
       ok: false, status: 403, error: "TURNSTILE_REQUIRED",
-      detail: "该接口需要人机验证：请重新点击发送，并在验证框里完成验证。"
+      detail: soft
+        ? "该接口需要人机验证：请重新点击发送完成验证；若验证框加载不出来，扩展会自动以低配额发送。"
+        : "该接口需要人机验证：请重新点击发送，并在验证框里完成验证。"
     };
   }
   if (token.length > TURNSTILE_MAX_TOKEN) {
+    // 格式非法＝明显伪造，soft 也不放行（否则「随便塞一坨超长串」就成免费通道了）
     return { ok: false, status: 400, error: "TURNSTILE_BAD_TOKEN", detail: "人机验证凭据格式不正确（过长）。" };
   }
 
@@ -302,6 +420,8 @@ async function verifyTurnstile(token, ip, env) {
     var res = await fetch(TURNSTILE_VERIFY_URL, { method: "POST", body: form, signal: ctrl.signal });
     json = await res.json();
   } catch (e) {
+    // Cloudflare 自己连不上 —— 纯服务端故障，与用户无关。soft 下不该让用户吃这个亏。
+    if (soft) return degrade("unreachable");
     return {
       ok: false, status: 503, error: "TURNSTILE_UNREACHABLE",
       detail: "人机验证服务暂时无法连接，请稍后重试。"
@@ -310,24 +430,29 @@ async function verifyTurnstile(token, ip, env) {
     clearTimeout(timer);
   }
 
-  if (json && json.success === true) return { ok: true, mode: "pass" };
+  if (json && json.success === true) return { ok: true, mode: "pass", quota: FEEDBACK_DAILY_QUOTA };
 
   var codes = (json && json["error-codes"]) || [];
   var code = String(codes[0] || "unknown");
   // 单次有效：重复提交、超过 5 分钟都会拿到 timeout-or-duplicate —— 这是最常见的一种失败，
   //   必须让扩展侧能区分出来（提示「请重新验证」，而不是「签名错了」）。
   if (code === "timeout-or-duplicate") {
+    if (soft) return degrade("expired");
     return {
       ok: false, status: 403, error: "TURNSTILE_EXPIRED",
       detail: "人机验证凭据已过期或已使用过（每张凭据只能提交一次），请重新验证。"
     };
   }
   if (code === "invalid-input-secret" || code === "missing-input-secret") {
+    // 服务端密钥错：所有用户都验不过。strict 下等于全站关闭反馈，soft 下退到低配额 ——
+    //   宁可让作者从日志里看到配置错了，也别让用户替作者的配置背锅。
+    if (soft) return degrade("misconfigured");
     return {
       ok: false, status: 503, error: "TURNSTILE_MISCONFIGURED",
       detail: "服务端人机验证密钥无效（TURNSTILE_SECRET_KEY 与 site key 不匹配），该接口暂时关闭。"
     };
   }
+  if (soft) return degrade("failed:" + code);
   return { ok: false, status: 403, error: "TURNSTILE_FAILED", detail: "人机验证未通过，请重试。" };
 }
 
@@ -507,6 +632,149 @@ async function readFromGitee(env, file, deadline) {
   if (stop) tries.push({ src: "Gitee", error: stop + "，已停止重试" });
   return { ok: false, tries: tries };
 }
+// ============================================================================
+// /list 的「5 分钟缓存」（v1.13.15）
+//
+// 为什么必须加：/list 原先没有任何缓存，**每个请求都真的去打一次 GitHub → Gitee**。
+//   配合「任意扩展来源放行」之后，任何人写个脚本循环 curl 就能：
+//     ① 烧掉 Worker 的每日请求额度；② 吃光 GitHub token 的 5000 次/小时配额；
+//     ③ 把 Gitee 镜像打到限流（429），于是**真用户也拉不到名单**。
+//   名单一天最多变几次，却按「每个请求一次上游」的代价去取，纯属浪费。
+//
+// 做法（不是「限流」，但把上游压力压到理论下限）：
+//   · 命中 5 分钟内的副本 → 直接返回，**一个上游子请求都不发**；
+//   · 过期才去拉，拉到就写回 KV；同一 isolate 内并发请求共享同一个 Promise（防击穿）；
+//   · 上游双源都失败时，**有旧副本就发旧的**（标 X-Data-Stale: 1），总比让用户看到 502 强；
+//   · diag / force / nocache 三个参数一律穿透缓存 —— 诊断必须看到「此刻」的真实上游行为。
+//
+// 为什么是 5 分钟：名单更新频率以「天」计，5 分钟已经足够新鲜；再长会让作者改完名单后
+//   自己都要等，反而添乱。要改只动 LIST_CACHE_TTL_MS。
+//
+// 存储复用已有 KV，不要求新建命名空间：
+//   LIST_CACHE（可选，想独立管理时再建）→ 没绑就退到 HEALTH；
+//   都没有（本地 wrangler dev 没配 KV）→ 自动降级成「不缓存」，行为与旧版一致。
+//   留存 24 小时是为了「上游挂了还能发旧的」，新鲜度只看记录里的 ts，不看 TTL。
+//
+// 边界（如实写清）：这是**共享缓存**，不是鉴权。拿到 X-API-Key 的人依然能读名单
+//   （它本来就随扩展包分发、仓库公开），缓存只保证「读的人再多，上游只被打一次/5 分钟」。
+// ============================================================================
+var LIST_CACHE_TTL_MS = 5 * 60 * 1000;          // 新鲜期：5 分钟
+// nocache=1 的「最短刷新间隔」：它本意是「我改完名单想立刻看到」，但它同时也是
+//   绕过缓存的免费通道 —— 参数写在公开代码里，谁都能带。所以再加一道：距上次拉取不足 60 秒
+//   就先把那份副本发回去（最多旧 60 秒），把「带 nocache 刷接口」的上游压力也锁在 1 次/分钟。
+var LIST_CACHE_MIN_REFRESH_MS = 60 * 1000;
+var LIST_CACHE_KEEP_S = 24 * 60 * 60;           // KV 留存：24 小时（用于上游故障时兜底）
+var LIST_CACHE_MAX_BYTES = 20 * 1024 * 1024;    // 单份名单上限（KV 单值上限 25MB，留余量）
+
+function listCacheKv(env) {
+  return (env && (env.LIST_CACHE || env.HEALTH)) || null;
+}
+
+function listCacheKey(file) {
+  return 'list_cache_v1:' + String(file).replace(/[^A-Za-z0-9]/g, '_');
+}
+
+// 返回记录对象或 null；任何异常都当「没缓存」，绝不让缓存层把主流程弄挂
+async function readListCache(env, file) {
+  var kv = listCacheKv(env);
+  if (!kv) return null;
+  try {
+    var raw = await kv.get(listCacheKey(file));
+    if (!raw) return null;
+    var rec = JSON.parse(raw);
+    if (!rec || typeof rec.text !== 'string' || !rec.text || typeof rec.ts !== 'number') return null;
+    return rec;
+  } catch (e) {
+    console.warn('[list] 读缓存失败，按未命中处理：' + ((e && e.message) || e));
+    return null;
+  }
+}
+
+function listCacheFresh(rec) {
+  return !!rec && typeof rec.ts === 'number' && (Date.now() - rec.ts) < LIST_CACHE_TTL_MS;
+}
+
+async function writeListCache(env, file, rec) {
+  var kv = listCacheKv(env);
+  if (!kv || !rec || typeof rec.text !== 'string' || !rec.text) return false;
+  if (rec.text.length > LIST_CACHE_MAX_BYTES) {
+    console.warn('[list] 名单过大（' + rec.text.length + ' 字节），跳过写缓存');
+    return false;
+  }
+  try {
+    await kv.put(listCacheKey(file), JSON.stringify(rec), { expirationTtl: LIST_CACHE_KEEP_S });
+    return true;
+  } catch (e) {
+    console.warn('[list] 写缓存失败（不影响本次返回）：' + ((e && e.message) || e));
+    return false;
+  }
+}
+
+// 双源拉取：主源 GitHub → 备源 Gitee。只负责「去拿」，不碰缓存、不拼响应。
+async function fetchListUpstream(env, file, force) {
+  var t0 = Date.now();
+  var deadline = t0 + TOTAL_BUDGET_MS;
+  // 主源最多占 GH_BUDGET_MS，剩下的时间强制留给 Gitee：
+  // 否则「GitHub 卡死」这种最需要备源的场景，预算反而被主源吃光，备源一次都跑不到。
+  var ghDeadline = Math.min(deadline, t0 + GH_BUDGET_MS);
+  var useGithub = force !== 'gitee';
+  var useGitee = force !== 'github';
+
+  var gh = useGithub
+    ? await readFromGithub(env, file, ghDeadline)
+    : { ok: false, skipped: true, tries: [{ src: 'GitHub', error: '已跳过（force=gitee）' }] };
+
+  if (gh.ok) {
+    return {
+      ok: true, text: gh.text, source: gh.source, path: gh.path, count: gh.count,
+      ghTries: gh.tries, gtTries: [], giteeAttempted: false, elapsedMs: Date.now() - t0
+    };
+  }
+
+  if (useGithub) console.warn('[list] GitHub 拉取失败，切换到 Gitee 镜像：' + JSON.stringify(gh.tries));
+
+  var gt = useGitee
+    ? await readFromGitee(env, file, deadline)
+    : { ok: false, skipped: true, tries: [{ src: 'Gitee', error: '已跳过（force=github）' }] };
+
+  return {
+    ok: !!gt.ok, text: gt.ok ? gt.text : '', source: gt.ok ? gt.source : null,
+    path: gt.ok ? gt.path : null, ref: gt.ok ? gt.ref : null, count: gt.ok ? gt.count : null,
+    ghTries: gh.tries, gtTries: gt.tries, giteeAttempted: true, elapsedMs: Date.now() - t0
+  };
+}
+
+// 同一 isolate 内的并发合并：10 个请求同时未命中，只让 1 个真去打上游。
+//   只在 isolate 内存里有效（Cloudflare 会起多个 isolate），所以它是「锦上添花」，
+//   真正的止血靠上面的 KV 缓存。
+var LIST_INFLIGHT = Object.create(null);
+
+function fetchListShared(env, file, force) {
+  if (force) return fetchListUpstream(env, file, force);   // 强制源不参与合并，诊断语义更干净
+  var k = String(file);
+  if (LIST_INFLIGHT[k]) return LIST_INFLIGHT[k];
+  var p = fetchListUpstream(env, file, force);
+  LIST_INFLIGHT[k] = p;
+  var done = function () { if (LIST_INFLIGHT[k] === p) delete LIST_INFLIGHT[k]; };
+  p.then(done, done);
+  return p;
+}
+
+// 统一的名单响应：把「数据来自哪、是不是缓存、缓存多旧」都放进响应头，便于排障
+function listDataResponse(rec, cacheState, corsHeaders, stale) {
+  var headers = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',   // 缓存由服务端统一管，别让浏览器/CDN 再存一份（否则改动后要等两层过期）
+    'X-Cache': cacheState,
+    ...corsHeaders
+  };
+  if (rec.source) headers['X-Data-Source'] = rec.source;
+  if (rec.path) headers['X-Data-Path'] = rec.path;
+  if (rec.ts) headers['X-Cache-Age'] = String(Math.max(0, Math.round((Date.now() - rec.ts) / 1000)));
+  if (stale) headers['X-Data-Stale'] = '1';
+  return new Response(rec.text, { headers: headers });
+}
+
 // ============================================================================
 // 名单存活巡检（HTTP 探测为主；DNS / RDAP 只做佐证）—— 2026-11-17 第二版
 //
@@ -1313,6 +1581,9 @@ var index_default = {
     // 功能 A: 实时拉取并返回名单 (GET /list)
     //   主源 GitHub 私有仓库 → 备源 Gitee 私有镜像仓库
     //   加 ?diag=1 只回诊断信息（逐通道的尝试记录），不返回名单正文
+    //   加 ?nocache=1 跳过缓存强制回源（改完名单想立刻看到效果时用）
+    //   带 ?force=gitee|github 时同样穿透缓存 —— 它本来就是「强行验证某个源」的诊断开关
+    //   v1.13.15：正常请求走 5 分钟缓存，命中时**一个上游子请求都不发**
     // ==========================================
     if (request.method === "GET" && url.pathname === "/list") {
       const apiKey = request.headers.get("X-API-Key");
@@ -1329,79 +1600,78 @@ var index_default = {
       // ?force=gitee / ?force=github：只走指定的那一个源，用来「强行验证备源」。
       // 正常同步（扩展）永远不带这个参数，所以线上行为仍然是 GitHub 优先、Gitee 兜底。
       const force = String(url.searchParams.get("force") || "").toLowerCase();
-      const useGithub = force !== "gitee";
-      const useGitee = force !== "github";
+      const nocache = url.searchParams.get("nocache") === "1";
       const t0 = Date.now();
-      const deadline = t0 + TOTAL_BUDGET_MS;
-      // 主源最多占 GH_BUDGET_MS，剩下的时间强制留给 Gitee：
-      // 否则「GitHub 卡死」这种最需要备源的场景，预算反而被主源吃光，备源一次都跑不到。
-      const ghDeadline = Math.min(deadline, t0 + GH_BUDGET_MS);
+      // 诊断 / 强制源：既不读缓存也不写缓存 —— 诊断要是看到缓存，等于什么都没诊断出来；
+      //   强制源的结果只该用于「验证某个源」，不该覆盖正常缓存。
+      // nocache=1：**不读**但**写** —— 它是「我想立刻看到最新的」，拉到的新数据理应顺手刷新缓存。
+      const cacheOn = !diag && !force && !!listCacheKv(env);
+      const readCache = cacheOn && !nocache;
 
-      const gh = useGithub
-        ? await readFromGithub(env, fileName, ghDeadline)
-        : { ok: false, skipped: true, tries: [{ src: "GitHub", error: "已跳过（force=gitee）" }] };
-      if (gh.ok) {
-        if (diag) {
-          return new Response(JSON.stringify({
-            ok: true, type: type, source: gh.source, path: gh.path, count: gh.count,
-            force: force || null,
-            elapsedMs: Date.now() - t0, tries: gh.tries, giteeAttempted: false
-          }, null, 2), {
-            status: 200,
-            headers: { "Content-Type": "application/json", "X-Data-Source": gh.source, ...cors.headers }
-          });
+      let cached = null;
+      if (cacheOn) {
+        cached = await readListCache(env, fileName);
+        // 正常请求：5 分钟内直接发缓存
+        if (!nocache && listCacheFresh(cached)) {
+          return listDataResponse(cached, "HIT", cors.headers, false);
         }
-        return new Response(gh.text, {
-          headers: {
-            "Content-Type": "application/json",
-            "X-Data-Source": gh.source,
-            "X-Data-Path": gh.path,
-            ...cors.headers
-          }
-        });
+        // nocache 请求：60 秒内也直接发缓存（防止它变成绕过缓存的刷接口通道）
+        if (nocache && cached && (Date.now() - cached.ts) < LIST_CACHE_MIN_REFRESH_MS) {
+          return listDataResponse(cached, "HIT", cors.headers, false);
+        }
       }
 
-      if (useGithub) console.warn("[list] GitHub 拉取失败，切换到 Gitee 镜像：" + JSON.stringify(gh.tries));
+      const up = await fetchListShared(env, fileName, force);
 
-      const gt = useGitee
-        ? await readFromGitee(env, fileName, deadline)
-        : { ok: false, skipped: true, tries: [{ src: "Gitee", error: "已跳过（force=github）" }] };
-
+      // 诊断模式：永远回「此刻真实的上游尝试记录」，不写缓存、不读缓存
       if (diag) {
-        return new Response(JSON.stringify({
-          ok: gt.ok, type: type, source: gt.ok ? gt.source : null,
-          path: gt.ok ? gt.path : null, ref: gt.ok ? gt.ref : null,
-          count: gt.ok ? gt.count : null,
-          force: force || null,
+        return new Response(JSON.stringify(up.ok ? {
+          ok: true, type: type, source: up.source, path: up.path, count: up.count,
+          force: force || null, cache: "bypass",
           elapsedMs: Date.now() - t0,
-          github: gh.tries, gitee: gt.tries
+          tries: up.giteeAttempted ? up.gtTries : up.ghTries,
+          github: up.ghTries, gitee: up.gtTries,
+          giteeAttempted: up.giteeAttempted
+        } : {
+          ok: false, type: type, source: null, path: null, count: null,
+          force: force || null, cache: "bypass",
+          elapsedMs: Date.now() - t0,
+          github: up.ghTries, gitee: up.gtTries
         }, null, 2), {
           status: 200,
-          headers: { "Content-Type": "application/json", ...cors.headers }
+          headers: { "Content-Type": "application/json", "X-Cache": "BYPASS", ...cors.headers }
         });
       }
 
-      if (!gt.ok) {
-        console.error("[list] 双源均失败：" + JSON.stringify({ github: gh.tries, gitee: gt.tries }));
-        return new Response(JSON.stringify({
-          error: "云端名单服务器暂时不可用，请稍后再试。",
-          detail: {
-            github: gh.tries.map(function (t) { return (t.path || "") + " → " + (t.error || t.status); }),
-            gitee: gt.tries.map(function (t) { return (t.path || "") + "[" + (t.ref || "") + "] → " + (t.error || t.status); })
-          }
-        }), {
-          status: 502,
-          headers: { "Content-Type": "application/json", ...cors.headers }
-        });
+      if (up.ok) {
+        const rec = {
+          ts: Date.now(), text: up.text, source: up.source,
+          path: up.path, count: up.count
+        };
+        if (cacheOn) await writeListCache(env, fileName, rec);
+        // 写缓存耗时算在这次响应里（未命中本来就慢），但响应头要如实说明它是「刚拉的新鲜数据」。
+        //   MISS = 缓存里没有/已过期；REFRESH = 是 nocache 主动回源并顺便刷新了缓存；
+        //   BYPASS = 缓存不可用（没绑 KV）或本次请求不参与缓存（diag / force）。
+        return listDataResponse(rec, readCache ? "MISS" : (cacheOn ? "REFRESH" : "BYPASS"), cors.headers, false);
       }
 
-      return new Response(gt.text, {
-        headers: {
-          "Content-Type": "application/json",
-          "X-Data-Source": gt.source,
-          "X-Data-Path": gt.path,
-          ...cors.headers
+      // 双源都失败：有旧副本就发旧的（比 502 有用得多；作者也能从 X-Data-Stale 看出是兜底数据）
+      if (cached) {
+        console.warn("[list] 双源均失败，回退到缓存副本（" +
+          Math.round((Date.now() - cached.ts) / 1000) + " 秒前）");
+        return listDataResponse(cached, "STALE", cors.headers, true);
+      }
+
+      console.error("[list] 双源均失败且无缓存可用：" + JSON.stringify({ github: up.ghTries, gitee: up.gtTries }));
+      return new Response(JSON.stringify({
+        error: "云端名单服务器暂时不可用，请稍后再试。",
+        detail: {
+          github: up.ghTries.map(function (t) { return (t.path || "") + " → " + (t.error || t.status); }),
+          gitee: up.gtTries.map(function (t) { return (t.path || "") + "[" + (t.ref || "") + "] → " + (t.error || t.status); })
         }
+      }), {
+        status: 502,
+        headers: { "Content-Type": "application/json", "X-Cache": cacheOn ? "MISS" : "BYPASS", ...cors.headers }
       });
     }
 
@@ -1460,6 +1730,10 @@ var index_default = {
         // 人机验证开关的「现场证据」：不用翻 Cloudflare 后台，curl 一下就知道有没有生效。
         //   只回状态，不回 site key / secret（前者公开但没必要，后者绝不能出）。
         turnstile: turnstileEnabled(env) ? (turnstileSiteKey(env) ? "on" : "misconfigured") : "off",
+        // 拦截策略与配额：不用翻代码就知道当前是软还是硬、降级通道给了几次
+        turnstileEnforce: turnstileEnabled(env) ? turnstileEnforce(env) : null,
+        turnstileSoftQuota: turnstileEnabled(env) ? turnstileSoftQuota(env) : null,
+        feedbackDailyQuota: FEEDBACK_DAILY_QUOTA,
         mail: mail,   // 只有带 &mail=1 时非 null
         summary: summary
       }, null, 2), {
@@ -1499,16 +1773,11 @@ var index_default = {
       const today = (new Date()).toISOString().split("T")[0];
       const kvKey = `rate_limit_${clientIP}_${today}`;
 
-      let currentCount = await env.RATE_LIMIT_KV.get(kvKey);
-      currentCount = currentCount ? parseInt(currentCount) : 0;
-
-      if (currentCount >= 60) {
-        return new Response(JSON.stringify({ error: "您今天的提交次数已达上限，请明天再试。" }), {
-          status: 429,
-          headers: { "Content-Type": "application/json", ...cors.headers }
-        });
-      }
-
+      // 旧顺序（v1.13.12）：限流(写死 60) → parse → 内容校验 → 验人机 → 发信。
+      //   问题：soft 模式下「降级」的配额只有 3，必须在验完人机之后才知道，所以限流必须后移。
+      //   新顺序：parse → 内容校验 → 验人机（拿 quota） → 限流（按 quota） → 发信。
+      //   安全性没有变松：rawBody 已通过 HMAC 验签，parse 的是「持密钥的人发来的内容」；
+      //   而且降级路径根本不调 siteverify，刷子没法靠打这个接口去烧 Cloudflare 的验证配额。
       let data;
       try {
         data = JSON.parse(rawBody);
@@ -1529,15 +1798,55 @@ var index_default = {
       }
 
       // ④ 人机验证（可选）：只有配了 TURNSTILE_SECRET_KEY 才生效，未配时整段透明跳过。
-      //    位置在「验签之后、发信之前」：签名不合格的请求连 siteverify 的子请求都不会发出去；
-      //    token 单次有效，所以这里验过就再也用不了第二次。
-      const turnstile = await verifyTurnstile((data && data.turnstileToken) || "", clientIP, env);
+      //    strict：过不了就拒，不写 KV、不发信。
+      //    soft（默认）：过不了也放行，但 quota 从 60 掉到 3 —— 下面的限流按它算。
+      const turnstile = await verifyTurnstile(
+        (data && data.turnstileToken) || "",
+        clientIP,
+        env,
+        !!(data && data.turnstileFallback === true)
+      );
       if (!turnstile.ok) {
         console.warn("[turnstile] 拒绝： " + turnstile.error + " ip=" + clientIP);
         return new Response(JSON.stringify({ error: turnstile.error, detail: turnstile.detail }), {
           status: turnstile.status,
           headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...cors.headers }
         });
+      }
+      const degraded = !!turnstile.degraded;
+      const quota = turnstile.quota || FEEDBACK_DAILY_QUOTA;
+      if (degraded) {
+        // 降级放行必须留痕：以后看日志就能知道「有多少人是被验证框挡在外面的」
+        console.warn("[turnstile] 降级放行：原因=" + turnstile.degraded + " 配额=" + quota + " ip=" + clientIP);
+      }
+
+      // ⑤ 限流。两把尺子同时量：
+      //    主计数永远按 60 判 —— 总量上限不会因为降级而放宽；
+      //    降级通道再额外受 quota（默认 3）约束 —— 否则「先发满 60 次正常额度，再靠降级继续发」就是后门。
+      let currentCount = await env.RATE_LIMIT_KV.get(kvKey);
+      currentCount = currentCount ? parseInt(currentCount) : 0;
+
+      if (currentCount >= FEEDBACK_DAILY_QUOTA) {
+        return new Response(JSON.stringify({ error: "您今天的提交次数已达上限，请明天再试。" }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", ...cors.headers }
+        });
+      }
+
+      const softKey = `rate_limit_soft_${clientIP}_${today}`;
+      let softUsed = 0;
+      if (degraded) {
+        softUsed = parseInt(await env.RATE_LIMIT_KV.get(softKey)) || 0;
+        if (softUsed >= quota) {
+          return new Response(JSON.stringify({
+            error: "DEGRADED_QUOTA_EXCEEDED",
+            detail: `今日「免人机验证发送」额度（${quota} 次）已用完。`
+              + "请换一个能打开人机验证的网络环境再发，或改用「发送反馈到 GitHub Issue」。"
+          }), {
+            status: 429,
+            headers: { "Content-Type": "application/json", ...cors.headers }
+          });
+        }
       }
 
       const emailResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -1567,8 +1876,17 @@ var index_default = {
       }
 
       await env.RATE_LIMIT_KV.put(kvKey, (currentCount + 1).toString(), { expirationTtl: 86400 });
+      if (degraded) {
+        await env.RATE_LIMIT_KV.put(softKey, (softUsed + 1).toString(), { expirationTtl: 86400 });
+      }
 
-      return new Response(JSON.stringify({ success: true, message: "感谢您的反馈！" }), {
+      return new Response(JSON.stringify({
+        success: true,
+        message: "感谢您的反馈！",
+        // degraded 只是给排查用的标记（前端不展示）：表示这封邮件没经过人机验证，
+        //   走的是 3 次/天的降级通道。以后统计日志时能一眼看出「验证框坏了多少人受影响」。
+        degraded: degraded || undefined
+      }), {
         headers: { "Content-Type": "application/json", ...cors.headers }
       });
 

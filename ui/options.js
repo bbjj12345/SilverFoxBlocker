@@ -136,7 +136,16 @@ function sfbDescribeMailFailure(err, endpoint) {
       return '发送失败：人机验证未通过\n请再点一次发送，重新勾选「我是真人」后再试。';
     }
     if (tcode === 'TURNSTILE_REQUIRED') {
-      return '发送失败：服务端要求人机验证，但本次没有拿到凭据\n请重试一次；若反复出现，可能是验证页面被拦截。';
+      // 走到这里通常是第二次请求：验证框已经弹过、也没交回凭据（超时 / 脚本被拦），
+      //   而服务端仍要求验证 —— 说明作者把 TURNSTILE_ENFORCE 设成了 strict，不接受降级。
+      return '发送失败：服务端要求人机验证，但本次没有拿到凭据\n'
+        + '若验证框一直出不来，说明服务端开启了「必须验证」的严格模式，无法降级发送；'
+        + '请换一个能打开 challenges.cloudflare.com 的网络，或改用「发送反馈到GitHub Issue」。';
+    }
+    if (tcode === 'DEGRADED_QUOTA_EXCEEDED') {
+      return '发送失败：今日免验证发送额度已用完\n'
+        + '该通道是给「验证框打不开」的人留的兜底，每天只有很少几次。'
+        + '请在能正常打开人机验证的网络下再发，或改用「发送反馈到GitHub Issue」。';
     }
     if (tcode === 'TURNSTILE_UNREACHABLE' || tcode === 'TURNSTILE_MISCONFIGURED') {
       return '发送失败：人机验证服务暂时不可用（' + tcode + '）\n'
@@ -507,22 +516,36 @@ function sfbTsReasonText(reason) {
 }
 
 // 一次完整的「发送」：先照常发；服务端要求人机验证时弹验证框再发一次。
-//   ui.mount      放置 iframe 的容器（必须有）
+//   ui.mount       放置 iframe 的容器（必须有）
 //   ui.onChallenge 需要验证时的回调（用于改提示文案 / 转圈状态）
+//   ui.onFallback  验证框没能交出凭据、准备降级重发时的回调（可选）
+//
+// 2026-11-27：服务端默认 soft —— 验证「过不了」不再等于「发不出去」。
+//   所以这里多一个兜底分支：验证框加载不出 / 超时，就带 turnstileFallback:true 再发一次，
+//   Worker 收到这个标记会以低配额（默认 3 次/天）放行。strict 模式下第二次仍会 403，
+//   按普通错误抛给调用方，由文案层区分。
 function sfbSendFeedback(endpoint, payload, ui) {
   var opts = ui || {};
-  function post(token) {
+  function post(token, fallback) {
     var p = {};
     for (var k in payload) {
       if (Object.prototype.hasOwnProperty.call(payload, k)) p[k] = payload[k];
     }
     if (token) p.turnstileToken = token;
+    if (fallback) p.turnstileFallback = true;
     return sfbPostFeedback(endpoint, p);
   }
-  return post('').catch(function (err) {
+  return post('', false).catch(function (err) {
     if (!err || err.sfbCode !== 'TURNSTILE_REQUIRED') throw err;
     if (typeof opts.onChallenge === 'function') { try { opts.onChallenge(); } catch (e) {} }
-    return sfbTurnstileWait(endpoint, opts.mount).then(post);
+    return sfbTurnstileWait(endpoint, opts.mount).then(function (token) {
+      return post(token, false);          // 正常路径：拿到凭据，重新签名发出
+    }, function (tsErr) {
+      // 降级路径：验证框确实没出来（超时 / 脚本被拦 / 服务端没配 site key）。
+      //   不带 token、只带标记 —— 服务端据此走 soft 通道，配额降到 3 次/天。
+      if (typeof opts.onFallback === 'function') { try { opts.onFallback(tsErr); } catch (e) {} }
+      return post('', true);
+    });
   });
 }
 
@@ -2615,7 +2638,7 @@ async function init() {
 
   // 动态写入版本号（取自 manifest，避免硬编码遗漏导致内部页面版本滞后）
   try {
-    const ver = (chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '1.3.5';
+    const ver = (chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '0.0.0';
     const vt = document.getElementById('verTop'); if (vt) vt.textContent = 'v' + ver;
     const va = document.getElementById('verAbout'); if (va) va.textContent = 'v' + ver;
   } catch (e) {}
@@ -2861,6 +2884,10 @@ async function init() {
             mount: $('fbChallenge'),
             onChallenge: function () {
               show('为防止垃圾信息，本次发送需要先完成一次人机验证；通过后会自动发出。', '');
+            },
+            // 验证框没出来时的降级路径：明说走的是「限额通道」，别让人以为和正常发送一样
+            onFallback: function () {
+              show('人机验证没能完成（多为网络打不开验证组件），已改用「免验证通道」发送；该通道每天次数很少。', 'warn');
             }
           })
             .then(function (res) {
@@ -3952,7 +3979,12 @@ function cloudUrlCandidates(type) {
     SF_CLOUD_MIRROR_BRANCH + '/' + SF_CLOUD_MIRROR_DIR + '/' + file;
   const out = [{
     name: '云端接口',
-    url: SF_CLOUD_API + '?type=' + q + '&_=' + Date.now(),
+    // ★ 2026-11-27（v1.13.15）：服务端给 /list 加了 5 分钟缓存，用来挡住「循环拉接口」的滥用。
+    //   但用户点「从云端更新」是**手动动作**，多半刚改完名单、就想立刻看到效果，
+    //   拿到 5 分钟前的旧份会以为「没更新成功」。所以手动拉取带 nocache=1。
+    //   服务端对它设了 60 秒最短刷新间隔（防止这个参数自己变成绕过缓存的通道）：
+    //   最坏情况拿到的是 60 秒前的数据，既不会「点了没反应」，也不会被拿来刷上游。
+    url: SF_CLOUD_API + '?type=' + q + '&nocache=1&_=' + Date.now(),
     headers: { 'X-API-Key': SF_CLOUD_API_KEY },
     mirror: false,
     enc: false
@@ -4342,6 +4374,9 @@ async function updateCloudLists(btn) {
       mount: $(job.mount),
       onChallenge: function () {
         setMsg(msgEl, '为防止垃圾信息，本次上报需要先完成一次人机验证；通过后会自动发出。', '');
+      },
+      onFallback: function () {
+        setMsg(msgEl, '人机验证没能完成（多为网络打不开验证组件），已改用「免验证通道」发送；该通道每天次数很少。', 'warn');
       }
     })
       .then(function (res) {
