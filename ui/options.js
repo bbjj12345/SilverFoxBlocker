@@ -611,6 +611,16 @@ const DEFAULTS = {
   enabledGlobal: true,
   showWarning: true,
   autoBlockDownloads: true,
+  // ★ 2026-11-28：关于页两枚开关（默认都开）。
+  //   autoCheckUpdate：后台每 6 小时查一次 GitHub Releases，有新版本给工具栏图标标「新」。
+  //   autoCloudUpdate：后台每天从云端接口同步一次黑白名单 / 官网映射 / 云端例外。
+  //   旧版这两件事只能靠用户手动点「检查更新」「从云端更新名单」。
+  autoCheckUpdate: true,
+  autoCloudUpdate: true,
+  /* 2026-11-29：查到更新时是否发系统通知。与 autoCheckUpdate 是两件事 ——
+     前者决定「查不查」，这一枚决定「查到之后要不要在 Windows 右下角弹一下」。
+     默认关：系统通知会打断用户，必须由用户自己打开。 */
+  notifyOnUpdate: false,
   autoDownloadGuard: true,   // 增强：拦截「无用户手势」的自动下载（2026-11-23）
   dlManagerNotice: true,     // 拦截/询问下载时，附一行「IDM/迅雷 可能已接管」的静态提示（2026-11-23）
   resolverFollow: true,      // 运行时取链探测（解析器跟随）：已判危页面上用后台标签页重跑同源跳转端点（2026-11-23）
@@ -1757,6 +1767,51 @@ function bindControls(settings) {
   if ($('resolverFollow')) $('resolverFollow').checked = settings.resolverFollow !== false;
   $('notify').checked = !!settings.notify;
   if ($('icpApiVerify')) $('icpApiVerify').checked = settings.icpApiVerify !== false;
+  // ★ 2026-11-28：关于页两枚自动开关 —— 回填 + 改动即时落盘（不等「保存设置」），
+  //   因为真正执行的是后台闹钟，只有设置已经写进 sync 才会在下一个周期生效。
+  //   旧版：关于页没有任何自动行为的开关，这两件事只能手动点。
+  (function bindAutoSwitches() {
+    /* defaultOn：前两枚（自动检查 / 自动更新）默认开，第三枚（系统通知）默认关。
+       旧版把「默认开」写死成 `!== false`，加第三枚时会把「默认关」的开关也显示成开 ——
+       所以这里把默认值提出来做参数，三枚各自说清楚。 */
+    const bindOne = function (id, key, runtimeMsg, defaultOn) {
+      const el = $(id);
+      if (!el) return;
+      el.checked = defaultOn === false ? (settings[key] === true) : (settings[key] !== false);
+      el.addEventListener('change', function () {
+        const on = !!el.checked;
+        try { chrome.storage.sync.set({ [key]: on }); } catch (e) {}
+        if (window.__sfSettings) window.__sfSettings[key] = on;
+        // 刚打开就立刻跑一次，用户不用等下一个闹钟周期
+        if (on && runtimeMsg) { try { chrome.runtime.sendMessage({ type: runtimeMsg }); } catch (e) {} }
+      });
+    };
+    bindOne('autoCheckUpdate', 'autoCheckUpdate', 'SF_AUTO_CHECK_NOW', true);
+    bindOne('autoCloudUpdate', 'autoCloudUpdate', 'SF_AUTO_CLOUD_NOW', true);
+    /* 第三枚（2026-11-29）：只负责「查到更新时发系统通知」。
+       不触发任何检查、不发网络请求 —— 只是在后台决定「要不要弹通知」时多读一个布尔值。 */
+    bindOne('notifyOnUpdate', 'notifyOnUpdate', null, false);
+    /* ---- 旧（2026-11-29 前）：自动检查的结果单独写一行 autoUpdateTip ----
+       两套文案的问题：手动检查写「检测到新版本：vX」，后台自动写「后台自动检查（时间）
+       发现新版本 vX，点『检查更新』可再确认一次」，用户看到的说法不一样，而且都没有下载入口。
+    if (hasStorageLocal()) {
+      chrome.storage.local.get({ sfAutoUpdate: null }, function (o) {
+        const info = o && o.sfAutoUpdate;
+        const tip = $('autoUpdateTip');
+        if (!tip || !info || !info.newer || !info.latest) return;
+        let when = '';
+        try { when = new Date(info.at || 0).toLocaleString(); } catch (e) {}
+        tip.hidden = false;
+        tip.textContent = '后台自动检查（' + when + '）发现新版本 v' + info.latest + '，点「检查更新」可再确认一次。';
+      });
+    }
+    */
+    // ---- 新（2026-11-29）：手动 / 自动共用 sfAnnounceNewVersion() ----
+    //   启动时先看一眼后台已经查到什么（后台可能在上次浏览器会话里就查到了），
+    //   再挂 storage.onChanged：用户停留在设置页时后台刚查完，也能立刻弹。
+    sfBindUpdateModal();
+    sfWatchAutoUpdate();
+  })();
 
   // 威胁情报 API：主开关默认不勾选；勾选才展开 provider 列表，再勾选具体情报源才出现 Key 输入框
   const tiEnabled = $('tiEnabled');
@@ -2342,6 +2397,10 @@ async function collectSettings() {
     enabledGlobal: (window.__sfSettings ? !!window.__sfSettings.enabledGlobal : true),
     showWarning: $('showWarning').checked,
     autoBlockDownloads: $('autoBlockDownloads').checked,
+    // 2026-11-28：两枚开关默认开（老用户没有这两个键时按 true 处理）
+    autoCheckUpdate: ($('autoCheckUpdate') ? $('autoCheckUpdate').checked : true),
+    notifyOnUpdate: ($('notifyOnUpdate') ? !!$('notifyOnUpdate').checked : false),
+    autoCloudUpdate: ($('autoCloudUpdate') ? $('autoCloudUpdate').checked : true),
     autoDownloadGuard: ($('autoDownloadGuard') ? $('autoDownloadGuard').checked : true),
     dlManagerNotice: ($('dlManagerNotice') ? $('dlManagerNotice').checked : true),
     resolverFollow: ($('resolverFollow') ? $('resolverFollow').checked : true),
@@ -2700,8 +2759,13 @@ async function init() {
       const m = h.match(/sec=([^&]+)/);
       if (!m) return;
       const id = decodeURIComponent(m[1]);
+      /* 2026-11-29：系统通知点进来时带 hl=ver —— 除了切到「关于」，还把「版本更新」
+         那一行滚进视野并闪两下（三个下载入口都在那一行）。复用「立即更新」的同一段逻辑，
+         不另写一套滚动/高亮。 */
+      const hlVer = /(?:^|[&?])hl=ver(?:&|$)/.test(h);
       // 等 DOM / 导航就绪后再跳转，确保 section 元素与 nav 已绑定
       const doJump = function () {
+        if (hlVer && typeof sfGoAboutUpdateRow === 'function') { sfGoAboutUpdateRow(); return; }
         const sec = document.getElementById(id);
         const navItem = findNavForTarget(id);
         if (sec && navItem && typeof navItem.click === 'function') {
@@ -3532,7 +3596,21 @@ async function sfFetchLatestRelease(onStage) {
     }
     const cmp = sfCmpVersion(rel.tag, cur);
     if (cmp > 0) {
+      /* ---- 旧（2026-11-29 前）：只写一行小字，没有弹窗 ----
       setTip('检测到新版本：v' + sfNormTag(rel.tag), 'is-new');
+      */
+      // 新：与后台自动检查走同一个出口 —— 统一文案 + 弹窗。
+      //   force: 手动点的「检查更新」是明确意图，即使之前对同一版本按过「稍后」也要再弹一次。
+      sfAnnounceNewVersion(rel.tag, cur, { source: 'manual', force: true });
+      /* 2026-11-29：手动查到的结果也要让后台知道 ——
+         工具栏「新」徽标与系统通知都归 background 管，页面自己只管本页的弹窗与那行小字。
+         后台会自己判断：开关关着就不弹、这个版本已经弹过就不重复弹；
+         顺便把结果写进 sfAutoUpdate，刷新页面 / worker 重载后徽标还能还原。 */
+      try {
+        chrome.runtime.sendMessage({ type: 'SF_UPDATE_NOTIFY', latest: sfNormTag(rel.tag), current: cur }, function () {
+          void chrome.runtime.lastError;   // 后台没起 / 没人接也不报错
+        });
+      } catch (e) {}
     } else {
       // cmp === 0：逐字节相同；cmp < 0：线上版本反而更低（多为本地测试版）——都算「无可用更新」
       setTip('无可用更新', 'is-ok');
@@ -3551,6 +3629,360 @@ async function sfFetchLatestRelease(onStage) {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
 })();
+
+/* ============================================================================
+ * 版本更新弹窗（2026-11-29）：手动「检查更新」与后台「自动检查更新」合并成一套
+ * ----------------------------------------------------------------------------
+ * 合并前的两条路（都在本页，但各说各话）：
+ *   · 手动：initCheckUpdate 的 run() 查完只往 checkUpdateTip 写一行「检测到新版本：vX」。
+ *   · 自动：background.js 的闹钟查完写 storage.local.sfAutoUpdate，bindControls 里读出来，
+ *     往 autoUpdateTip 写「后台自动检查（时间）发现新版本 vX，点『检查更新』可再确认一次」。
+ *   两处文案不同、位置不同，且都没有下载入口 —— 用户看到提示还得自己找「版本更新」行。
+ *
+ * 合并后：两边都调用 sfAnnounceNewVersion()，同一句版本行小字 + 同一个弹窗，
+ *   谁先查到都能弹。判定口径仍是 sfCmpVersion（逐字节相同 → 不弹；线上更低 → 不弹）。
+ *
+ * 三个细节：
+ *   1) 只弹一次：「稍后」关掉的版本号记进 storage.local.sfUpdatePopupDismissed，
+ *      后台自动检查再查到同一版本时不打扰；手动点「检查更新」仍然弹（用户主动要的）。
+ *      装了新版本之后，sfAutoUpdate 里的旧版本号会因为 sfCmpVersion <= 0 被过滤掉。
+ *   2) 「立即更新」不打开新标签页，而是在本页切到「关于」→ 高亮「版本更新」行
+ *      （GitHub / Gitee / 蓝奏云三个下载入口都在那一行），不依赖任何权限。
+ *   3) 弹窗 DOM 复用 .modal-overlay / .modal，四套外观主题与明亮模式自动继承。
+ * ========================================================================== */
+/* ============================================================================
+ * 版本更新弹窗 v2（2026-11-29 晚）：同一页只弹一次，重开设置页再弹
+ * ----------------------------------------------------------------------------
+ * v1 的两个毛病：
+ *   · 「稍后」把版本号写进 storage.local，于是**永久**不再提示 —— 用户想「先看看更新
+ *     说明、回头再说」，一按稍后这条通道就死了，只能自己想起来点「检查更新」。
+ *   · 弹窗跟用户的操作没有协调：页面刚打开、用户已经点进某个输入框在打字，
+ *     弹窗一出现就把焦点抢走，光标跳走。
+ *
+ * v2 规则（对应需求 2 的三条边界）：
+ *   1) 触发边界 = 一次页面加载。刷新 / 关掉重开 / 再开一个设置页标签 都算新的加载，
+ *      会重新评估并弹一次；同一页内的子页切换（规则与白名单 → 急救与工具）不是新的
+ *      加载，`_sfUpdAnnouncedTag` 保证不重复。
+ *      「稍后」只在本次加载内生效（内存变量），刷新即忘 —— 只要没装新版就还会提醒。
+ *   2) 打开页面先走一段「正在检查更新……」伪横幅：顶部胶囊 + 一层透明挡板，
+ *      约 0.5~2.2 秒内挡住鼠标（光标变 progress）。目的不是「假装在查」，而是
+ *      把「用户已经点了一半」这个窗口让出来 —— 结论回来之前先别让人动手，
+ *      否则弹窗正好砸在操作中间。按 Esc 可以立刻撤掉，键盘焦点不受影响。
+ *   3) 真要弹之前再判一次焦点：activeElement 是输入框/文本域/可编辑区（用户在打字）
+ *      就挂起，等 blur 后或最多 6 秒再弹；6 秒那次不抢焦点，只把窗摆出来。
+ *
+ * 另外保留 v1 已经确认的两点：「立即更新」只在本页切到「关于」并高亮「版本更新」行；
+ *   遮罩空白处不再等于「稍后」（只能点「稍后」或按 Esc）。
+ * ========================================================================== */
+const SF_UPD_DISMISS_KEY = 'sfUpdatePopupDismissed';   // 2026-11-29 晚起不再写盘，常量留着只为标注旧值来源
+const SF_UPD_LEAD_MAX = 2200;      // 伪横幅最长挡住操作的时间
+const SF_UPD_LEAD_MIN = 520;       // 最短展示时间（避免一闪而过像故障）
+const SF_UPD_DEFER_MAX = 6000;     // 焦点不安全时最多等这么久
+
+let _sfUpdDismissed = null;        // 本次加载内按过「稍后」的版本号（不再持久化）
+let _sfUpdBound = false;
+let _sfUpdAnnouncedTag = '';       // 本次加载内已经播报过的版本号
+let _sfUpdPending = null;          // 待弹的 { tag, cur, source }；null = 没有挂起的
+let _sfUpdDeferTimer = null;
+let _sfUpdDeferBound = false;
+let _sfUpdBusyRelease = null;      // 伪横幅当前的「提前收工」句柄
+
+function sfUpdOverlay() { return $('updateModal'); }
+function sfUpdBusyBar() { return $('updateBusy'); }
+function sfUpdBusyShield() { return $('updateShield'); }
+
+/* ---- 伪横幅 ---------------------------------------------------------- */
+function sfUpdBusyShow(text) {
+  const bar = sfUpdBusyBar(), shield = sfUpdBusyShield(), txt = $('updateBusyTxt');
+  if (txt && text) txt.textContent = text;
+  if (bar) bar.hidden = false;
+  if (shield) shield.hidden = false;
+  try { document.documentElement.classList.add('upd-busy-on'); } catch (e) {}
+}
+
+function sfUpdBusyHide() {
+  const bar = sfUpdBusyBar(), shield = sfUpdBusyShield();
+  if (bar) bar.hidden = true;
+  if (shield) shield.hidden = true;
+  try { document.documentElement.classList.remove('upd-busy-on'); } catch (e) {}
+  _sfUpdBusyRelease = null;
+}
+
+/* 显示伪横幅并返回「提前收工」函数。到点必收 —— 不指望调用方一定会回调
+   （消息没人接、后台冷启动卡住、检查失败都要能收），调用方只是能早点收工。 */
+function sfUpdLeadIn(text, onDone) {
+  sfUpdBusyShow(text);
+  const t0 = Date.now();
+  let done = false, maxTimer = null, escBound = false;
+  const escHandler = function (e) {
+    if (e && (e.key === 'Escape' || e.key === 'Esc')) finish();
+  };
+  function finish() {
+    if (done) return;
+    done = true;
+    if (maxTimer) { try { clearTimeout(maxTimer); } catch (e) {} }
+    if (escBound) { try { document.removeEventListener('keydown', escHandler, true); } catch (e) {} }
+    const rest = Math.max(0, SF_UPD_LEAD_MIN - (Date.now() - t0));
+    setTimeout(function () {
+      sfUpdBusyHide();
+      if (typeof onDone === 'function') onDone();
+    }, rest);
+  }
+  maxTimer = setTimeout(finish, SF_UPD_LEAD_MAX);
+  try { document.addEventListener('keydown', escHandler, true); escBound = true; } catch (e) {}
+  _sfUpdBusyRelease = finish;
+  return finish;
+}
+
+/* ---- 焦点兜底 -------------------------------------------------------- */
+// 用户正在打字（焦点在输入类控件里）就先别抢：弹窗不是错误提示，晚一点没关系
+function sfUpdCanTakeFocus() {
+  let ae = null;
+  try { ae = document.activeElement; } catch (e) { ae = null; }
+  if (!ae) return true;
+  const tag = String(ae.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false;
+  if (ae.isContentEditable) return false;
+  return true;
+}
+
+function sfUpdDeferUntilIdle() {
+  const retry = function () {
+    if (!_sfUpdPending || !sfUpdCanTakeFocus()) return;
+    // 留一点缓冲：blur 往往和「刚点了某个按钮」同时发生，立刻抢焦点会打断那一下
+    // 140ms 后再确认一次：用户可能在这段缓冲里又点回了另一个输入框
+    setTimeout(function () { if (_sfUpdPending && sfUpdCanTakeFocus()) sfUpdFlushPending(true); }, 140);
+  };
+  if (!_sfUpdDeferBound) {
+    _sfUpdDeferBound = true;
+    try {
+      document.addEventListener('focusout', function () { setTimeout(retry, 60); }, true);
+    } catch (e) {}
+  }
+  if (_sfUpdDeferTimer) return;
+  _sfUpdDeferTimer = setTimeout(function () {
+    // 等太久了：不再等焦点，但也不抢（noFocus），用户抬头就能看见窗已经在了
+    _sfUpdDeferTimer = null;
+    if (_sfUpdPending) sfUpdFlushPending(false);
+  }, SF_UPD_DEFER_MAX);
+}
+
+function sfUpdFlushPending(focusOk) {
+  const p = _sfUpdPending;
+  if (!p) return;
+  _sfUpdPending = null;
+  if (_sfUpdDeferTimer) { try { clearTimeout(_sfUpdDeferTimer); } catch (e) {} _sfUpdDeferTimer = null; }
+  sfUpdFill(p.tag, p.cur);
+  sfUpdSrcText(p.source);
+  sfUpdShow(focusOk !== false);
+}
+
+/* ---- 弹窗本体 -------------------------------------------------------- */
+function sfUpdFill(latest, current) {
+  const l = $('updLatest'), c = $('updCurrent');
+  if (l) l.textContent = latest ? 'v' + sfNormTag(latest) : '—';
+  if (c) c.textContent = current ? 'v' + sfNormTag(current) : '—';
+}
+
+function sfUpdSrcText(source) {
+  const src = $('updSrc');
+  if (!src) return;
+  src.hidden = false;
+  src.textContent = source === 'auto'
+    ? '由后台自动检查发现（每 6 小时一次，浏览器启动时若已过期会补查一次）；「立即更新」会跳到本页「关于 → 版本更新」。'
+    : '「立即更新」会跳到本页「关于 → 版本更新」，在那里选择下载渠道。';
+}
+
+function sfUpdHide() {
+  const ov = sfUpdOverlay();
+  if (ov) ov.classList.remove('show');
+}
+
+function sfUpdShow(withFocus) {
+  const ov = sfUpdOverlay();
+  if (!ov) return;
+  ov.classList.add('show');
+  if (withFocus === false) return;      // 焦点兜底里「等太久」那一档：只摆出来，不抢焦点
+  // 焦点默认落在「稍后」：避免回车直接跳走页面，误操作成本更低
+  setTimeout(function () {
+    const b = $('updLater');
+    if (b) { try { b.focus(); } catch (e) {} }
+  }, 30);
+}
+
+// 「立即更新」：本页切到「关于」，再把「版本更新」行滚进视野并闪烁两次
+function sfGoAboutUpdateRow() {
+  const nav = findNavForTarget('about');
+  if (nav && !nav.classList.contains('active')) nav.click();
+  /* ---- 手错（2026-11-29 首版）：这一行只有 data-page-node-id，没有 id ----
+     <div class="about-row" data-page-node-id="SF_UC_ROW_VER"> —— getElementById 恒为 null，
+     于是整段直接 return，既不滚动也不高亮（用户看到的就是「弹窗正常、那一栏没反应」）。
+  const row = document.getElementById('SF_UC_ROW_VER');
+  if (!row) return;
+  */
+  // 新：按 data-page-node-id 找（与页面里其它节点一致），id 只作兼容兜底
+  const row = document.querySelector('[data-page-node-id="SF_UC_ROW_VER"]') ||
+              document.getElementById('SF_UC_ROW_VER');
+  if (!row) return;
+  setTimeout(function () {
+    try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+    catch (e) { try { row.scrollIntoView(); } catch (e2) {} }
+    // 先摘再挂 + 强制重排：连点「立即更新」时动画也能从头再播一遍
+    row.classList.remove('is-flash');
+    void row.offsetWidth;
+    row.classList.add('is-flash');
+    setTimeout(function () { row.classList.remove('is-flash'); }, 3400);
+  }, 80);
+}
+
+// 手动 / 自动两个入口的唯一出口
+function sfAnnounceNewVersion(latest, current, opts) {
+  const tag = sfNormTag(latest);
+  if (!tag) return;
+  const cur = sfNormTag(current || sfOwnVersion());
+  const source = (opts && opts.source) || 'manual';
+
+  // 1) 版本行那行小字：两条路径同一句（旧版是两套说法）
+  const tip = $('checkUpdateTip');
+  if (tip) {
+    tip.hidden = false;
+    tip.className = 'about-note update-tip is-new';
+    tip.textContent = '检测到新版本：v' + tag;
+  }
+  const autoTip = $('autoUpdateTip');
+  if (autoTip) autoTip.hidden = true;   // 合并后不再单独占一行
+
+  /* ---- 旧（2026-11-29 晚之前）：弹不弹取决于 storage 里的 sfUpdatePopupDismissed ----
+     那份记录是永久的，用户按过一次「稍后」就再也看不到提示。现在改成会话内记忆。
+  const force = !!(opts && opts.force) || source === 'manual';
+  const go = function (dismissed) {
+    if (!force && dismissed && dismissed === tag) return;
+    sfUpdFill(tag, cur);
+    ...
+    sfUpdShow();
+  };
+  if (_sfUpdDismissed !== null) go(_sfUpdDismissed);
+  else sfUpdReadDismissed(go);
+  */
+  // 2) 去重只在「本次页面加载」内进行：
+  //    · 手动点「检查更新」= 明确意图，force 直接弹；
+  //    · 自动路径：本次已按「稍后」的版本、本次已播报过的版本，都不再打扰。
+  const force = !!(opts && opts.force) || source === 'manual';
+  const ov = sfUpdOverlay();
+  const showing = !!(ov && ov.classList.contains('show'));
+  if (!force && !showing) {
+    if (_sfUpdDismissed === tag) return;
+    if (_sfUpdAnnouncedTag === tag) return;
+  }
+  _sfUpdAnnouncedTag = tag;
+
+  // 窗已经开着（比如后台这一轮刚写进更新的版本号）：只换内容，不重播动画
+  if (showing) { sfUpdFill(tag, cur); sfUpdSrcText(source); return; }
+
+  // 3) 焦点不安全就挂起，等用户离开输入框
+  _sfUpdPending = { tag: tag, cur: cur, source: source };
+  if (sfUpdCanTakeFocus()) sfUpdFlushPending(true);
+  else sfUpdDeferUntilIdle();
+}
+
+function sfBindUpdateModal() {
+  if (_sfUpdBound) return;
+  _sfUpdBound = true;
+  const later = $('updLater'), now = $('updNow'), ov = sfUpdOverlay();
+
+  const dismiss = function () {
+    const l = $('updLatest');
+    const tag = sfNormTag(l ? l.textContent : '');
+    if (tag) {
+      _sfUpdDismissed = tag;
+      /* ---- 旧（2026-11-29 晚之前）：写进 storage.local，永久生效 ----
+         副作用是「按一次稍后 = 这个版本再也提醒不到」，与「只要没更新就每次打开都提一句」
+         正好相反。现在只记在内存里，刷新页面即忘。
+      if (hasStorageLocal()) { try { chrome.storage.local.set({ [SF_UPD_DISMISS_KEY]: tag }); } catch (e) {} }
+      */
+    }
+    _sfUpdPending = null;
+    sfUpdHide();
+    const btn = $('checkUpdateBtn');
+    if (btn) { try { btn.focus(); } catch (e) {} }
+  };
+
+  if (later) later.addEventListener('click', dismiss);
+  if (now) now.addEventListener('click', function () {
+    _sfUpdPending = null;
+    sfUpdHide();
+    sfGoAboutUpdateRow();
+  });
+  if (ov) {
+    /* ---- 旧（2026-11-29 首版）：点遮罩空白处 = 稍后 ----
+       误关成本太低：想点「立即更新」却点偏一点点，窗就没了，还得重新检查一次。
+    ov.addEventListener('click', function (e) { if (e.target === ov) dismiss(); });
+    */
+    // 新：只能由「稍后」按钮（或键盘 Esc）关闭；点空白处不再有反应。
+    document.addEventListener('keydown', function (e) {
+      if ((e.key === 'Escape' || e.key === 'Esc') && ov.classList.contains('show')) dismiss();
+    });
+  }
+}
+
+/* ---- 触发：每次页面加载走一遍 --------------------------------------- */
+function sfUpdConsider(info) {
+  if (!info || !info.latest) return;
+  // 用「当前真实版本」重算一次，而不是信 info.newer：那条是后台查的时候算的，
+  // 用户可能已经装了新版（此时 sfAutoUpdate 还是旧的）。
+  const cur = sfOwnVersion();
+  if (sfCmpVersion(info.latest, cur) <= 0) return;
+  sfAnnounceNewVersion(info.latest, cur, { source: 'auto' });
+}
+
+function sfWatchAutoUpdate() {
+  if (!hasStorageLocal()) return;
+  // 停在设置页时后台刚查完 → 直接弹（这时页面已经在用，不再走伪横幅）
+  try {
+    chrome.storage.onChanged.addListener(function (chg, area) {
+      if (area !== 'local' || !chg || !chg.sfAutoUpdate) return;
+      sfUpdConsider(chg.sfAutoUpdate.newValue);
+    });
+  } catch (e) {}
+  sfUpdBootCheck();
+}
+
+/* 一次页面加载 = 一次评估：先伪横幅挡住操作，结论回来再决定弹不弹。
+   后台那边收到 SF_AUTO_CHECK_IF_DUE 会走同一道闸门（没到点就跳过、不发请求），
+   所以「打开设置页」不会额外增加请求频率，只是给闸门多一次触发机会。 */
+function sfUpdBootCheck() {
+  // 先把「会不会有结论」问清楚：自动检查关着、且没存下更高版本 → 这一页根本不会弹窗，
+  // 那就别拿 0.5 秒的挡板去按住用户（挡板只在「可能马上要弹窗」时才值得出现）。
+  const run = function (autoOn) {
+    if (!autoOn) {
+      try {
+        chrome.storage.local.get({ sfAutoUpdate: null }, function (o) {
+          const info = o && o.sfAutoUpdate;
+          if (!info || !info.latest) return;
+          if (sfCmpVersion(info.latest, sfOwnVersion()) <= 0) return;
+          sfUpdConsider(info);
+        });
+      } catch (e) {}
+      return;
+    }
+    const release = sfUpdLeadIn('正在检查更新……', function () {
+      try {
+        chrome.storage.local.get({ sfAutoUpdate: null }, function (o) { sfUpdConsider(o && o.sfAutoUpdate); });
+      } catch (e) {}
+    });
+    try {
+      chrome.runtime.sendMessage({ type: 'SF_AUTO_CHECK_IF_DUE' }, function () {
+        try { chrome.runtime.lastError; } catch (e) {}   // 后台没起/没人接也不报错
+        release();
+      });
+    } catch (e) { release(); }
+  };
+  try {
+    chrome.storage.sync.get({ autoCheckUpdate: true }, function (cfg) {
+      run(!(cfg && cfg.autoCheckUpdate === false));
+    });
+  } catch (e) { run(true); }
+}
 
 /* ============================================================================
  * 云端名单同步（关于页「从云端更新名单」按钮）

@@ -690,14 +690,19 @@
           <!-- 版本行：「检查更新」按钮与版本号同排。
                点击后向 github.com/…/releases/latest 查询最新 tag，与本地版本逐字节比对；
                直连不通时依次退到 api.github.com 与 gh-proxy.com 反代（与「前往 GitHub 查看更新」同一套通道）。 -->
-          <div class="about-row" data-page-node-id="QkzAZvzqJGj0eGl6AoVXqU"><span class="ak" data-page-node-id="UeB2xusyUyvtBfiXJCLmhu">版本</span><span class="av av-btns" data-page-node-id="SF_UC_VER_WRAP"><span id="verAbout" data-page-node-id="2kA1YSeEgJK0FWVhFo3UDU">v1.0.0</span><button class="btn-mini" id="checkUpdateBtn" type="button" title="向 GitHub Releases 查询最新版本号：优先直连 GitHub，超时改用公共代理，仍超时则查 Gitee 镜像" data-page-node-id="SF_UC_CHECK_BTN">检查更新</button><span class="about-note update-hint" id="checkUpdateHint" data-page-node-id="SF_UC_CHECK_HINT">作者会不定期发布更新，建议每天检查一次</span><span class="about-note update-tip" id="checkUpdateTip" hidden data-page-node-id="SF_UC_CHECK_TIP"></span></span></div>
+          <div class="about-row" data-page-node-id="QkzAZvzqJGj0eGl6AoVXqU"><span class="ak" data-page-node-id="UeB2xusyUyvtBfiXJCLmhu">版本</span><span class="av av-btns" data-page-node-id="SF_UC_VER_WRAP"><span id="verAbout" data-page-node-id="2kA1YSeEgJK0FWVhFo3UDU">v1.0.0</span><button class="btn-mini" id="checkUpdateBtn" type="button" title="向 GitHub Releases 查询最新版本号：优先直连 GitHub，超时改用公共代理，仍超时则查 Gitee 镜像" data-page-node-id="SF_UC_CHECK_BTN">检查更新</button><span class="about-note update-hint" id="checkUpdateHint" data-page-node-id="SF_UC_CHECK_HINT">作者会不定期发布更新，建议每天检查一次</span><span class="about-note update-tip" id="checkUpdateTip" hidden data-page-node-id="SF_UC_CHECK_TIP"></span><span class="about-note auto-update-tip" id="autoUpdateTip" hidden data-page-node-id="SF_AUTO_VER_TIP"></span></span><!-- 2026-11-28：自动检查更新开关（默认开）。旧版这一行只有「检查更新」按钮，没有任何自动行为 -->
+          <span class="about-toggle-stack" data-page-node-id="SF_UPD_TOGGLE_STACK"><label class="about-toggle" title="开启后扩展在后台每 6 小时查一次新版本，发现新版本会在工具栏图标上标「新」；关闭后只能用左侧「检查更新」手动查" data-page-node-id="SF_AUTO_VER_TOGGLE"><span class="about-toggle-txt" data-page-node-id="SF_AUTO_VER_TXT">自动检查更新</span><span class="switch" data-page-node-id="SF_AUTO_VER_SWITCH"><input type="checkbox" id="autoCheckUpdate" data-page-node-id="SF_AUTO_VER_INPUT"><span class="slider" data-page-node-id="SF_AUTO_VER_SLIDER"></span></span></label><!-- 2026-11-29：系统通知开关（默认关）。与「自动检查更新」是两件事： -->
+          <!-- 上面那枚决定「查不查」，这一枚决定「查到之后要不要在 Windows 右下角弹一下」。 -->
+          <!-- 手动点左侧「检查更新」也算「检查到更新」—— 同样受这枚开关控制，同一版本只弹一次。 -->
+          <label class="about-toggle" title="开启后，只要查到比当前更新的版本（不管是后台自动检查还是手动点「检查更新」），就在系统右下角弹一条通知；同一版本只提醒一次。默认关闭" data-page-node-id="SF_NOTIFY_TOGGLE"><span class="about-toggle-txt" data-page-node-id="SF_NOTIFY_TXT">检查到更新时发送系统通知</span><span class="switch" data-page-node-id="SF_NOTIFY_SWITCH"><input type="checkbox" id="notifyOnUpdate" data-page-node-id="SF_NOTIFY_INPUT"><span class="slider" data-page-node-id="SF_NOTIFY_SLIDER"></span></span></label></span></div>
           <!-- 扩展商店行（2026-11-26）：商店版是微软审核过的稳定版，但版本号必然落后于
                GitHub Releases / 蓝奏云里的最新版（商店审核有滞后），所以两条通道并列给出。 -->
           <div class="about-row" data-page-node-id="SF_EDGE_STORE_ROW"><span class="ak" data-page-node-id="SF_EDGE_STORE_AK">扩展商店</span><span class="av av-btns" data-page-node-id="SF_EDGE_STORE_WRAP"><a class="btn-mini" id="edgeStoreLink" href="https://microsoftedge.microsoft.com/addons/detail/hckibmmlfmcgpelphibapghnlbcjkmih" target="_blank" rel="noreferrer" title="在 Microsoft Edge 加载项商店中打开 SilverFoxBlocker 的详情页" data-page-node-id="SF_EDGE_STORE_LINK">前往 Microsoft Edge Add-ons 扩展商店</a><span class="about-note" data-page-node-id="SF_EDGE_STORE_NOTE">商店发布的是经过微软审核的稳定版，不需要「开发人员模式」即可安装、使用；其版本号必然落后于「检查更新」得到的最新版（来自 GitHub 发布），请自行选择需要使用的版本</span></span></div>
           <div class="about-row" data-page-node-id="fk21QpHx5xnayIpYBJ9Pik"><span class="ak" data-page-node-id="JbbL5e2HWqX5LYCJ8QWO1G">隐私政策</span><span class="av" data-page-node-id="ewLZB8QUme2ckphjySGFDn"><a href="https://github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" data-page-node-id="2JDU7smH0eGm2Bl4mg9DuW">github.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md</a><span class="mirror-line" data-page-node-id="SF_PRIVACY_GITEE_LINE"><a href="https://gitee.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" title="Gitee 镜像：内容与 GitHub 上的 PRIVACY.md 相同，只是域名不同" data-page-node-id="SF_PRIVACY_GITEE">gitee.com/bbjj12345/SilverFoxBlocker/blob/main/PRIVACY.md</a></span></span></div>
           <div class="about-row" data-page-node-id="ZlA8G7QHjra4Ijrc81pZPq"><span class="ak" data-page-node-id="tM4qhnfyTX2IAV1dUYCjEp">项目仓库</span><span class="av" data-page-node-id="MlOWp3serjw4b3xhPnYT6c"><a href="https://github.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" data-page-node-id="9PdYDUpYdaZAR3gH1hmKTg">github.com/bbjj12345/SilverFoxBlocker</a><span class="mirror-line" data-page-node-id="SF_REPO_GITEE_LINE"><a href="https://gitee.com/bbjj12345/SilverFoxBlocker" target="_blank" rel="noreferrer" title="Gitee 镜像：内容与 GitHub 仓库同步，只是域名不同（国内直连更快）" data-page-node-id="SF_REPO_GITEE">gitee.com/bbjj12345/SilverFoxBlocker</a></span></span></div>
           <div class="about-row" data-page-node-id="SF_UC_ROW_VER"><span class="ak" data-page-node-id="SF_UC_AK_VER">版本更新</span><span class="av av-btns"><a class="btn-mini" id="manualCheckUpdate" href="https://github.com/bbjj12345/SilverFoxBlocker/releases/latest" target="_blank" rel="noreferrer" title="直连 github.com 不通时会自动改用公共镜像；镜像也不通时，经代理查询最新版本号；仍不行可改用右侧「前往 Gitee 查看更新」" data-page-node-id="SF_UC_GH">前往 GitHub 查看更新</a><a class="btn-mini" id="giteeUpdate" href="https://gitee.com/bbjj12345/SilverFoxBlocker/releases/latest" target="_blank" rel="noreferrer" title="Gitee 镜像（国内直连，内容与 GitHub Release 同步）；GitHub 打不开时用这个" data-page-node-id="SF_UC_GITEE">前往 Gitee 查看更新</a><a class="btn-mini" id="lanzouUpdate" href="https://wwavz.lanzout.com/b01gigjayb" target="_blank" rel="noreferrer" title="蓝奏云提取码：2hxh —— 点击后自动复制到剪贴板，再在新标签页按提示粘贴" data-page-node-id="SF_UC_LZ">前往蓝奏云查看更新</a><span class="about-note" id="lanzouPwdTip" data-page-node-id="SF_UC_LZ_TIP">蓝奏云提取码：2hxh（点击按钮自动复制到剪贴板）</span><span class="about-note gh-channel-tip" id="ghChannelTip" hidden data-page-node-id="SF_GH_CHANNEL_TIP"></span></span></div>
-          <div class="about-row" data-page-node-id="SF_UC_ROW_CLOUD"><span class="ak" data-page-node-id="SF_UC_AK_CLOUD">云端名单更新</span><span class="av av-btns"><button class="btn-mini" id="cloudPullList" type="button" title="优先 GitHub：云端接口（Worker 内部 GitHub→Gitee）→ GitHub 直连 → 公共代理（gh-proxy / ghfast / ghproxy.net 等）→ Gitee 镜像，逐级重试" data-page-node-id="SF_CLOUD_LST">从云端更新名单</button><span class="about-note" data-page-node-id="SF_CLOUD_TIP">云端名单可作为拦截危险网站的重要补充依据，建议每天更新一次；白名单里的「官网映射」（correct_sites）也会一并同步，供拦截浮层的「访问正确的页面」按钮使用</span></span></div>
+          <div class="about-row" data-page-node-id="SF_UC_ROW_CLOUD"><span class="ak" data-page-node-id="SF_UC_AK_CLOUD">云端名单更新</span><span class="av av-btns"><button class="btn-mini" id="cloudPullList" type="button" title="优先 GitHub：云端接口（Worker 内部 GitHub→Gitee）→ GitHub 直连 → 公共代理（gh-proxy / ghfast / ghproxy.net 等）→ Gitee 镜像，逐级重试" data-page-node-id="SF_CLOUD_LST">从云端更新名单</button><span class="about-note" data-page-node-id="SF_CLOUD_TIP">云端名单可作为拦截危险网站的重要补充依据，建议每天更新一次；白名单里的「官网映射」（correct_sites）也会一并同步，供拦截浮层的「访问正确的页面」按钮使用</span></span><!-- 2026-11-28：自动更新开关（默认开）。开启后后台每天自动同步一次，不再依赖手动点按钮 -->
+          <label class="about-toggle" title="开启后扩展在后台每天自动从云端同步一次黑白名单（走云端接口，失败自动跳过并在下个周期重试）；关闭后只能点左侧「从云端更新名单」手动同步" data-page-node-id="SF_AUTO_CLOUD_TOGGLE"><span class="about-toggle-txt" data-page-node-id="SF_AUTO_CLOUD_TXT">自动更新</span><span class="switch" data-page-node-id="SF_AUTO_CLOUD_SWITCH"><input type="checkbox" id="autoCloudUpdate" data-page-node-id="SF_AUTO_CLOUD_INPUT"><span class="slider" data-page-node-id="SF_AUTO_CLOUD_SLIDER"></span></span></label></div>
           <!-- 云端名单同步状态：由 ui/options.js 的 refreshCloudListStatus() 回填，
                展示「黑白各多少条 / 上次同步时间」，避免同步完看不出是否真的生效。 -->
           <div class="about-row" data-page-node-id="SF_CLOUD_STATUS_ROW"><span class="ak">云端名单</span><span class="av" id="cloudListStatus" data-page-node-id="SF_CLOUD_STATUS">未同步</span></div>
@@ -826,6 +831,42 @@
   </div>
 
 
+  <!-- 版本更新弹窗（2026-11-29）：手动「检查更新」与后台「自动检查更新」合并成同一套判定，
+       只要有一边查到新版本就弹这一个窗。
+       合并前：手动只写 checkUpdateTip 一行小字（「检测到新版本：vX」），后台自动另写一行
+       autoUpdateTip（「后台自动检查（时间）发现新版本…」），两套说法、都没有下载入口，
+       用户还得自己找到「版本更新」行才知道去哪下。
+       合并后：文案统一由 options.js 的 sfAnnounceNewVersion() 写，「立即更新」不打开新标签页，
+       而是在本页切到「关于」并高亮「版本更新」行（GitHub / Gitee / 蓝奏云三个入口都在那里）。 -->
+  <!-- 「正在检查更新……」伪横幅 + 挡板（2026-11-29 晚）
+       目的不是装饰：设置页一打开就先把鼠标操作按住 0.5~2.2 秒，等这一轮的检查结论回来，
+       再决定弹不弹「发现新版本」。否则用户刚点进某个输入框开始打字，弹窗正好砸进来抢焦点。
+       挡板是纯指针层面（透明、指针光标），按 Esc 立刻撤掉，不影响键盘与读屏。 -->
+  <div class="upd-busy" id="updateBusy" hidden role="status" aria-live="polite" data-page-node-id="SF_UPD_BUSY">
+    <span class="upd-busy-spin" aria-hidden="true" data-page-node-id="SF_UPD_BUSY_SPIN"></span>
+    <span class="upd-busy-txt" id="updateBusyTxt" data-page-node-id="SF_UPD_BUSY_TXT">正在检查更新……</span>
+  </div>
+  <div class="upd-shield" id="updateShield" hidden aria-hidden="true" data-page-node-id="SF_UPD_SHIELD"></div>
+
+  <div class="modal-overlay" id="updateModal" data-page-node-id="SF_UPD_OVERLAY">
+    <div class="modal upd-modal" role="dialog" aria-modal="true" aria-labelledby="updTitle" data-page-node-id="SF_UPD_MODAL">
+      <div class="modal-ico" data-page-node-id="SF_UPD_ICO">
+        <svg viewBox="0 0 24 24" fill="none" data-page-node-id="SF_UPD_ICON"><path d="M12 4.5v9.5m0 0 3.6-3.6M12 14l-3.6-3.6" stroke="#7db4ff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="SF_UPD_ARROW"/><path d="M5.5 16.5v1.6A1.9 1.9 0 0 0 7.4 20h9.2a1.9 1.9 0 0 0 1.9-1.9v-1.6" stroke="#7db4ff" stroke-width="1.7" stroke-linecap="round" data-page-node-id="SF_UPD_TRAY"/></svg>
+      </div>
+      <h3 id="updTitle" data-page-node-id="SF_UPD_TITLE">发现新版本</h3>
+      <p data-page-node-id="SF_UPD_DESC">SilverFoxBlocker 有新版本可用。更新后可使用最新的内置规则与云端名单格式，建议尽快更新。</p>
+      <div class="upd-vers" data-page-node-id="SF_UPD_VERS">
+        <div class="upd-v is-new" data-page-node-id="SF_UPD_LATEST_WRAP"><span class="upd-k" data-page-node-id="SF_UPD_LATEST_K">最新版本</span><b id="updLatest" data-page-node-id="SF_UPD_LATEST">—</b></div>
+        <div class="upd-v" data-page-node-id="SF_UPD_CUR_WRAP"><span class="upd-k" data-page-node-id="SF_UPD_CUR_K">当前版本</span><b id="updCurrent" data-page-node-id="SF_UPD_CUR">—</b></div>
+      </div>
+      <p class="upd-src" id="updSrc" hidden data-page-node-id="SF_UPD_SRC"></p>
+      <div class="modal-actions" data-page-node-id="SF_UPD_ACTIONS">
+        <button class="btn upd-secondary" id="updLater" type="button" data-page-node-id="SF_UPD_LATER">稍后</button>
+        <button class="btn btn-primary" id="updNow" type="button" data-page-node-id="SF_UPD_NOW">立即更新</button>
+      </div>
+    </div>
+  </div>
+
   <script src="../rules/iocs.js"></script>
   <script src="../rules/analyzer.js?v=20261124"></script>
   <script src="../rules/liststore.js"></script>
@@ -833,6 +874,6 @@
   <script src="feedback-config.js?v=20261127"></script>
   <!-- ★ 2026-11-23：明暗模式控制器需先于 options.js 执行（applyAppearance 会读取 isLight） -->
   <script src="theme-mode.js?v=20261123"></script>
-  <script src="options.js?v=20261128a"></script>
+  <script src="options.js?v=20261129c"></script>
 </body>
 </html>

@@ -1987,3 +1987,167 @@ html.theme-light .side-foot .ver { color: rgba(27,35,51,.62); }
 html.theme-light .back-btn { color: #4a5876; border-color: rgba(20,34,64,.14); background: rgba(20,34,64,.04); }
 html.theme-light .back-btn:hover { color: #1b2333; background: rgba(58,123,240,.10); border-color: rgba(58,123,240,.32); }
 html.theme-light .mode-switch { border-top: 0; }
+
+/* ===== 关于页：行尾「自动检查更新 / 自动更新」开关 + 版心加宽（2026-11-28）=====
+   1) 版心：关于页多了两枚开关后 920px 太挤（「版本」行的提示文字被压成两行），
+      只给「关于」这一页放宽到 1120px —— 其它页面维持原宽度，不动既有版式。
+      用 :has() 而非 JS 切类：切换逻辑分散在多处（导航 / 子页 / hash 跳转），
+      漏一处就会出现「进了关于页还是窄的」；老 Chromium（<105）忽略本规则即退回 920px，不影响可用性。
+   2) 开关：直接复用设置页的 .switch（尺寸/配色/亮暗/主题彩蛋全部继承），
+      只在外面套一个 .about-toggle 负责「文字 + 右对齐」。
+   3) .av 是 flex:1，加 min-width:0 防止长链接把开关挤出可视区。 */
+/* 注意：只调 max-width 在 1080~1280 的窗口里看不到任何变化（那时版心本来就小于 920px，
+   真正卡住宽度的是 .content 左右各 clamp(20px,5vw,64px) 的内边距），所以这一页同时把
+   内边距收窄到 3.2vw（最多 44px）：1080 宽时多出约 38px，1600 宽时由 max-width 多出约 200px。 */
+.content:has(#about.active) {
+  max-width: 1120px;
+  padding-left: clamp(16px, 3.2vw, 44px);
+  padding-right: clamp(16px, 3.2vw, 44px);
+}
+.about-row .av { min-width: 0; }
+.about-row .about-toggle {
+  margin-left: auto; align-self: flex-start; flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 10px;
+  cursor: pointer; user-select: none; padding-left: 10px;
+}
+.about-row .about-toggle-txt { font-size: calc(12px * var(--sf-scale)); font-weight: 600; opacity: .72; white-space: nowrap; }
+.about-row .about-toggle .switch { flex: 0 0 52px; }
+/* 2026-11-29：关于页「版本」行尾部由一枚开关变成两枚（自动检查更新 / 检查到更新时发系统通知）。
+   并排会把「检测到新版本 vX」这类提示文字挤成两行，所以套一个纵向栈：
+   宽度只由最长的那句文字决定，两枚开关的滑块也正好上下对齐在同一列。 */
+.about-row .about-toggle-stack {
+  margin-left: auto; flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 10px; padding-left: 10px;
+}
+.about-row .about-toggle-stack .about-toggle {
+  margin-left: 0; padding-left: 0;
+  align-self: stretch; justify-content: flex-end;
+}
+.about-row .auto-update-tip { display: block; margin-top: 6px; color: #8ee6b0; }
+.about-row .auto-update-tip.is-fail { color: #ffb3a7; }
+html.theme-light .about-row .auto-update-tip { color: #1d8a52; }
+html.theme-light .about-row .auto-update-tip.is-fail { color: #c0392b; }
+@media (max-width: 860px) {
+  /* 窄窗口：把「自动检查更新 / 自动更新」的文字收起，只留开关，避免把提示文字挤成一列单字 */
+  .about-row .about-toggle-txt { display: none; }
+  .about-row .about-toggle { padding-left: 4px; }
+  .about-row .about-toggle-stack { padding-left: 4px; gap: 8px; }
+}
+
+/* ===== 版本更新弹窗（2026-11-29）=====
+   结构与「减弱动画效果」确认弹窗同源（.modal-overlay / .modal），所以背景、圆角、
+   四套外观主题、明亮模式全部自动继承，这里只补三样东西：
+     1) 两栏版本号卡片（最新 / 当前），最新那栏用绿色强调；
+     2) 一行来源说明（手动检查 / 后台自动检查）；
+     3) 「立即更新」跳过去之后，给「版本更新」行一个短暂的高亮呼吸，告诉用户入口在哪。 */
+.upd-modal { width: min(420px, 92vw); }
+/* 「稍后」用中性次要按钮：.btn-ghost 在其它地方是「危险/取消」的红色，语义不对 */
+.upd-modal .btn.upd-secondary {
+  color: rgba(235, 242, 255, .88); background: rgba(255, 255, 255, .07);
+  border: 1px solid rgba(255, 255, 255, .16); box-shadow: none;
+}
+html.theme-light .upd-modal .btn.upd-secondary {
+  color: #23304a; background: rgba(20, 34, 64, .05); border-color: rgba(20, 34, 64, .14);
+}
+.modal .upd-vers {
+  display: flex; gap: 10px; margin: 0 0 14px; text-align: center;
+}
+.modal .upd-v {
+  flex: 1 1 0; min-width: 0; padding: 10px 8px 11px; border-radius: 12px;
+  display: flex; flex-direction: column; gap: 3px; align-items: center;
+  background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .12);
+}
+.modal .upd-k { font-size: calc(11.5px * var(--sf-scale, 1)); letter-spacing: .02em; color: rgba(220, 232, 247, .62); }
+.modal .upd-v b {
+  font-size: calc(15px * var(--sf-scale, 1)); font-weight: 800; letter-spacing: -.01em;
+  color: #eaf3ff; font-variant-numeric: tabular-nums;
+}
+.modal .upd-v.is-new { background: rgba(61, 220, 132, .12); border-color: rgba(61, 220, 132, .34); }
+.modal .upd-v.is-new b { color: #3ddc84; }
+.modal .upd-src {
+  margin: 0 0 18px; font-size: calc(11.5px * var(--sf-scale, 1)); line-height: 1.6;
+  color: rgba(220, 232, 247, .5);
+}
+html.theme-light .modal .upd-v { background: rgba(20, 34, 64, .045); border-color: rgba(20, 34, 64, .12); }
+html.theme-light .modal .upd-v b { color: #1b2333; }
+html.theme-light .modal .upd-k { color: rgba(27, 35, 51, .6); }
+html.theme-light .modal .upd-v.is-new { background: rgba(43, 182, 115, .12); border-color: rgba(43, 182, 115, .34); }
+html.theme-light .modal .upd-v.is-new b { color: #1d8a52; }
+html.theme-light .modal .upd-src { color: rgba(27, 35, 51, .55); }
+
+/* 「立即更新」把用户送到「关于 → 版本更新」行：闪烁两次后由 JS 撤掉 class，不留视觉残留。
+   节奏 1.35s × 2 = 2.7s，留 0.7s 余量给 JS 的 3.4s 定时器，避免尾巴被硬切断。
+   注意：这里的 animation 必须写在本节（不是靠 !important 抢），因为 .about-row 本身
+   没有背景色，动画的 background-color 才是唯一可见来源。 */
+.about-row.is-flash { animation: sfRowFlash 1.35s ease-in-out 2; border-radius: 12px; }
+@keyframes sfRowFlash {
+  0%   { background: rgba(61, 220, 132, 0);    box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0); }
+  35%  { background: rgba(61, 220, 132, .13);  box-shadow: inset 0 0 0 1.5px rgba(61, 220, 132, .5); }
+  100% { background: rgba(61, 220, 132, 0);    box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0); }
+}
+html.theme-light .about-row.is-flash { animation-name: sfRowFlashLight; }
+/* 开了「减弱动画效果」时，上面那条全局规则会把动画压成 0.001ms（等同看不见）。
+   这类用户同样需要知道「入口在哪」，所以不做闪烁，改成一段恒亮的高亮，3.4s 后由 JS 一并撤掉。 */
+html.reduce-motion .about-row.is-flash {
+  animation: none !important;
+  background: rgba(61, 220, 132, .16);
+  box-shadow: inset 0 0 0 1.5px rgba(61, 220, 132, .55);
+}
+html.theme-light.reduce-motion .about-row.is-flash {
+  background: rgba(43, 182, 115, .16);
+  box-shadow: inset 0 0 0 1.5px rgba(43, 182, 115, .5);
+}
+@keyframes sfRowFlashLight {
+  0%   { background: rgba(43, 182, 115, 0);   box-shadow: inset 0 0 0 1px rgba(43, 182, 115, 0); }
+  35%  { background: rgba(43, 182, 115, .14); box-shadow: inset 0 0 0 1.5px rgba(43, 182, 115, .45); }
+  100% { background: rgba(43, 182, 115, 0);   box-shadow: inset 0 0 0 1px rgba(43, 182, 115, 0); }
+}
+
+/* ===== 「正在检查更新……」伪横幅 + 挡板（2026-11-29 晚）=====
+   为什么要有挡板：设置页一打开就会向后台问一句「到点了没」，结论通常在 0.3~2 秒内回来。
+   这段时间里用户已经在动手（点侧边栏、点某个输入框），弹窗随即出现就会把焦点抢走。
+   用一层透明挡板把这 0.5~2.2 秒按住，把「用户点了一半」这个窗口让过去。
+   刻意做成非模态：没有背景模糊、没有暗化、Esc 可立刻撤掉，读屏不受影响。 */
+.upd-busy {
+  position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
+  z-index: 96; display: inline-flex; align-items: center; gap: 9px;
+  padding: 9px 16px 9px 14px; border-radius: 999px;
+  font-size: calc(12.5px * var(--sf-scale, 1)); font-weight: 700; letter-spacing: .01em;
+  color: #dfeaff; background: rgba(20, 28, 48, .92);
+  border: 1px solid rgba(125, 180, 255, .34);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .08);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  animation: updBusyIn .18s ease-out;
+}
+.upd-busy[hidden] { display: none; }
+@keyframes updBusyIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.upd-busy-spin {
+  width: 13px; height: 13px; border-radius: 50%; flex: 0 0 13px;
+  border: 2px solid rgba(125, 180, 255, .28); border-top-color: #7db4ff;
+  animation: updBusySpin .7s linear infinite;
+}
+@keyframes updBusySpin { to { transform: rotate(360deg); } }
+html.theme-light .upd-busy {
+  color: #1b2333; background: rgba(255, 255, 255, .96);
+  border-color: rgba(20, 34, 64, .14); box-shadow: 0 12px 30px rgba(20, 34, 64, .16);
+}
+html.theme-light .upd-busy-spin { border-color: rgba(20, 34, 64, .18); border-top-color: #2b7cf0; }
+
+/* 挡板：透明、只吃指针事件。低于 .modal-overlay(100)，所以真有弹窗时不会挡住它。 */
+.upd-shield {
+  position: fixed; inset: 0; z-index: 90;
+  background: transparent; cursor: progress;
+}
+.upd-shield[hidden] { display: none; }
+/* 挡住期间连光标一起提示「稍等」，并压掉 hover 反馈，避免用户以为已经点上了 */
+html.upd-busy-on .content a,
+html.upd-busy-on .content button,
+html.upd-busy-on .sidebar .nav-item { cursor: progress; }
+
+/* 开了「减弱动画效果」时不转圈（全局规则已把动画压成 0.001ms，这里显式去掉避免残留半帧） */
+html.reduce-motion .upd-busy-spin { animation: none !important; opacity: .75; }
+html.reduce-motion .upd-busy { animation: none !important; }

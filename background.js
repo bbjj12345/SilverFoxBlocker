@@ -5520,3 +5520,533 @@ if (chrome.tabs && chrome.tabs.onRemoved) {
   });
 }
 
+/* ==========================================================================
+ * 自动检查更新 / 自动更新云端名单（2026-11-28 新增；默认都开）
+ *
+ * 背景：关于页的「检查更新」「从云端更新名单」两个按钮，此前只能手动点。
+ *   两枚开关（storage.sync 的 autoCheckUpdate / autoCloudUpdate）打开后：
+ *     · 自动检查更新：每 6 小时查一次 GitHub Releases，有新版本给工具栏图标标「新」，
+ *       并把结果写 storage.local.sfAutoUpdate，关于页据此提示（点「检查更新」仍可手动确认）。
+ *     · 自动更新：每天从云端接口同步一次黑白名单 / 官网映射 / 云端例外。
+ *   关闭开关只影响后台这一路，两个手动按钮的行为完全不变。
+ *
+ * 为什么自动同步只走「云端接口」，不像设置页那样排一整串镜像：
+ *   1) Worker 内部已经是 GitHub → Gitee 两级，客户端再排一遍只是重复；
+ *   2) 自动路径没人看着，通道越多越容易出现「半新半旧」；一次只打一个口，
+ *      失败就整轮跳过、等下个周期，绝不会把本地名单写成空的。
+ *   清洗规则与设置页**同源**：后台本来就 importScripts 了 analyzer / iocs，
+ *   直接调 SF_ANALYZER.sanitizeCloudDomains 与 SF_IOCS.normalizeCorrectSites，
+ *   避免「设置页洗一遍、后台再洗一套」的老问题。
+ * ========================================================================== */
+const SF_AUTO_VER_ALARM = 'sfAutoCheckUpdateAlarm';
+const SF_AUTO_CLOUD_ALARM = 'sfAutoCloudSyncAlarm';
+const SF_AUTO_VER_PERIOD = 360;        // 6 小时
+const SF_AUTO_CLOUD_PERIOD = 1440;     // 24 小时
+const SF_AUTO_UPDATE_KEY = 'sfAutoUpdate';
+/* 2026-11-29：开机补偿用「上次真正跑成功的时间」做闸门。
+   为什么不用闹钟自带的补跑：Chrome 只在启动后「尽量」补一次过期闹钟，官方明确不保证；
+   而用户完全可能 18:00 关机、次日 10:00 才开机，那一整天的 6 小时周期就静静漏掉了。
+   现在两条入口（闹钟 / 浏览器启动）都先过 sfAutoDue()，谁也不重复、谁也不会漏。 */
+const SF_AUTO_LAST_VER_KEY = 'sfAutoLastRunVer';
+const SF_AUTO_LAST_CLOUD_KEY = 'sfAutoLastRunCloud';
+/* 闸门容差：闹钟从「创建时刻」起每 360 分钟响一次，而记录的是「上次跑成功」的时刻，
+   两者会差几分钟。若严格要求 360 分钟，第二声闹钟（差 357 分钟）就会被判为「没到点」，
+   于是每两轮才跑一次（6h 变成 12h）。按 90% 判定既不会提前太多，也不会漏掉整轮。 */
+const SF_AUTO_DUE_RATIO = 0.9;
+const SF_AUTO_RELEASE_API = 'https://api.github.com/repos/bbjj12345/SilverFoxBlocker/releases/latest';
+// 与 ui/options.js 的 SF_CLOUD_API / SF_CLOUD_API_KEY 保持一致（同一个 Worker、同一把 Key）
+const SF_AUTO_CLOUD_API = 'https://api.silverfoxblocker.dpdns.org/list';
+const SF_AUTO_CLOUD_API_KEY = 'R6fNcSm^$Z5d6s';
+const SF_AUTO_CLOUD_KEYS = {
+  white: 'sfCloudWhite', black: 'sfCloudBlack',
+  correct: 'sfCloudCorrect', exception: 'sfCloudException', meta: 'sfCloudListMeta'
+};
+/* 2026-11-29：两枚「更新提示」相关的新键。
+   · SF_NOTIFY_UPDATE_KEY —— storage.sync 里的第三方开关，默认 false（关）。
+     用户要求「查到更新就发系统通知」必须能单独开关，不能绑在「自动检查更新」上：
+     自动检查是「查不查」，系统通知是「查到之后叫不叫你」，两件事。
+   · SF_NOTIFIED_VER_KEY —— storage.local 里已经通知过的版本号。
+     闹钟 6 小时一轮、设置页每开一次还会问一句，同一个版本会被查到很多次；
+     没有这道闸门，用户一天能被同一条通知轰炸四五次。 */
+const SF_NOTIFY_UPDATE_KEY = 'notifyOnUpdate';
+const SF_NOTIFIED_VER_KEY = 'sfNotifiedVersion';
+
+// 读两枚开关（老用户没有这两个键 → 默认开）
+function sfAutoReadFlags(cb) {
+  try {
+    chrome.storage.sync.get({ autoCheckUpdate: true, autoCloudUpdate: true }, function (s) {
+      cb((s && s.autoCheckUpdate !== false), (s && s.autoCloudUpdate !== false));
+    });
+  } catch (e) { cb(true, true); }
+}
+
+function sfAutoNormTag(t) { return String(t || '').trim().replace(/^v/i, ''); }
+
+// 读「上次成功时间」（毫秒时间戳；没有记录 → 0）
+function sfAutoLastRun(key) {
+  return new Promise(function (resolve) {
+    try {
+      chrome.storage.local.get({ [key]: 0 }, function (o) { resolve(Number(o && o[key]) || 0); });
+    } catch (e) { resolve(0); }
+  });
+}
+
+// 只在**跑成功**之后调用：失败不写，这样下次启动 / 下个闹钟还会再试
+function sfAutoMarkRun(key) {
+  try { chrome.storage.local.set({ [key]: Date.now() }); } catch (e) {}
+}
+
+async function sfAutoDue(key, periodMin) {
+  const last = await sfAutoLastRun(key);
+  if (!last) return true;                       // 从没跑过（新装 / 老版本升级）→ 立刻补
+  return (Date.now() - last) >= periodMin * 60000 * SF_AUTO_DUE_RATIO;
+}
+
+/* 同一时刻只允许一轮在跑：开机补偿与 2 分钟后的第一声闹钟几乎必然撞在一起，
+   没有这道锁就会同时发两次请求、同时写两次 storage。 */
+let sfAutoVerInFlight = null;
+let sfAutoCloudInFlight = null;
+
+// 与设置页 sfCmpVersion 同语义：逐字节相同即同版本；否则按 . - + 分段数值比较
+function sfAutoCmpVersion(remote, local) {
+  const a = sfAutoNormTag(remote), b = sfAutoNormTag(local);
+  if (!a || !b) return 0;
+  if (a === b) return 0;
+  const pa = a.split(/[.\-+]/), pb = b.split(/[.\-+]/);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] === undefined ? '0' : pa[i];
+    const y = pb[i] === undefined ? '0' : pb[i];
+    const nx = /^\d+$/.test(x) ? parseInt(x, 10) : NaN;
+    const ny = /^\d+$/.test(y) ? parseInt(y, 10) : NaN;
+    if (!isNaN(nx) && !isNaN(ny)) {
+      if (nx !== ny) return nx > ny ? 1 : -1;
+      continue;
+    }
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+async function sfAutoFetchJson(url, opts, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ms || 12000);
+  try {
+    const res = await fetch(url, Object.assign({ cache: 'no-store', signal: ctrl.signal }, opts || {}));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    try { return JSON.parse(text); } catch (e) { throw new Error('返回的不是合法 JSON'); }
+  } finally { clearTimeout(timer); }
+}
+
+/* ==========================================================================
+ * 工具栏「新」徽标 + 「检查到更新时发系统通知」（2026-11-29）
+ * --------------------------------------------------------------------------
+ * 为什么要把徽标单独拆出来：
+ *   上一版只在 sfAutoCheckUpdateOnce() 成功那一刻写一次徽标。可它现在有闸门
+ *   （未到 90% 周期就跳过）和单轮锁，而扩展在 chrome://extensions 里点「重新加载」
+ *   会把 action 的徽标清空 —— 于是出现「明明已经查到 v1.14.10，小红点却不见了」，
+ *   而且要等下一次真正跑成功（最长 6 小时）才会重新亮起来。
+ *   修法：把「写徽标」做成唯一出口 sfUpdateBadgeApply()，另外提供一个**不联网**的
+ *   sfUpdateBadgeRestore()：只读本地缓存的 sfAutoUpdate，按当前真实版本重算一次。
+ *   worker 每次唤醒 / 闹钟被闸门跳过 / 扩展重载 / 设置页问一句，都调 restore。
+ *
+ * 系统通知为什么要独立开关：
+ *   「自动检查更新」回答的是「查不查」，通知回答的是「查到之后叫不叫你」。
+ *   用户可能想要前者、不要后者（通知很吵），所以是两枚键，默认都关着。
+ * ========================================================================== */
+
+// 唯一徽标出口。返回是否「有新版本」，调用方可忽略。
+function sfUpdateBadgeApply(latest, local) {
+  try {
+    if (!chrome.action) return false;
+    const tag = sfAutoNormTag(latest);
+    let cur = sfAutoNormTag(local);
+    if (!cur) { try { cur = sfAutoNormTag((chrome.runtime.getManifest() || {}).version || ''); } catch (e) { cur = ''; } }
+    const newer = !!tag && sfAutoCmpVersion(tag, cur) > 0;
+    chrome.action.setBadgeText({ text: newer ? '新' : '' });
+    if (newer) chrome.action.setBadgeBackgroundColor({ color: '#e5484d' });
+    chrome.action.setTitle({ title: newer
+      ? 'SilverFoxBlocker：发现新版本 v' + tag + '（当前 v' + cur + '）'
+      : 'SilverFoxBlocker' });
+    return newer;
+  } catch (e) { return false; }
+}
+
+// 只读本地缓存重算徽标（不发任何请求）。冷启动 / 重载 / 闸门跳过 时用。
+function sfUpdateBadgeRestore() {
+  try {
+    let cur = '';
+    try { cur = (chrome.runtime.getManifest() || {}).version || ''; } catch (e) {}
+    chrome.storage.local.get({ [SF_AUTO_UPDATE_KEY]: null }, function (o) {
+      const info = o && o[SF_AUTO_UPDATE_KEY];
+      // 缓存里没有版本号 → 按「没有更新」处理（清空徽标，标题恢复默认）
+      sfUpdateBadgeApply(info && info.latest ? info.latest : '', cur);
+    });
+  } catch (e) {}
+}
+
+/* 系统通知：只在「用户打开了开关」且「这个版本还没通知过」时弹一次。
+   同版本去重靠 storage.local.sfNotifiedVersion（不是内存）—— MV3 的 worker
+   30 秒就休眠，内存变量在下一轮闹钟之前早没了。 */
+function sfUpdateNotify(latest, local) {
+  try {
+    const tag = sfAutoNormTag(latest);
+    let cur = sfAutoNormTag(local);
+    if (!cur) { try { cur = sfAutoNormTag((chrome.runtime.getManifest() || {}).version || ''); } catch (e) { cur = ''; } }
+    if (!tag || sfAutoCmpVersion(tag, cur) <= 0) return;   // 同版本 / 线上更低：不打扰
+    chrome.storage.sync.get({ [SF_NOTIFY_UPDATE_KEY]: false }, function (s) {
+      if (!s || s[SF_NOTIFY_UPDATE_KEY] !== true) return;  // 默认关：没打开就一个字都不弹
+      chrome.storage.local.get({ [SF_NOTIFIED_VER_KEY]: '' }, function (o) {
+        if (o && sfAutoNormTag(o[SF_NOTIFIED_VER_KEY]) === tag) return;  // 这一版已经提醒过
+        try {
+          if (!(chrome.notifications && chrome.notifications.create)) return;
+          chrome.notifications.create('sf-upd-' + tag, {
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+            title: 'SilverFoxBlocker 有新版本 v' + tag,
+            message: '当前 v' + cur + '，点此打开「关于」页的更新入口（GitHub / Gitee / 蓝奏云）。',
+            priority: 1,
+            requireInteraction: false,
+            buttons: [{ title: '查看更新' }]
+          }, function () { void chrome.runtime.lastError; });
+          chrome.storage.local.set({ [SF_NOTIFIED_VER_KEY]: tag });
+          console.log('[SilverFoxBlocker][更新通知] 已弹出系统通知：v' + tag);
+        } catch (e) {}
+      });
+    });
+  } catch (e) {}
+}
+
+// 点通知主体 / 点「查看更新」按钮 → 打开设置页的「关于」（带锚点，直接用同一套跳转逻辑）
+function sfUpdateNotifyOpen(nid) {
+  if (!nid || nid.indexOf('sf-upd-') !== 0) return;
+  try { chrome.notifications.clear(nid, function () { void chrome.runtime.lastError; }); } catch (e) {}
+  try {
+    chrome.tabs.create({ url: chrome.runtime.getURL('ui/options.html#sec=about&hl=ver'), active: true });
+  } catch (e) {
+    try { chrome.runtime.openOptionsPage(); } catch (e2) {}
+  }
+}
+if (chrome.notifications && chrome.notifications.onClicked) {
+  chrome.notifications.onClicked.addListener(function (nid) { sfUpdateNotifyOpen(nid); });
+}
+if (chrome.notifications && chrome.notifications.onButtonClicked) {
+  chrome.notifications.onButtonClicked.addListener(function (nid, btnIndex) {
+    if (btnIndex !== 0) return;
+    sfUpdateNotifyOpen(nid);
+  });
+}
+
+// —— 自动检查更新 ——
+async function sfAutoCheckUpdateOnce() {
+  const flags = await new Promise(function (r) { sfAutoReadFlags(function (ver) { r(ver); }); });
+  if (!flags) { sfUpdateBadgeRestore(); return { skipped: 'off' }; }
+  let json = null;
+  try {
+    json = await sfAutoFetchJson(SF_AUTO_RELEASE_API, { headers: { 'Accept': 'application/vnd.github+json' } }, 12000);
+  } catch (e) {
+    // 网络失败不改既有状态：上一个周期查到的「有新版本」不该被一次超时抹掉
+    console.warn('[SilverFoxBlocker][自动检查更新] 查询失败：', e && e.message ? e.message : e);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+  const latest = sfAutoNormTag((json && (json.tag_name || json.name)) || '');
+  if (!latest) return { ok: false, error: '响应里没有版本号' };
+  let local = '';
+  try { local = String((chrome.runtime.getManifest() || {}).version || ''); } catch (e) {}
+  const newer = sfAutoCmpVersion(latest, local) > 0;
+  try {
+    chrome.storage.local.set({ [SF_AUTO_UPDATE_KEY]: { at: Date.now(), latest: latest, local: local, newer: newer } });
+  } catch (e) {}
+  // 查到了合法版本号才算这一轮成功（网络失败 / 响应没版本号都不写，留给下次补）
+  sfAutoMarkRun(SF_AUTO_LAST_VER_KEY);
+  // 工具栏图标的「新」：统一走 sfUpdateBadgeApply（唯一出口，别再就地写一遍）
+  sfUpdateBadgeApply(latest, local);
+  // 独立开关：查到更新且用户打开了「发系统通知」才弹（同版本只弹一次）
+  sfUpdateNotify(latest, local);
+  console.log('[SilverFoxBlocker][自动检查更新] 最新 v' + latest + '，当前 v' + local + (newer ? '（有新版本）' : '（已是最新）'));
+  return { ok: true, latest: latest, local: local, newer: newer };
+}
+
+/* 入口：所有调用方（闹钟 / 浏览器启动 / 设置页开关）都走这里。
+   force=true 只给「用户刚把开关打开」这一种情况 —— 那是明确意图，不必等周期。
+   返回里带 skipped 的原因，便于控制台/测试区分「关着」「没到点」「正在跑」。 */
+async function sfAutoCheckUpdate(force) {
+  if (sfAutoVerInFlight) { sfUpdateBadgeRestore(); return { skipped: 'busy' }; }
+  if (!force && !(await sfAutoDue(SF_AUTO_LAST_VER_KEY, SF_AUTO_VER_PERIOD))) {
+    /* 没到点就跳过 —— 但「跳过」不等于「什么都不用做」：
+       徽标是浏览器的 UI 状态，扩展重载 / 浏览器重启后会被清掉，
+       而本地缓存里的最新版本号还在。这里不联网，只按缓存把徽标还原，
+       否则用户会看到「昨天明明有红点，今天怎么没了」。 */
+    sfUpdateBadgeRestore();
+    return { skipped: 'not-due' };
+  }
+  sfAutoVerInFlight = sfAutoCheckUpdateOnce();
+  try { return await sfAutoVerInFlight; }
+  finally { sfAutoVerInFlight = null; }
+}
+
+// —— 自动更新云端名单 ——
+function sfAutoExtractDomains(json) {
+  if (Array.isArray(json)) return json;
+  if (json && typeof json === 'object') {
+    const keys = ['domains', 'list', 'data', 'items', 'all', 'white', 'black'];
+    for (let i = 0; i < keys.length; i++) if (Array.isArray(json[keys[i]])) return json[keys[i]];
+    if (json.data && Array.isArray(json.data.domains)) return json.data.domains;
+    return null;
+  }
+  if (typeof json === 'string') return json.split(/[\r\n,]+/);
+  return null;
+}
+
+// 清洗：与设置页同一套规则（后台已加载 analyzer / iocs）
+function sfAutoSanitize(arr, listKind) {
+  const A = (typeof self !== 'undefined' && self.SF_ANALYZER) || null;
+  if (!A || typeof A.sanitizeCloudDomains !== 'function') {
+    throw new Error('后台缺少 analyzer，已跳过（不写未经清洗的名单）');
+  }
+  return A.sanitizeCloudDomains(arr, { allowWild: true, listKind: listKind });
+}
+
+// 官网映射清洗：直接复用 iocs 的 normalizeCorrectSites，输出与设置页 normalizeCloudCorrect 同结构
+function sfAutoNormCorrect(arr) {
+  const I = (typeof self !== 'undefined' && self.SF_IOCS) || null;
+  if (!I || typeof I.normalizeCorrectSites !== 'function') return [];
+  const out = [];
+  if (!Array.isArray(arr)) return out;
+  const seen = Object.create(null);
+  arr.forEach(function (x) {
+    let domain = '', brands = [], product = '', sitesRaw = null;
+    if (typeof x === 'string') {
+      const parts = x.split('|');
+      domain = parts[0] || '';
+      brands = String(parts[1] || '').split(/[\s,]+/);
+    } else if (x && typeof x === 'object') {
+      domain = x.domain || x.d || '';
+      product = x.product || x.p || '';
+      const b = (x.brands != null) ? x.brands : x.b;
+      brands = Array.isArray(b) ? b : String(b || '').split(/[\s,]+/);
+      if (Array.isArray(x.sites) && x.sites.length) sitesRaw = x.sites;
+    } else { return; }
+    const sites = I.normalizeCorrectSites(sitesRaw || String(domain || '').trim());
+    if (!sites.length) return;
+    let primary = '';
+    for (let i = 0; i < sites.length; i++) if (sites[i].kind === 'host') { primary = sites[i].host; break; }
+    if (!primary) primary = sites[0].host;
+    const clean = brands.map(function (b) { return String(b == null ? '' : b).trim().toLowerCase(); })
+      .filter(function (b) { return b && b.length >= 2 && !/[*?\s]/.test(b); });
+    if (!clean.length) return;
+    const key = primary + '|' + clean.join(' ');
+    if (seen[key]) return;
+    seen[key] = 1;
+    out.push({ product: String(product).slice(0, 60), brands: clean, domain: primary, sites: sites });
+  });
+  return out;
+}
+
+async function sfAutoPull(type) {
+  const isWhite = type === 'white';
+  const name = isWhite ? '白名单' : '黑名单';
+  // 自动路径不带 nocache=1：拿服务端 5 分钟内的缓存完全够用，也避免每天定点去敲上游
+  const url = SF_AUTO_CLOUD_API + '?type=' + (isWhite ? 'white' : 'black') + '&_=' + Date.now();
+  const json = await sfAutoFetchJson(url, { headers: { 'X-API-Key': SF_AUTO_CLOUD_API_KEY } }, 15000);
+  const raws = sfAutoExtractDomains(json);
+  if (!raws) throw new Error(name + '：返回的结构无法识别（找不到域名数组）');
+  const r = sfAutoSanitize(raws, isWhite ? 'cloudWhite' : 'cloudBlack');
+  if (raws.length && !r.list.length) {
+    throw new Error(name + '：' + r.dropped.length + ' 条全部无效，已中止本轮同步');
+  }
+  r.correct = isWhite ? sfAutoNormCorrect(json && json.correct_sites) : [];
+  const excRes = isWhite
+    ? sfAutoSanitize((json && Array.isArray(json.exceptions)) ? json.exceptions : [], 'cloudException')
+    : { list: [], dropped: [], wild: [] };
+  r.exceptions = excRes.list || [];
+  r.source = '云端接口';
+  return r;
+}
+
+function sfAutoSameList(a, b) {
+  const x = a || [], y = b || [];
+  if (x.length !== y.length) return false;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+  return true;
+}
+
+async function sfAutoCloudSyncOnce(force) {
+  // 与 sfAutoCheckUpdate 同一套闸门：闹钟 / 启动补偿 / 开关刚打开（force）三选一出发
+  if (sfAutoCloudInFlight) return { skipped: 'busy' };
+  if (!force && !(await sfAutoDue(SF_AUTO_LAST_CLOUD_KEY, SF_AUTO_CLOUD_PERIOD))) {
+    return { skipped: 'not-due' };
+  }
+  sfAutoCloudInFlight = sfAutoCloudSyncOnceInner(force);
+  try { return await sfAutoCloudInFlight; }
+  finally { sfAutoCloudInFlight = null; }
+}
+
+async function sfAutoCloudSyncOnceInner(force) {
+  const flags = await new Promise(function (r) { sfAutoReadFlags(function (_, cloud) { r(cloud); }); });
+  if (!flags && !force) return { skipped: 'off' };
+  let lists;
+  try {
+    // 两份并行：任一失败都不写盘，避免「黑名单新、白名单旧」的组合
+    lists = await Promise.all([sfAutoPull('white'), sfAutoPull('black')]);
+  } catch (e) {
+    console.warn('[SilverFoxBlocker][自动更新] 本轮跳过：', e && e.message ? e.message : e);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+  const white = lists[0], black = lists[1];
+  try {
+    const cur = await new Promise(function (resolve) {
+      chrome.storage.local.get({
+        [SF_AUTO_CLOUD_KEYS.white]: [], [SF_AUTO_CLOUD_KEYS.black]: [],
+        [SF_AUTO_CLOUD_KEYS.correct]: [], [SF_AUTO_CLOUD_KEYS.exception]: [],
+        [SF_AUTO_CLOUD_KEYS.meta]: {}
+      }, resolve);
+    });
+    const diff = function (prev, next) {
+      const p = new Set(prev || []), n = new Set(next);
+      return {
+        added: next.filter(function (d) { return !p.has(d); }).length,
+        removed: (prev || []).filter(function (d) { return !n.has(d); }).length
+      };
+    };
+    const sameW = sfAutoSameList(cur[SF_AUTO_CLOUD_KEYS.white], white.list);
+    const sameB = sfAutoSameList(cur[SF_AUTO_CLOUD_KEYS.black], black.list);
+    const sameC = JSON.stringify(cur[SF_AUTO_CLOUD_KEYS.correct] || []) === JSON.stringify(white.correct || []);
+    const sameE = JSON.stringify(cur[SF_AUTO_CLOUD_KEYS.exception] || []) === JSON.stringify(white.exceptions || []);
+    const dw = diff(cur[SF_AUTO_CLOUD_KEYS.white], white.list);
+    const db = diff(cur[SF_AUTO_CLOUD_KEYS.black], black.list);
+    const now = Date.now();
+    const meta = Object.assign({}, cur[SF_AUTO_CLOUD_KEYS.meta] || {});
+    meta.white = {
+      updated: now, count: white.list.length, pulled: white.list.length + white.dropped.length,
+      added: dw.added, removed: dw.removed, wild: white.wild.length, dropped: white.dropped.length,
+      paths: white.paths || 0, drops: white.dropped.slice(0, 40),
+      correct: (white.correct || []).length,
+      exceptions: (white.exceptions || []).length,
+      source: white.source || '云端接口',
+      auto: true
+    };
+    meta.black = {
+      updated: now, count: black.list.length, pulled: black.list.length + black.dropped.length,
+      added: db.added, removed: db.removed, wild: black.wild.length, dropped: black.dropped.length,
+      paths: black.paths || 0, drops: black.dropped.slice(0, 40),
+      source: black.source || '云端接口',
+      auto: true
+    };
+    // 内容没变就只写 meta：与设置页一致，避免无谓触发 onChanged → 后台重注入
+    const payload = { [SF_AUTO_CLOUD_KEYS.meta]: meta };
+    if (!sameW) payload[SF_AUTO_CLOUD_KEYS.white] = white.list;
+    if (!sameC) payload[SF_AUTO_CLOUD_KEYS.correct] = white.correct || [];
+    if (!sameE) payload[SF_AUTO_CLOUD_KEYS.exception] = white.exceptions || [];
+    if (!sameB) payload[SF_AUTO_CLOUD_KEYS.black] = black.list;
+    await new Promise(function (resolve) { chrome.storage.local.set(payload, resolve); });
+    if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message || '写入失败');
+    sfAutoMarkRun(SF_AUTO_LAST_CLOUD_KEY);   // 只有两份名单都写成功才算这一轮完成
+    console.log('[SilverFoxBlocker][自动更新] 已同步：黑 ' + black.list.length + ' 条（新增 ' + db.added +
+      ' / 移除 ' + db.removed + '），白 ' + white.list.length + ' 条（新增 ' + dw.added +
+      ' / 移除 ' + dw.removed + '），官网映射 ' + (white.correct || []).length + ' 条');
+    return { ok: true, white: white.list.length, black: black.list.length };
+  } catch (e) {
+    console.warn('[SilverFoxBlocker][自动更新] 写入失败：', e && e.message ? e.message : e);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+// 闹钟：已存在就不动（保留原有周期与下次触发时间），只有缺了才创建
+function sfAutoEnsureAlarm(name, period, firstDelay) {
+  try {
+    chrome.alarms.get(name, function (a) {
+      if (a) return;
+      try { chrome.alarms.create(name, { delayInMinutes: firstDelay, periodInMinutes: period }); } catch (e) {}
+    });
+  } catch (e) {}
+}
+sfAutoEnsureAlarm(SF_AUTO_VER_ALARM, SF_AUTO_VER_PERIOD, 2);
+sfAutoEnsureAlarm(SF_AUTO_CLOUD_ALARM, SF_AUTO_CLOUD_PERIOD, 5);
+/* worker 每次被唤醒（浏览器启动 / 扩展重载 / 闹钟 / 消息）都先按本地缓存还原一次徽标。
+   不发请求、只读一个小对象，代价可以忽略；换来的是「红点不会因为 worker 重启而消失」。 */
+sfUpdateBadgeRestore();
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener(function (alarm) {
+    if (!alarm) return;
+    if (alarm.name === SF_AUTO_VER_ALARM) { sfAutoCheckUpdate(); return; }
+    if (alarm.name === SF_AUTO_CLOUD_ALARM) { sfAutoCloudSyncOnce(); return; }
+  });
+}
+
+/* 开机补偿（2026-11-29）
+ * 场景：检查周期 6 小时、名单 24 小时，用户 18:00 关机、次日 10:00 才开机 ——
+ *   中间该跑的两轮全错过，回来只看到「已是最新」和一个旧名单。
+ * 做法：浏览器启动（onStartup）与扩展更新/安装（onInstalled）时各看一次闸门，
+ *   只有「距上次成功已超过周期的 90%」才补跑；补跑完立刻写时间戳，
+ *   所以 2 分钟后那声闹钟会被判为「没到点」自动让路（去重靠时间戳 + 单轮锁，不靠次数）。
+ * 不改成固定钟点：alarms 没有「每天 6 点」的原生表达，且固定钟点会在
+ *   「开机后才补」的场景里产生一堆零点几的偏移；间隔式更简单也更好理解。 */
+function sfAutoCatchUp(reason) {
+  try {
+    Promise.all([sfAutoCheckUpdate(false), sfAutoCloudSyncOnce(false)]).then(function (r) {
+      const v = r[0] || {}, c = r[1] || {};
+      if (v.skipped || c.skipped) {
+        console.log('[SilverFoxBlocker][' + reason + '补偿] 跳过：检查=' + (v.skipped || 'run') +
+          '，名单=' + (c.skipped || 'run'));
+      } else {
+        console.log('[SilverFoxBlocker][' + reason + '补偿] 已补跑本轮检查与名单同步');
+      }
+    }).catch(function (e) { console.warn('[SilverFoxBlocker][' + reason + '补偿] 失败：', e); });
+  } catch (e) {}
+}
+if (chrome.runtime && chrome.runtime.onStartup) {
+  chrome.runtime.onStartup.addListener(function () { sfAutoCatchUp('启动'); });
+}
+if (chrome.runtime && chrome.runtime.onInstalled) {
+  chrome.runtime.onInstalled.addListener(function (d) {
+    // 安装 / 更新时也补一次：新装的用户不该等 2 分钟才看到第一轮结果
+    if (d && (d.reason === 'install' || d.reason === 'update')) sfAutoCatchUp('安装/更新');
+  });
+}
+
+// 设置页发来的三条：开关刚打开（force 立刻跑）/ 每次打开页面问一句（到点才跑）/ 云端名单同款
+if (chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+    if (!msg || !msg.type) return;
+    if (msg.type === 'SF_AUTO_CHECK_NOW') {
+      // 开关刚打开 = 明确意图：force 跳过闸门，立刻跑一轮
+      sfAutoCheckUpdate(true).then(function (r) { try { sendResponse(r); } catch (e) {} });
+      return true;
+    }
+    /* 2026-11-29 晚：设置页每次打开都会来问一句「到点了没」。
+       force=false —— 走同一道闸门：没到点直接回 {skipped:'not-due'}，不发任何请求；
+       已经有一轮在跑就回 {skipped:'busy'}。所以「多开几个设置页」不会变成多打几次接口。 */
+    if (msg.type === 'SF_AUTO_CHECK_IF_DUE') {
+      sfAutoCheckUpdate(false).then(function (r) { try { sendResponse(r || { ok: true }); } catch (e) {} });
+      return true;
+    }
+    if (msg.type === 'SF_AUTO_CLOUD_NOW') {
+      sfAutoCloudSyncOnce(true).then(function (r) { try { sendResponse(r); } catch (e) {} });
+      return true;
+    }
+    /* 2026-11-29：设置页「检查更新」手动查到了新版本 —— 它走的是页面自己的
+       fetch 链（GitHub → 代理 → Gitee），不经过后台，所以徽标与系统通知都要
+       由这条消息补上，否则「手动查到的更新」在工具栏上一个字都不会显示。
+       顺带把结果写进 sfAutoUpdate：这样下次 worker 唤醒 / 刷新设置页时，
+       sfUpdateBadgeRestore() 还能把徽标还原回来。 */
+    if (msg.type === 'SF_UPDATE_NOTIFY') {
+      const tag = sfAutoNormTag(msg.latest || '');
+      let cur = sfAutoNormTag(msg.current || '');
+      if (!cur) { try { cur = sfAutoNormTag((chrome.runtime.getManifest() || {}).version || ''); } catch (e) {} }
+      if (tag) {
+        try {
+          chrome.storage.local.set({ [SF_AUTO_UPDATE_KEY]: { at: Date.now(), latest: tag, local: cur, newer: sfAutoCmpVersion(tag, cur) > 0 } });
+        } catch (e) {}
+        sfUpdateBadgeApply(tag, cur);
+        sfUpdateNotify(tag, cur);
+        try { sendResponse({ ok: true }); } catch (e) {}
+      } else {
+        try { sendResponse({ ok: false }); } catch (e) {}
+      }
+      return true;
+    }
+  });
+}
