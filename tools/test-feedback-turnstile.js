@@ -50,7 +50,7 @@ vm.runInContext(wSrc.slice(wStart, wEnd), wCtx);
 const SECRET = 'turnstile-test-secret-0123456789';
 const SITEKEY = '0x4AAAAAAA_test_site_key';
 const ENV_ON = { TURNSTILE_SECRET_KEY: SECRET, TURNSTILE_SITE_KEY: SITEKEY };
-// v1.13.14 起默认 soft；要测「硬拦截」的老语义必须显式写 strict
+// v1.14.9 起默认 soft；要测「硬拦截」的老语义必须显式写 strict
 const ENV_STRICT = Object.assign({}, ENV_ON, { TURNSTILE_ENFORCE: 'strict' });
 
 t('服务端实现已被加载', typeof wCtx.verifyTurnstile === 'function' && typeof wCtx.turnstileChallengeHtml === 'function');
@@ -93,7 +93,7 @@ t('开关判定：secret 长度太短，视为没有配置', wCtx.turnstileEnabl
     })()) === true);
   }
 
-  // ---------- 各类失败码（strict：硬拒，v1.13.12 的老语义）----------
+  // ---------- 各类失败码（strict：硬拒，即 v1.14.9 之前的老语义）----------
   {
     responder = async () => ({ json: async () => ({ success: false, 'error-codes': ['timeout-or-duplicate'] }) });
     const r = await wCtx.verifyTurnstile('TOKEN-USED', '1.2.3.4', ENV_STRICT);
@@ -192,6 +192,12 @@ t('开关判定：secret 长度太短，视为没有配置', wCtx.turnstileEnabl
     t('挑战页：主题参数生效', html.indexOf('theme:"dark"') !== -1);
     t('挑战页：postMessage 带 sfb-challenge 标记', html.indexOf("m.source='sfb-challenge'") !== -1);
     t('挑战页：声明 viewport（手机上也放得下）', html.indexOf('name="viewport"') !== -1);
+    // 2026-11-28（v1.14.9）：12 秒太短，国内直连 Cloudflare 常被掐在 12 秒外。
+    //   现在每轮 30 秒，第一次超时只出「点击重试」，第二次仍超时才报 timeout 走降级。
+    t('挑战页：渲染等待 30 秒（不再写死 12 秒）', html.indexOf('slowMs:30000') !== -1 && html.indexOf('12000') === -1);
+    t('挑战页：第一次超时显示「点击重试」', html.indexOf('点击重试') !== -1);
+    t('挑战页：最多重试 1 次（used >= 2 才报错）', /used >= 2[\s\S]{0,120}fail\('timeout'\)/.test(html));
+    t('挑战页：重试会重新加载 api.js（带缓存击穿参数）', /s\.src = CFG\.api \+ '&r=' \+ used/.test(html));
 
     const off = wCtx.turnstileChallengeHtml({}, {});
     t('未打开验证时页面返回 mode:"off"（扩展照常发送）', off.indexOf('mode:"off"') !== -1);
@@ -471,7 +477,7 @@ function testCopy() {
   t('no-sitekey → 不再叫人去查 challenges.cloudflare.com', r6.indexOf('challenges.cloudflare.com') === -1, r6);
   t('no-sitekey → 给出可用的替代通道', /GitHub Issue/.test(r6), r6);
   // script / timeout 才是「你这边网络或代理拦了」，这两类要保留换网络的建议
-  const r7 = ctx.sfbDescribeMailFailure({ sfbStage: 'turnstile', sfbReason: 'timeout', sfbDetail: '验证组件 12 秒内没有渲染出来' }, 'https://x/');
+  const r7 = ctx.sfbDescribeMailFailure({ sfbStage: 'turnstile', sfbReason: 'timeout', sfbDetail: '验证组件 30 秒内没有加载出来，点击重试后仍未成功' }, 'https://x/');
   t('timeout → 保留「换网络再试」的建议', /换网络/.test(r7), r7);
   const r5 = ctx.sfbDescribeMailFailure(mk(403, ''), 'https://x/');
   t('普通 403（无错误码）仍走通用解释', /被服务端拒绝/.test(r5), r5);

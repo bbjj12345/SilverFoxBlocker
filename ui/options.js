@@ -140,16 +140,16 @@ function sfbDescribeMailFailure(err, endpoint) {
       //   而服务端仍要求验证 —— 说明作者把 TURNSTILE_ENFORCE 设成了 strict，不接受降级。
       return '发送失败：服务端要求人机验证，但本次没有拿到凭据\n'
         + '若验证框一直出不来，说明服务端开启了「必须验证」的严格模式，无法降级发送；'
-        + '请换一个能打开 challenges.cloudflare.com 的网络，或改用「发送反馈到GitHub Issue」。';
+        + '请换一个能打开 challenges.cloudflare.com 的网络，或改用「发送反馈到GitHub Issue」/「发送反馈到Gitee Issue」。';
     }
     if (tcode === 'DEGRADED_QUOTA_EXCEEDED') {
       return '发送失败：今日免验证发送额度已用完\n'
         + '该通道是给「验证框打不开」的人留的兜底，每天只有很少几次。'
-        + '请在能正常打开人机验证的网络下再发，或改用「发送反馈到GitHub Issue」。';
+        + '请在能正常打开人机验证的网络下再发，或改用「发送反馈到GitHub Issue」/「发送反馈到Gitee Issue」。';
     }
     if (tcode === 'TURNSTILE_UNREACHABLE' || tcode === 'TURNSTILE_MISCONFIGURED') {
       return '发送失败：人机验证服务暂时不可用（' + tcode + '）\n'
-        + '这是服务端侧的问题，不是你的网络；可稍后再试，或先用「发送反馈到GitHub Issue」。';
+        + '这是服务端侧的问题，不是你的网络；可稍后再试，或先用「发送反馈到GitHub Issue」/「发送反馈到Gitee Issue」。';
     }
     var hint = SFB_MAIL_HTTP_HINT[st] || ('服务端返回了未预期的 HTTP ' + st);
     // 文档版式：第一行「发送失败：HTTP xxx」，第二行解释（不再用「·」串成一行）
@@ -174,12 +174,12 @@ function sfbDescribeMailFailure(err, endpoint) {
     var tsNext;
     if (tsReason === 'no-sitekey' || tsReason === 'render') {
       tsNext = '这条是服务端（作者的）配置问题，与你的网络无关，重试也不会好；'
-        + '请改用「发送反馈到GitHub Issue」，或等作者修好配置后再发。';
+        + '请改用「发送反馈到GitHub Issue」/「发送反馈到Gitee Issue」，或等作者修好配置后再发。';
     } else if (tsReason === 'script' || tsReason === 'timeout') {
       tsNext = '这一步需要访问 challenges.cloudflare.com，它打不开（代理 / 网络 / 防火墙拦截）验证框就出不来；'
-        + '可换网络再试，或改用「发送反馈到GitHub Issue」。';
+        + '可换网络再试，或改用「发送反馈到GitHub Issue」/「发送反馈到Gitee Issue」。';
     } else {
-      tsNext = '可重试一次；若反复失败，请改用「发送反馈到GitHub Issue」。';
+      tsNext = '可重试一次；若反复失败，请改用「发送反馈到GitHub Issue」/「发送反馈到Gitee Issue」。';
     }
     return '发送失败：人机验证没有完成\n'
       + '原因：' + String(e.sfbDetail || e.message || '验证组件未能加载')
@@ -2783,7 +2783,10 @@ async function init() {
   // 关于页：反馈与建议 —— 两个通道：GitHub Issues 预填新建页，或经自建 Worker 代发邮件到作者邮箱。
   // 邮件通道只在用户点击时发出（正文 + 选填联系方式）；失败绝不假装成功，短文本有最小长度校验。
   (function bindFeedback() {
-    var btn = $('fbSend'), mailBtn = $('fbMail'), spin = $('fbSpin'), msg = $('fbMsg');
+    // 旧（2026-11-28 前）：两个通道，只取两个按钮
+    // var btn = $('fbSend'), mailBtn = $('fbMail'), spin = $('fbSpin'), msg = $('fbMsg');
+    // 新：三个通道（GitHub Issue / Gitee Issue / 作者邮箱）
+    var btn = $('fbSend'), giteeBtn = $('fbGitee'), mailBtn = $('fbMail'), spin = $('fbSpin'), msg = $('fbMsg');
 
     // 分段控件：与项目其它 .seg 完全同款（glider 定位 + .active 切换），不用原生 select。
     // ★ 「关于」是子页面，初始很可能是 display:none ⇒ 量出来的宽度是 0；除了 rAF + resize，
@@ -2848,8 +2851,15 @@ async function init() {
 
     var mailBusy = false; // 防重复发送：在「感谢您的反馈！」显示前/后都不允许重复点击
     var mailRestoreTimer = null; // 成功后 5 秒自动恢复计时器
-    function runFeedback(viaMail) {
-      var activeBtn = viaMail ? mailBtn : btn;
+    // 旧（2026-11-28 前）：用布尔值区分「发邮件 / 开 GitHub」两个通道；
+    //   加了 Gitee 之后布尔值表达不了第三个分支，改成通道名。
+    // function runFeedback(viaMail) {
+    //   var activeBtn = viaMail ? mailBtn : btn;
+    // 新：channel = 'github' | 'gitee' | 'mail'
+    function runFeedback(channel) {
+      var viaMail = (channel === 'mail');
+      var viaGitee = (channel === 'gitee');
+      var activeBtn = viaMail ? mailBtn : (viaGitee ? giteeBtn : btn);
       if (viaMail) {
         // 已处于发送中（按钮禁用或忙碌标记）→ 直接忽略，避免重复发送
         if (mailBusy || (mailBtn && mailBtn.disabled)) return;
@@ -2918,22 +2928,69 @@ async function init() {
             });
         } else {
           // GitHub Issue：打开项目 Issues 新建页并预填内容
-          var target = 'https://github.com/bbjj12345/SilverFoxBlocker/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
+          // 旧（2026-11-28 前）：只有 GitHub 一个平台
+          // var target = 'https://github.com/bbjj12345/SilverFoxBlocker/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
+          // 新：Gitee 用同一套预填参数（Gitee 的表单字段是 issue[title] / issue[body]，
+          //   不认 title / body，所以两边参数名分开写）。
+          //   Gitee 的新建页要求登录：未登录会先跳到登录页，登录后再带参数跳回来；
+          //   万一它没接住参数、表单是空的，下面已经把正文放进剪贴板，用户粘一下即可。
+          var repoIssues = viaGitee
+            ? 'https://gitee.com/bbjj12345/SilverFoxBlocker/issues'
+            : 'https://github.com/bbjj12345/SilverFoxBlocker/issues';
+          var target = viaGitee
+            ? (repoIssues + '/new?issue%5Btitle%5D=' + encodeURIComponent(title) + '&issue%5Bbody%5D=' + encodeURIComponent(body))
+            : (repoIssues + '/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body));
+          // 旧（2026-11-28 前）：只有 Gitee 复制 —— GitHub 的预填参数稳定，用不上剪贴板
+          // if (viaGitee) {
+          //   // 兜底：纯本地操作，不联网、不外发。失败（无权限/无焦点）就静默跳过。
+          //   try {
+          //     if (navigator.clipboard && navigator.clipboard.writeText) {
+          //       navigator.clipboard.writeText(title + '\n\n' + body).catch(function () {});
+          //     }
+          //   } catch (e) {}
+          // }
+          // 新（2026-11-28）：两个 Issue 通道都复制。两个按钮的提示文案统一写「内容已复制到剪贴板」，
+          //   若只有 Gitee 复制，GitHub 那条就是假话；复制仍是纯本地操作，不联网、不外发，
+          //   失败（无权限/无焦点）就静默跳过，不影响打开新建页。
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(title + '\n\n' + body).catch(function () {});
+            }
+          } catch (e) {}
           var opened = false, a;
           try {
             a = document.createElement('a'); a.href = target; a.target = '_blank'; a.rel = 'noreferrer'; a.style.display = 'none';
             document.body.appendChild(a); a.click(); document.body.removeChild(a); opened = true;
           } catch (e) {}
           if (!opened) { try { window.open(target, '_blank'); opened = true; } catch (e) {} }
-          if (opened) show('感谢您的反馈！', 'ok');
-          else show('未能打开 GitHub，请手动访问 https://github.com/bbjj12345/SilverFoxBlocker/issues 提交。', 'warn');
+          // 旧（2026-11-28 前）：只有 GitHub 的两种结局
+          // if (opened) show('感谢您的反馈！', 'ok');
+          // else show('未能打开 GitHub，请手动访问 https://github.com/bbjj12345/SilverFoxBlocker/issues 提交。', 'warn');
+          // 新：按平台给文案；Gitee 要求登录，提示「打开后可能要先登录，表单为空就粘贴」
+          if (opened) {
+            // 旧（2026-11-28 前）：GitHub 只回一句「感谢您的反馈！」—— 表单被拦、内容没预填时用户不知道怎么办
+            // show(viaGitee ? '已打开 Gitee 新建 Issue 页（需登录 Gitee）；若标题/正文为空，内容已复制到剪贴板，直接粘贴即可。' : '感谢您的反馈！', 'ok');
+            // 新：两个平台同一句式，GitHub 也已在上面写剪贴板
+            show(viaGitee
+              ? '已打开 Gitee 新建 Issue 页（需登录 Gitee）；若标题/正文为空，内容已复制到剪贴板，直接粘贴即可。'
+              : '已打开 GitHub 新建 Issue 页（需登录 GitHub）；若标题/正文为空，内容已复制到剪贴板，直接粘贴即可。', 'ok');
+          } else {
+            show(viaGitee
+              ? '未能打开 Gitee，请手动访问 https://gitee.com/bbjj12345/SilverFoxBlocker/issues 提交。'
+              : '未能打开 GitHub，请手动访问 https://github.com/bbjj12345/SilverFoxBlocker/issues 提交。', 'warn');
+          }
           if (activeBtn) activeBtn.disabled = false; if (spin) spin.hidden = true;
         }
       });
     }
 
-    if (btn) btn.addEventListener('click', function () { runFeedback(false); });
-    if (mailBtn) mailBtn.addEventListener('click', function () { runFeedback(true); });
+    // 旧（2026-11-28 前）：布尔参数
+    // if (btn) btn.addEventListener('click', function () { runFeedback(false); });
+    // if (mailBtn) mailBtn.addEventListener('click', function () { runFeedback(true); });
+    // 新：通道名
+    if (btn) btn.addEventListener('click', function () { runFeedback('github'); });
+    if (giteeBtn) giteeBtn.addEventListener('click', function () { runFeedback('gitee'); });
+    if (mailBtn) mailBtn.addEventListener('click', function () { runFeedback('mail'); });
   })();
 
   renderSponsors();

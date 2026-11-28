@@ -301,7 +301,37 @@ function run(title, cases) {
   return bad;
 }
 
-let fail = run('内置表', BUILTIN_CASES);
+// ---- 内置表体检（2026-11-28 新增）----
+// 背景：希沃白板 那条把「品牌词」写成了域名、「官网」留空（从白名单表照抄了字段），
+//   结果整条被 normalizeCorrectSites 丢掉 —— 拦截浮层上点「访问正确的页面」只能落到
+//   说明页；同时每次页面加载控制台都刷一条内容为空的告警。
+// 这类错误不抛异常、也不会让任何既有用例变红，只会安静地少一条映射，所以在这里兜一层：
+//   ① 每条目录项都必须至少解析出 1 个站点；② 解析过程不得产生任何告警。
+const catalogFail = (function catalogHealth() {
+  const I = require(path.join(__dirname, '..', 'rules', 'iocs.js'));
+  const cat = I.CORRECT_SITE_CATALOG;
+  let dropped = 0;
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = function () { warns.push(Array.prototype.slice.call(arguments).join(' ')); };
+  for (let i = 0; i < cat.length; i++) {
+    const items = cat[i][1] || [];
+    for (let j = 0; j < items.length; j++) {
+      if (!I.normalizeCorrectSites(items[j][2]).length) {
+        dropped++;
+        origWarn('FAIL  ' + String(items[j][0]) + '（' + String(cat[i][0]) + '）解析不出任何官网，官网字段=' + JSON.stringify(items[j][2]));
+      }
+    }
+  }
+  console.warn = origWarn;
+  console.log('');
+  console.log('== 内置表体检 ==');
+  console.log((dropped ? '✗ ' : '✓ ') + '每条都解析出官网' + (dropped ? '（' + dropped + ' 条为空）' : ''));
+  console.log((warns.length ? '✗ ' : '✓ ') + '解析无告警' + (warns.length ? '（' + warns.length + ' 条）' : ''));
+  warns.forEach(function (w) { origWarn('  ' + w); });
+  return dropped + warns.length;
+})();
+let fail = run('内置表', BUILTIN_CASES) + catalogFail;
 fail += runTypo(TYPO_CASES);
 fail += runBrandDomain(BRANDDOMAIN_CASES);
 fail += runSites();

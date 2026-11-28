@@ -1876,7 +1876,7 @@ var index_default = {
           return new Response(JSON.stringify({
             error: "DEGRADED_QUOTA_EXCEEDED",
             detail: `今日「免人机验证发送」额度（${quota} 次）已用完。`
-              + "请换一个能打开人机验证的网络环境再发，或改用「发送反馈到 GitHub Issue」。"
+              + "请换一个能打开人机验证的网络环境再发，或改用「发送反馈到 GitHub Issue」/「发送反馈到 Gitee Issue」。"
           }), {
             status: 429,
             headers: { "Content-Type": "application/json", ...cors.headers }

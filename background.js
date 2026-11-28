@@ -4190,6 +4190,106 @@ async function sfHandleFetchRescue(msg) {
   }
 }
 
+/* ============================================================
+   ★ 2026-11-28：说明页「返回上一页」——关掉说明页后，焦点要回到「打开它的那个标签页」
+   旧行为：说明页自己 window.close() / history.back()。Chrome 关掉最右侧的新标签后，
+   会把焦点交给左邻（用户看到的就是「最后一个标签页」），并不会回到触发拦截的那个页面。
+   新做法：SF_OPEN_TAB 开标签时记下「新标签页 id → 来源标签页 id」（sender.tab.id），
+   说明页点返回时由后台**先激活来源标签页、再关掉说明页**，焦点自然落回原页面。
+   对应关系放 chrome.storage.session（关浏览器即失效，与其它会话态一致），
+   service worker 休眠重启后仍能取到。
+   ============================================================ */
+const SF_RETURN_KEY = 'sfReturnTabs';
+let sfReturnTabs = Object.create(null);
+
+function sfPersistReturnTabs() {
+  try {
+    if (chrome.storage && chrome.storage.session) {
+      const payload = {};
+      payload[SF_RETURN_KEY] = sfReturnTabs;
+      chrome.storage.session.set(payload, function () { void chrome.runtime.lastError; });
+    }
+  } catch (e) {}
+}
+
+function sfRememberReturnTab(newTabId, srcTabId) {
+  if (typeof newTabId !== 'number' || typeof srcTabId !== 'number' || newTabId === srcTabId) return;
+  try {
+    sfReturnTabs[String(newTabId)] = srcTabId;
+    const keys = Object.keys(sfReturnTabs);
+    // 只留最近 20 条：正常情况下点一次就消费一条，这里只是防长期不清导致无限增长
+    while (keys.length > 20) { delete sfReturnTabs[keys.shift()]; }
+    sfPersistReturnTabs();
+  } catch (e) {}
+}
+
+function sfForgetReturnTab(tabId) {
+  try {
+    if (sfReturnTabs[String(tabId)] === undefined) return;
+    delete sfReturnTabs[String(tabId)];
+    sfPersistReturnTabs();
+  } catch (e) {}
+}
+
+function sfReadReturnTabs(cb) {
+  const useMemory = function () { try { cb(sfReturnTabs); } catch (e) {} };
+  try {
+    if (chrome.storage && chrome.storage.session) {
+      const key = {};
+      key[SF_RETURN_KEY] = {};
+      chrome.storage.session.get(key, function (r) {
+        void chrome.runtime.lastError;
+        const m = r && r[SF_RETURN_KEY];
+        if (m && typeof m === 'object') sfReturnTabs = m;
+        useMemory();
+      });
+      return;
+    }
+  } catch (e) {}
+  useMemory();
+}
+
+// 关掉说明页；来源标签页还在就先把它激活（跨窗口时连窗口一起提到前台）
+function sfCloseTabAndReturn(curTabId, cb) {
+  const respond = function (res) {
+    try { cb(res); } catch (e) {}
+  };
+  const closeSelf = function () {
+    try { chrome.tabs.remove(curTabId, function () { void chrome.runtime.lastError; }); } catch (e) {}
+  };
+  if (typeof curTabId !== 'number') { respond({ ok: false, returned: false, reason: 'no-tab' }); return; }
+  sfReadReturnTabs(function (map) {
+    const src = (map && typeof map[String(curTabId)] === 'number') ? map[String(curTabId)] : null;
+    if (src === null) {
+      // 没有记录（手动粘贴打开 / 旧版本开的标签）→ 只关自己，交回浏览器的默认行为
+      sfForgetReturnTab(curTabId);
+      respond({ ok: true, returned: false, reason: 'no-origin' });
+      closeSelf();
+      return;
+    }
+    chrome.tabs.get(src, function (t) {
+      if (chrome.runtime.lastError || !t) {
+        sfForgetReturnTab(curTabId);
+        respond({ ok: true, returned: false, reason: 'origin-gone' });
+        closeSelf();
+        return;
+      }
+      chrome.tabs.update(src, { active: true }, function () {
+        void chrome.runtime.lastError;
+        try {
+          if (typeof t.windowId === 'number' && chrome.windows && chrome.windows.update) {
+            chrome.windows.update(t.windowId, { focused: true }, function () { void chrome.runtime.lastError; });
+          }
+        } catch (e) {}
+        sfForgetReturnTab(curTabId);
+        respond({ ok: true, returned: true });
+        // 先回话再关自己：来源标签页已经在前面，关掉本页不会再把焦点带走
+        closeSelf();
+      });
+    });
+  });
+}
+
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg || !msg.type) return;
 
@@ -4200,6 +4300,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   //   为什么要经后台：仿冒站常常重写 window.open / 弹窗策略，直接开会被拦成「死按钮」。
   //   只放行 http(s) 与本扩展自身的 chrome-extension:// 地址，防止被页面借此开任意协议
   //   （javascript: / file: / data: 一律拒绝）。
+  /* ★ 2026-11-28：旧实现（保留备查）——开标签页时不记来源，说明页无从知道该回到哪。
   if (msg.type === 'SF_OPEN_TAB') {
     try {
       const u = String(msg.url || '');
@@ -4212,6 +4313,52 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       });
     } catch (e) {
       try { sendResponse({ ok: false, error: (e && e.message) || 'open_failed' }); } catch (e2) {}
+    }
+    return true;
+  }
+  */
+  // 新实现：多记一条「新标签页 → 来源标签页」，并给新标签页补 openerTabId
+  //   （openerTabId 让浏览器自己也知道这层父子关系：手动 Ctrl+W 关闭时也会优先回到来源页）
+  if (msg.type === 'SF_OPEN_TAB') {
+    try {
+      const u = String(msg.url || '');
+      const selfBase = chrome.runtime.getURL('');
+      const okUrl = /^https?:[/][/]/i.test(u) || (u.indexOf(selfBase) === 0);
+      if (!okUrl) { try { sendResponse({ ok: false, error: 'bad_url' }); } catch (e) {} return true; }
+      const srcTabId = (sender && sender.tab && typeof sender.tab.id === 'number') ? sender.tab.id : null;
+      const createOpts = { url: u, active: msg.active !== false };
+      if (srcTabId !== null) createOpts.openerTabId = srcTabId;
+      const onCreated = function (tab) {
+        const err = chrome.runtime.lastError;
+        if (!err && tab && typeof tab.id === 'number' && srcTabId !== null) {
+          sfRememberReturnTab(tab.id, srcTabId);
+        }
+        try { sendResponse({ ok: !err, tabId: tab && tab.id, error: err ? err.message : '' }); } catch (e) {}
+      };
+      chrome.tabs.create(createOpts, function (tab) {
+        const err = chrome.runtime.lastError;
+        // openerTabId 必须与来源页同窗口；来源页刚好被关掉时整体创建会失败，
+        // 这时去掉它重开一次 —— 「能不能打开说明页」优先于「能不能回到来源页」
+        if (err && createOpts.openerTabId !== undefined) {
+          chrome.tabs.create({ url: u, active: msg.active !== false }, onCreated);
+          return;
+        }
+        onCreated(tab);
+      });
+    } catch (e) {
+      try { sendResponse({ ok: false, error: (e && e.message) || 'open_failed' }); } catch (e2) {}
+    }
+    return true;
+  }
+
+  // ★ 2026-11-28：说明页「返回上一页」——先激活来源标签页，再关掉说明页自己。
+  if (msg.type === 'SF_CLOSE_RETURN') {
+    try {
+      const cur = (sender && sender.tab && typeof sender.tab.id === 'number') ? sender.tab.id : null;
+      if (cur === null) { try { sendResponse({ ok: false, returned: false, reason: 'no-sender-tab' }); } catch (e) {} return true; }
+      sfCloseTabAndReturn(cur, function (res) { try { sendResponse(res); } catch (e) {} });
+    } catch (e) {
+      try { sendResponse({ ok: false, returned: false, error: (e && e.message) || 'close_failed' }); } catch (e2) {}
     }
     return true;
   }

@@ -277,6 +277,10 @@
   }
 
   // ---- 5) 返回上一页 ----
+  /* ★ 2026-11-28：旧实现（保留备查）
+     只会在本地关标签 / history.back()。本页由 chrome.tabs.create 打开、排在最右，
+     Chrome 关掉它以后把焦点交给**左邻**（也就是打开前的最后一个标签页），
+     所以「返回上一页」实际只是「关掉说明页」，并没有回到跳转前的页面。
   try {
     const back = $('backBtn');
     if (back) {
@@ -290,6 +294,49 @@
             else location.replace('about:blank');
           } catch (e) { try { location.replace('about:blank'); } catch (e2) {} }
         }, 120);
+      });
+    }
+  } catch (e) {}
+  */
+
+  // 新实现：把「回到哪一页」交给后台 —— 后台在打开本页时记下了来源 tabId，
+  //   点返回时先激活来源标签页、再关掉本页，焦点就落回跳转前的那个页面。
+  //   本页自己拿不到来源 tabId（内容脚本与扩展页都不该为这个申请 tabs 权限）。
+  function legacyClose() {
+    // 兜底：后台没响应 / 本页是被手动粘贴地址打开的，按老办法关
+    try { window.close(); } catch (e) {}
+    setTimeout(function () {
+      try {
+        if (history.length > 1) history.back();
+        else location.replace('about:blank');
+      } catch (e) { try { location.replace('about:blank'); } catch (e2) {} }
+    }, 120);
+  }
+
+  try {
+    const back = $('backBtn');
+    if (back) {
+      back.addEventListener('click', function () {
+        if (back.dataset.clicked === '1') return;   // 连点只处理一次
+        back.dataset.clicked = '1';
+        let answered = false;
+        try {
+          chrome.runtime.sendMessage({ type: 'SF_CLOSE_RETURN' }, function (res) {
+            answered = true;
+            void chrome.runtime.lastError;
+            // 后台成功时会直接把本页关掉，这里一般来不及执行；
+            // 只有「没记录 / 来源页已关 / 消息没送到」才退回旧的本地关闭
+            if (!res || !res.ok || res.returned !== true) legacyClose();
+          });
+        } catch (e) { legacyClose(); return; }
+        // 兜底：后台没被唤醒（MV3 冷启动 / 扩展刚重载）时 1.2s 后按老办法关，
+        // 不至于出现「点了没反应」的死按钮。取 1.2s 而不是 600ms：service worker
+        // 冷启动偶尔要几百毫秒，太短会在后台回话之前就把页面关掉，反而回到旧行为。
+        setTimeout(function () {
+          if (!answered) { legacyClose(); return; }
+          // 后台回话了但页面还活着（来源页已关 / 关标签失败）→ 放开连点锁，允许重试
+          if (document.visibilityState === 'visible') back.dataset.clicked = '';
+        }, 1200);
       });
     }
   } catch (e) {}

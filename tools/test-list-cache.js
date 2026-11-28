@@ -1,5 +1,5 @@
 /**
- * /list 的 5 分钟缓存（v1.13.15）回归测试
+ * /list 的 5 分钟缓存（v1.14.9）回归测试
  *
  * 做法：把 worker/index.js 原样拷成 .mjs 直接 import，然后拿真实的 Request 打
  *   `mod.default.fetch(request, env, ctx)` —— 不是把逻辑切片重写一遍，而是跑真代码。

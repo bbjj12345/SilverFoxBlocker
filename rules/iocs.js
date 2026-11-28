@@ -113,6 +113,7 @@
 
     // ========== 办公与文档类 ==========
     ['办公与文档类', [
+      ['希沃白板', 'seewo.com', ''],
       ['金山系', 'wps.cn wps.com wps-linux.com kdocs.cn', 'WPS Office / WPS 云文档 / 金山文档'],
       ['腾讯系', 'docs.qq.com', '腾讯文档'],
       ['LibreOffice', 'libreoffice.org', ''],
@@ -167,7 +168,6 @@
     ]],
 
     // ========== AI 大模型类 ==========
-    // ========== AI 大模型类 ==========
     ['AI大模型类', [
       ['百度文心', 'yiyan.baidu.com chat.baidu.com', '现名「文心助手」（原文心一言），两入口均 302 到 wenxin.baidu.com'],
       ['阿里通义', 'tongyi.aliyun.com qianwen.aliyun.com qianwen.com qianwenai.com dashscope.console.aliyun.com', '千问（原通义千问，tongyi 入口 301 到 qianwen.aliyun.com）/ 千问AI 企业平台（原阿里云百炼 DashScope）'],
@@ -201,6 +201,7 @@
 
     // ========== 系统工具类 ==========
     ['系统工具类', [
+      ['卸载工具', 'crystalidea.com iobit.com revouninstaller.com geekuninstaller.com martau.com hibitsoft.ir bcuninstaller.com', 'Uninstall Tool / IObit Uninstaller / Revo Uninstaller / Geek Uninstaller / Total Uninstall / HiBit Uninstaller / Bulk Crap Uninstaller'],
       ['远程控制', 'todesk.com todeskai.com sunlogin.oray.com oray.com teamviewer.com anydesk.com', 'ToDesk / 向日葵 / TeamViewer / AnyDesk'],
       ['驱动与硬件检测', 'drivergenius.com ludashi.com cpuid.com cpu-z.com hwmonitor.com aida64.com crystaldiskmark.info crystaldiskinfo.info prime95.com geek3d.com memtest86.com techpowerup.com gpuz.com afterburner.com', '驱动精灵 / 鲁大师 / CPU-Z / AIDA64 等（2026-11-12 修正：furmark.com 实为皮草行业站，已换为 FurMark 官网 geek3d.com）'],
       ['整机与主板', 'dell.com hp.com acer.com asus.com xiaomi.com gigabyte.com msi.com asrock.com corsair.com kingston.com logitech.com razer.com coolermaster.com noctua.at nzxt.com seasonic.com antec.com phanteks.com lian-li.com gskill.com teamgroupinc.com adata.com crucial.com micron.com lenovo.com lenovo.com.cn', 'Dell / HP / 华硕 / 微星 / 联想 / 金士顿 等'],
@@ -694,6 +695,20 @@
 
     // ========== 办公与文档类 ==========
     ['办公与文档类', [
+      // 旧（2026-11-28 修）：从白名单表照抄成三段。WHITELIST_CATALOG 的结构是
+      //   [名称, 主机名, 备注]，本表的结构是 [产品名, 品牌词, 官网, 备注] ——
+      //   于是「品牌词」位置写成了域名、「官网」位置留空，normalizeCorrectSites
+      //   解析不出站点把整条丢掉（希沃白板 这条映射等于不存在），且每次页面加载
+      //   都会打一条内容为空的告警「正确官网条目无法解析，已忽略: 」。
+      // ['希沃白板', 'seewo.com', ''],
+      // 2026-11-28：品牌词 seewo 在「用户反馈与个人站点类」已有 d.seewo.com（教学终端页）一条，
+      //   两条同品牌会触发「品牌词重复，已忽略后出现的条目」并丢掉其中一条 —— 合并成一条，
+      //   把教学终端页一并收进来，原处那条已注释。
+      ['希沃白板（希沃）', 'seewo', [
+        { url: 'easinote.seewo.com', label: '希沃白板官网' },
+        { url: 'www.seewo.com', label: '希沃官网' },
+        { url: 'd.seewo.com', label: '教学终端页' }
+      ], '希沃白板（EasiNote）客户端下载页为 easinote.seewo.com，seewo.com 为希沃品牌站（2026-11-28 经希沃帮助中心核实）'],
       // 旧（单域名，2026-11-12）：中国站与国际站只在备注里各提一句
       // ['WPS Office', 'wps', 'wps.cn', '国际站 wps.com；Linux 版 wps-linux.com'],
       // 新（2026-11-21）：中国站 / 国际站各自独立成页（标题不同），全部列出
@@ -1011,6 +1026,32 @@
 
     // ========== 系统工具类 ==========
     ['系统工具类', [
+      ['Uninstall Tool', 'uninstalltool', [
+        { url: 'https://crystalidea.com/uninstall-tool', label: 'Uninstall Tool 官网' }
+      ], 'Uninstall Tool 是 Geek Uninstaller 的增强版，开发者 CrystalIDEA 也出品其他软件'],
+      ['Geek Uninstaller', 'geekuninstaller', [
+        { url: 'https://geekuninstaller.com/download', label: 'Geek Uninstaller 官网下载页' }
+      ], ''],
+      ['Revo Uninstaller', 'revo', [
+        { url: 'https://www.revouninstaller.com/', label: 'Revo Uninstaller 官网' },
+        { url: 'https://www.revouninstaller.com/products/revo-uninstaller-pro/', label: 'Revo Uninstaller Pro 下载页' },
+        { url: 'https://www.revouninstaller.com/products/revo-uninstaller-free/', label: 'Revo Uninstaller Free 下载页' },
+        { url: 'https://www.revouninstaller.com/products/revo-registry-cleaner-pro/', label: 'Revo Registry Cleaner Pro 下载页' },
+        { url: 'https://www.revouninstaller.com/products/revo-registry-cleaner-free/', label: 'Revo Registry Cleaner Free 下载页' }
+      ], 'Revo Uninstaller 官网有多个产品下载页，均为官方入口'],
+      ['IObit Uninstaller', 'iobit', [
+        { url: 'https://www.iobit.com/en/advanceduninstallerpro.php', label: 'IObit Uninstaller 官网' }
+      ], 'IObit 旗下产品，官网有多个版本；软件本身行为流氓，介意者慎用'],
+      ['Total Uninstall', 'totaluninstall', [
+        { url: 'https://www.martau.com/uninstaller-download.php', label: 'Total Uninstall 官网' }
+      ], 'Total Uninstall 官网'],
+      ['Hibit Uninstaller', 'hibit', [
+        { url: 'https://hibitsoft.ir/Uninstaller.html', label: 'Hibit Uninstaller 官网' }
+      ], 'Hibit Uninstaller 官网;伊朗站点，访问可能超时'],
+      ['Bulk Crap Uninstaller', 'bulkcrapuninstaller bcu', [
+        { url: 'https://www.bcuninstaller.com/', label: 'Bulk Crap Uninstaller 官网' },
+        { url: 'https://github.com/BCUninstaller/Bulk-Crap-Uninstaller/releases', label: 'BC Uninstaller 的 GitHub 发布页' }
+      ], 'Bulk Crap Uninstaller 官网'],
       ['ToDesk', 'todesk', [
         { url: 'todesk.com', label: '中国官网' },
         { url: 'todeskai.com', label: '国际站' }
@@ -2128,7 +2169,9 @@
       ['个人站点（mcode 2）', 'mcode2.space', 'uiso44xg1go9p.space.mcode.cn', '反馈确认加白'],
       ['个人站点（mcode 3）', 'mcode3.space', 'ae0kcokdy1z45.space.mcode.cn', '反馈确认加白'],
       ['个人站点（小麦）', 'xiaomai.cc', '360.xiaomai.cc.cd', '反馈确认加白'],
-      ['希沃', 'seewo', 'd.seewo.com', '教学终端页'],
+      // 旧（2026-11-28）：与「办公与文档类」的希沃白板条目重复（品牌词同为 seewo），
+      //   已合并到那条，站点里保留了本行的 d.seewo.com（教学终端页）。
+      // ['希沃', 'seewo', 'd.seewo.com', '教学终端页'],
       ['8kmm', '8kmm', '8kmm.com', '反馈确认加白'],
       ['冰点文库', 'bingdian', 'bingdiancn.com', '反馈确认加白'],
       ['GeoGebra', 'geogebra', 'geogebra.org', '数学教学工具'],
@@ -2223,7 +2266,14 @@
   }
 
   // 一个字段 → 站点数组。接受：'a.com' / ['a.com', {url:…,label:…}] / {url:…} / []
-  function normalizeCorrectSites(field) {
+  // ★ 2026-11-28：空字段静默跳过 + 告警带上上下文
+  //   旧实现只要 _normCorrectSite 返回 null 就告警，而「这条本来就没写站点」
+  //   （第三字段是 '' / null / 缺省 / []）同样走这条路 —— String('') 是空串，
+  //   控制台里只剩一句「正确官网条目无法解析，已忽略: 」，既看不出是哪条，
+  //   又会在每个页面加载时刷一遍（iocs.js 是随内容脚本加载的）。
+  //   现在：空值静默跳过（这条映射本来就没有站点，不是错误）；真写错了才告警，
+  //   并带上产品名与原始值，方便回表定位。ctx 为可选参数，旧调用方不受影响。
+  function normalizeCorrectSites(field, ctx) {
     var list = [];
     if (typeof field === 'string') list = [field];
     else if (Array.isArray(field)) list = field;
@@ -2234,8 +2284,19 @@
     for (var i = 0; i < list.length && out.length < CORRECT_SITE_MAX; i++) {
       var s = _normCorrectSite(list[i]);
       if (!s) {
-        if (typeof console !== 'undefined' && console.warn) {
-          console.warn('[SF_IOCS] 正确官网条目无法解析，已忽略: ' + String(list[i]));
+        // 旧（2026-11-28 前）：空字段也告警，且只打 String(list[i]) —— 空值打出空文案
+        // if (typeof console !== 'undefined' && console.warn) {
+        //   console.warn('[SF_IOCS] 正确官网条目无法解析，已忽略: ' + String(list[i]));
+        // }
+        // continue;
+        // 新：先区分「本来就没写站点」与「写了但解析不了」，只有后者值得告警
+        var rawItem = list[i];
+        var rawEmpty = (rawItem === undefined) || (rawItem === null) ||
+          (typeof rawItem === 'string' && !rawItem.trim()) ||
+          (Array.isArray(rawItem) && rawItem.length === 0);
+        if (!rawEmpty && typeof console !== 'undefined' && console.warn) {
+          console.warn('[SF_IOCS] 正确官网条目无法解析，已忽略: ' + JSON.stringify(rawItem) +
+            (ctx ? '（产品：' + String(ctx) + '）' : ''));
         }
         continue;
       }
@@ -2328,7 +2389,10 @@
       for (let j = 0; j < items.length; j++) {
         const product = String(items[j][0] || '');
         const brands = String(items[j][1] || '').toLowerCase().split(/\s+/);
-        const sites = normalizeCorrectSites(items[j][2]);
+        // 旧（2026-11-28 前）：不传上下文，告警里只剩一句空文案
+        // const sites = normalizeCorrectSites(items[j][2]);
+        // 新：把产品名传进去，告警能指回具体条目
+        const sites = normalizeCorrectSites(items[j][2], product);
         if (!sites.length) continue;                       // 一条站点都没有 → 这条映射没有意义
         // .domain 兼容字段 = 第一个「主机名级」站点；全是链接级时退回第一个站点的主机名
         let domain = '';

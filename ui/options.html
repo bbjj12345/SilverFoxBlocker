@@ -715,7 +715,7 @@
         <div class="card fb-card" id="fbCard" data-page-node-id="SF_FB_CARD">
           <div class="field" data-page-node-id="SF_FB_HEAD">
             <label data-page-node-id="SF_FB_TITLE">反馈与建议</label>
-            <div class="hint" data-page-node-id="SF_FB_HINT">误报、漏报、想要的功能，可点击「发送反馈到GitHub Issue」提交到项目 Issues，或点击「发送反馈到作者邮箱」直接发邮件给作者。均不经第三方表单服务。</div>
+            <div class="hint" data-page-node-id="SF_FB_HINT">误报、漏报、想要的功能，可点击「发送反馈到GitHub Issue」或「发送反馈到Gitee Issue」提交到项目 Issues（两个平台任选其一，内容相同），或点击「发送反馈到作者邮箱」直接发邮件给作者。均不经第三方表单服务。</div>
           </div>
           <div class="field" data-page-node-id="SF_FB_TYPE">
             <label data-page-node-id="SF_FB_TYPE_L">问题类型</label>
@@ -742,6 +742,9 @@
           <div class="field" data-page-node-id="SF_FB_ACTIONS">
             <div class="fb-actions">
               <button class="btn btn-primary" id="fbSend" type="button">发送反馈到GitHub Issue</button>
+              <!-- ★ 2026-11-28：新增 Gitee Issue 通道。外形/配色与上面的 GitHub 按钮完全一致（同为 btn btn-primary），
+                   两者并列排在最前；邮件按钮保持 btn btn-sec（次要）。 -->
+              <button class="btn btn-primary" id="fbGitee" type="button">发送反馈到Gitee Issue</button>
               <button class="btn btn-sec" id="fbMail" type="button">发送反馈到作者邮箱</button>
               <span class="upd-checking" id="fbSpin" hidden>发送中…</span>
             </div>
